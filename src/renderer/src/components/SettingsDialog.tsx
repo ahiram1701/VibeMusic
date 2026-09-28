@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { ProviderId } from '@shared/generation'
 import { useGeneration } from '../store/generation'
+import { LlmSettingsSection } from './LlmSettingsSection'
 
 export function SettingsDialog({ onClose }: { onClose(): void }): React.JSX.Element {
   const { settings, providers, refresh } = useGeneration()
@@ -43,7 +44,7 @@ export function SettingsDialog({ onClose }: { onClose(): void }): React.JSX.Elem
       <div
         role="dialog"
         aria-label="Ajustes"
-        className="w-[480px] max-w-[calc(100vw-32px)] rounded-lg border border-line bg-panel p-5 shadow-xl"
+        className="max-h-[calc(100vh-32px)] w-[520px] max-w-[calc(100vw-32px)] overflow-auto rounded-lg border border-line bg-panel p-5 shadow-xl"
       >
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold">Ajustes</h2>
@@ -56,8 +57,12 @@ export function SettingsDialog({ onClose }: { onClose(): void }): React.JSX.Elem
           </button>
         </div>
 
+        <LlmSettingsSection />
+
+        <hr className="my-5 border-line" />
+
         <section className="space-y-2">
-          <h3 className="text-sm font-medium">Replicate (IA en la nube)</h3>
+          <h3 className="text-sm font-medium">Motor de audio: Replicate (IA en la nube)</h3>
           <p className="text-xs text-muted">
             Genera música con MusicGen de Meta. Se paga por uso en tu cuenta de Replicate (unos
             céntimos por clip). Consigue tu token en{' '}
@@ -117,7 +122,7 @@ export function SettingsDialog({ onClose }: { onClose(): void }): React.JSX.Elem
         </section>
 
         <section className="mt-5 space-y-2">
-          <h3 className="text-sm font-medium">Motor por defecto</h3>
+          <h3 className="text-sm font-medium">Motor de audio por defecto</h3>
           <select
             value={settings?.defaultProvider ?? 'demo'}
             onChange={async (e) => {

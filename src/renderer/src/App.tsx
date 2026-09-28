@@ -1,20 +1,24 @@
 import { useEffect, useRef, useState } from 'react'
 import { arrangementKey, engine } from './audio/engine'
+import { ChatPanel } from './components/ChatPanel'
 import { GeneratePanel } from './components/GeneratePanel'
 import { History } from './components/History'
 import { Mixer } from './components/Mixer'
 import { SettingsDialog } from './components/SettingsDialog'
 import { Timeline } from './components/Timeline'
 import { Transport } from './components/Transport'
+import { useGeneration } from './store/generation'
 import { useProject } from './store/project'
 
 export default function App(): React.JSX.Element {
   const { project, newProject, openProject } = useProject()
   const [version, setVersion] = useState('')
   const [showSettings, setShowSettings] = useState(false)
+  const [tab, setTab] = useState<'chat' | 'manual'>('chat')
 
   useEffect(() => {
     window.vibe.app.version().then(setVersion)
+    void useGeneration.getState().init()
   }, [])
 
   // Sincroniza el motor con el proyecto: si cambian posiciones/tempo reprograma
@@ -70,7 +74,37 @@ export default function App(): React.JSX.Element {
       </header>
 
       <aside className="row-span-2 flex min-h-0 flex-col border-r border-line bg-panel">
-        <GeneratePanel onOpenSettings={() => setShowSettings(true)} />
+        <div className="flex items-center gap-1 border-b border-line px-2 pt-2" role="tablist">
+          {(
+            [
+              ['chat', 'Productor'],
+              ['manual', 'Generar manual']
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              role="tab"
+              aria-selected={tab === id}
+              onClick={() => setTab(id)}
+              className={`rounded-t-md px-3 py-1.5 text-xs font-medium ${
+                tab === id ? 'bg-bg text-white' : 'text-muted hover:text-white'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+          <button
+            className="ml-auto pb-1 text-xs text-muted hover:text-white"
+            onClick={() => setShowSettings(true)}
+          >
+            ⚙ Ajustes
+          </button>
+        </div>
+        {tab === 'chat' ? (
+          <ChatPanel onOpenSettings={() => setShowSettings(true)} />
+        ) : (
+          <GeneratePanel onOpenSettings={() => setShowSettings(true)} />
+        )}
         <History />
       </aside>
 

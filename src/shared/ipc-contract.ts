@@ -1,5 +1,8 @@
 import type { AppSettings, GenerationJob, ProviderId, ProviderInfo } from './generation'
+import type { LlmProviderId, LlmRequest, LlmResponse } from './llm'
 import type { GenerationSpec, Project, VersionMeta } from './project'
+
+export type KeyCheck = { ok: true; info: string } | { ok: false; error: string }
 
 export interface ImportedFile {
   clipId: string
@@ -32,6 +35,16 @@ export interface VibeApi {
     /** Se llama cada vez que un trabajo cambia. Devuelve la función para dejar de escuchar. */
     onUpdate(listener: (job: GenerationJob) => void): () => void
   }
+  llm: {
+    /** Envía una petición al LLM configurado. El texto llega en vivo por `onDelta`. */
+    chat(requestId: string, req: LlmRequest): Promise<LlmResponse>
+    cancel(requestId: string): Promise<void>
+    /** Modelos que ofrece un proveedor (con su clave/URL guardadas). */
+    listModels(
+      provider: LlmProviderId
+    ): Promise<{ ok: true; models: string[] } | { ok: false; error: string }>
+    onDelta(listener: (requestId: string, text: string) => void): () => void
+  }
   settings: {
     get(): Promise<AppSettings>
     /** Comprueba el token con Replicate y, si es válido, lo guarda cifrado. */
@@ -40,6 +53,16 @@ export interface VibeApi {
     ): Promise<{ ok: true; username: string } | { ok: false; error: string }>
     clearReplicateToken(): Promise<void>
     setDefaultProvider(id: ProviderId): Promise<void>
+    setLlm(patch: {
+      provider?: LlmProviderId
+      model?: { provider: LlmProviderId; name: string }
+      url?: { provider: LlmProviderId; url: string }
+    }): Promise<void>
+    /** Comprueba la clave con el proveedor y, si es válida, la guarda cifrada. */
+    setLlmKey(provider: LlmProviderId, key: string): Promise<KeyCheck>
+    clearLlmKey(provider: LlmProviderId): Promise<void>
+    /** Prueba la conexión con la configuración guardada del proveedor. */
+    testLlm(provider: LlmProviderId): Promise<KeyCheck>
   }
   export: {
     saveWav(bytes: Uint8Array, suggestedName: string): Promise<string | null>
@@ -66,8 +89,16 @@ export type IpcChannel =
   | 'settings:setReplicateToken'
   | 'settings:clearReplicateToken'
   | 'settings:setDefaultProvider'
+  | 'settings:setLlm'
+  | 'settings:setLlmKey'
+  | 'settings:clearLlmKey'
+  | 'settings:testLlm'
+  | 'llm:listModels'
+  | 'llm:chat'
+  | 'llm:cancel'
   | 'export:saveWav'
   | 'app:version'
 
 /** Eventos main → renderer. */
 export const GENERATION_UPDATE_EVENT = 'generation:update'
+export const LLM_DELTA_EVENT = 'llm:delta'

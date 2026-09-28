@@ -20,7 +20,11 @@ interface Placement {
   atBeat: number
   /** null = crear una pista nueva. */
   trackId: string | null
+  /** Nombre de la pista nueva (por defecto, el tipo: "Batería"…). */
+  trackName?: string
   bars: number
+  /** Prefijo del mensaje en el historial (p. ej. 🤖 si lo pidió el productor). */
+  messagePrefix?: string
 }
 
 export interface JobView {
@@ -39,7 +43,16 @@ export interface GenerateInput {
   providerId: ProviderId
   atBeat: number
   trackId: string | null
+  trackName?: string
+  messagePrefix?: string
   seed?: number
+}
+
+/** Resultado de una generación ya colocada en el timeline. */
+export interface GenerationResult {
+  trackId: string
+  regionId: string
+  clipId: string
 }
 
 interface GenerationState {
@@ -48,7 +61,8 @@ interface GenerationState {
   jobs: Record<string, JobView>
   init(): Promise<void>
   refresh(): Promise<void>
-  generate(input: GenerateInput): Promise<void>
+  /** Encola una generación y devuelve el id del trabajo. */
+  generate(input: GenerateInput): Promise<string>
   cancel(jobId: string): Promise<void>
   retry(jobId: string): Promise<void>
   dismiss(jobId: string): void
@@ -58,6 +72,30 @@ let unsubscribe: (() => void) | null = null
 const finalizing = new Set<string>()
 /** Actualizaciones que llegan antes de que `generate()` registre el trabajo. */
 const early = new Map<string, GenerationJob>()
+/** Quien espera el resultado de un trabajo (p. ej. el agente productor). */
+const waiters = new Map<string, { resolve(r: GenerationResult): void; reject(e: Error): void }>()
+const settled = new Map<string, GenerationResult | Error>()
+
+function settle(jobId: string, outcome: GenerationResult | Error): void {
+  const w = waiters.get(jobId)
+  waiters.delete(jobId)
+  if (!w) {
+    settled.set(jobId, outcome)
+    return
+  }
+  if (outcome instanceof Error) w.reject(outcome)
+  else w.resolve(outcome)
+}
+
+/** Espera a que el trabajo termine y su audio esté en el timeline. */
+export function waitForJob(jobId: string): Promise<GenerationResult> {
+  const done = settled.get(jobId)
+  if (done) {
+    settled.delete(jobId)
+    return done instanceof Error ? Promise.reject(done) : Promise.resolve(done)
+  }
+  return new Promise((resolve, reject) => waiters.set(jobId, { resolve, reject }))
+}
 
 export const useGeneration = create<GenerationState>((set, get) => ({
   providers: [],
@@ -74,6 +112,8 @@ export const useGeneration = create<GenerationState>((set, get) => ({
         }
         set((s) => ({ jobs: { ...s.jobs, [job.id]: { ...view, job } } }))
         if (job.status === 'done') void finalize(job.id)
+        if (job.status === 'error') settle(job.id, new Error(job.error ?? 'Error al generar'))
+        if (job.status === 'cancelled') settle(job.id, new Error('Generación cancelada'))
       })
     }
     await get().refresh()
@@ -89,7 +129,7 @@ export const useGeneration = create<GenerationState>((set, get) => ({
 
   async generate(input) {
     const { dir, project } = useProject.getState()
-    if (!dir || !project) return
+    if (!dir || !project) throw new Error('No hay ningún proyecto abierto')
     const spec: GenerationSpec = {
       prompt: input.prompt.trim(),
       role: input.role,
@@ -108,12 +148,19 @@ export const useGeneration = create<GenerationState>((set, get) => ({
         ...s.jobs,
         [job.id]: {
           job,
-          placement: { atBeat: input.atBeat, trackId: input.trackId, bars: input.bars },
+          placement: {
+            atBeat: input.atBeat,
+            trackId: input.trackId,
+            trackName: input.trackName,
+            bars: input.bars,
+            messagePrefix: input.messagePrefix
+          },
           added: false
         }
       }
     }))
     if (job.status === 'done') void finalize(job.id)
+    return job.id
   },
 
   async cancel(jobId) {
@@ -130,7 +177,9 @@ export const useGeneration = create<GenerationState>((set, get) => ({
       bars: view.placement.bars,
       providerId: view.job.providerId,
       atBeat: view.placement.atBeat,
-      trackId: view.placement.trackId
+      trackId: view.placement.trackId,
+      trackName: view.placement.trackName,
+      messagePrefix: view.placement.messagePrefix
     })
   },
 
@@ -198,6 +247,9 @@ async function finalize(jobId: string): Promise<void> {
     }
     const target = placement.trackId && project.tracks.find((t) => t.id === placement.trackId)
     const label = ROLE_LABELS[job.spec.role]
+    const newTrack = target
+      ? null
+      : { ...createTrack(placement.trackName?.trim() || label, job.spec.role), regions: [region] }
     const next: Project = {
       ...project,
       clips: {
@@ -214,17 +266,23 @@ async function finalize(jobId: string): Promise<void> {
         ? project.tracks.map((t) =>
             t.id === target.id ? { ...t, regions: [...t.regions, region] } : t
           )
-        : [...project.tracks, { ...createTrack(label, job.spec.role), regions: [region] }]
+        : [...project.tracks, newTrack!]
     }
     const short = job.spec.prompt.length > 40 ? `${job.spec.prompt.slice(0, 40)}…` : job.spec.prompt
     await useProject
       .getState()
-      .commit(next, `Generado ${label.toLowerCase()}: "${short}" (${placement.bars} compases)`)
+      .commit(
+        next,
+        `${placement.messagePrefix ?? ''}Generado ${label.toLowerCase()}: "${short}" (${placement.bars} compases)`
+      )
     useProject.setState((s) => ({ clipsLoaded: s.clipsLoaded + 1 }))
     setView({ added: true })
+    settle(jobId, { trackId: target ? target.id : newTrack!.id, regionId: region.id, clipId })
   } catch (err) {
     console.error('No se pudo añadir el audio generado', err)
-    setView({ localError: err instanceof Error ? err.message : String(err) })
+    const message = err instanceof Error ? err.message : String(err)
+    setView({ localError: message })
+    settle(jobId, new Error(`No se pudo añadir el audio: ${message}`))
   } finally {
     finalizing.delete(jobId)
   }

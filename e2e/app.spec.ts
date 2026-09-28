@@ -47,7 +47,7 @@ test.beforeAll(async () => {
   await makeWav(join(workDir, 'bass.wav'), 2, 55)
   app = await electron.launch({
     args: ['.'],
-    env: { ...process.env, VIBE_USER_DATA: join(workDir, 'userdata') }
+    env: { ...process.env, VIBE_USER_DATA: join(workDir, 'userdata'), VIBE_FAKE_LLM: '1' }
   })
   page = await app.firstWindow()
   // Cualquier error de la página hace fallar la prueba con un mensaje claro.
@@ -172,6 +172,7 @@ test('generar con el motor Demo añade una pista al timeline', async () => {
   const regions = page.locator('.cursor-grab')
   const before = await regions.count()
 
+  await page.getByRole('tab', { name: 'Generar manual' }).click()
   await page.getByPlaceholder(/Describe el sonido/).fill('bajo profundo de prueba')
   await page.getByLabel('Tipo').selectOption('bass')
   await page.getByLabel('Duración').selectOption('2')
@@ -196,6 +197,63 @@ test('Replicate sin token avisa y no deja generar', async () => {
   await page.getByRole('button', { name: 'Abrir ajustes' }).click()
   const dialog = page.getByRole('dialog', { name: 'Ajustes' })
   await expect(dialog.getByText('sin token')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+})
+
+test('el productor (chat) mira el proyecto, pone el tempo y genera capas', async () => {
+  await page.getByRole('tab', { name: 'Productor' }).click()
+  const regions = page.locator('.cursor-grab')
+  const before = await regions.count()
+
+  await page.getByLabel('Mensaje para el productor').fill('hazme un beat boom bap')
+  await page.keyboard.press('Enter')
+
+  await expect(page.getByText('hazme un beat boom bap')).toBeVisible()
+  await expect(page.getByText('Revisando el proyecto')).toBeVisible()
+  await expect(page.getByText('Tempo 90 BPM · tonalidad A minor')).toBeVisible()
+  await expect(page.getByText(/Generado batería: “boom bap drums”/)).toBeVisible({
+    timeout: 15_000
+  })
+  await expect(page.getByText(/Generado bajo: “warm bassline”/)).toBeVisible({ timeout: 15_000 })
+  await expect(
+    page.getByText('Listo: batería y bajo de 2 compases a 90 BPM en La menor.')
+  ).toBeVisible()
+
+  await expect(regions).toHaveCount(before + 2)
+  await expect(page.locator('input[type=number]')).toHaveValue('90')
+  // Los cambios del productor quedan en el historial, marcados con 🤖.
+  await expect(page.locator('ol li').filter({ hasText: '🤖 tempo 90 BPM' })).toBeVisible()
+  await expect(page.locator('ol li').filter({ hasText: '🤖 Generado bajo' })).toBeVisible()
+})
+
+test('ajustes: cualquier proveedor de LLM (Groq, personalizado)', async () => {
+  await page.getByRole('button', { name: '⚙ Ajustes' }).first().click()
+  const dialog = page.getByRole('dialog', { name: 'Ajustes' })
+  const provider = dialog.getByLabel('Proveedor del productor')
+
+  await provider.selectOption('groq')
+  await expect(dialog.getByText(/Muy rápido y con capa gratuita/)).toBeVisible()
+  await expect(dialog.getByLabel('Modelo del productor')).toHaveValue('llama-3.3-70b-versatile')
+  await expect(dialog.getByRole('link', { name: 'conseguir una clave' })).toHaveAttribute(
+    'href',
+    'https://console.groq.com/keys'
+  )
+  await expect(dialog.getByLabel('API key de Groq')).toBeVisible()
+
+  await provider.selectOption('custom')
+  const url = dialog.getByLabel('URL base de la API')
+  await url.fill('ftp://no-vale')
+  await url.press('Enter')
+  await expect(dialog.getByText(/debe empezar por http/)).toBeVisible()
+  await url.fill('https://api.together.xyz/v1')
+  await url.press('Enter')
+  await expect(dialog.getByText(/debe empezar por http/)).toBeHidden()
+
+  await provider.selectOption('ollama')
+  await expect(dialog.getByLabel('URL base de la API')).toHaveValue('http://localhost:11434/v1')
+  await expect(dialog.getByLabel(/API key de Ollama/)).toHaveCount(0) // local: sin clave
+
   await page.keyboard.press('Escape')
   await expect(dialog).toBeHidden()
 })

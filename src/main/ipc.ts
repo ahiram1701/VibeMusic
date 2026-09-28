@@ -1,13 +1,20 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, safeStorage } from 'electron'
 import type { ProviderId } from '@shared/generation'
-import { GENERATION_UPDATE_EVENT, type IpcChannel } from '@shared/ipc-contract'
+import {
+  GENERATION_UPDATE_EVENT,
+  LLM_DELTA_EVENT,
+  type IpcChannel,
+  type KeyCheck
+} from '@shared/ipc-contract'
+import type { LlmRequest } from '@shared/llm'
 import { createProject, type GenerationSpec, type Project } from '@shared/project'
 import { demoProvider } from './audio-providers/demo'
 import { createReplicateProvider, verifyReplicateToken } from './audio-providers/replicate'
 import type { AudioProvider } from './audio-providers/types'
 import { GenerationQueue } from './generation/queue'
-import { SettingsStore } from './settings'
+import { LlmService } from './llm/service'
+import { llmSecret, SettingsStore } from './settings'
 import {
   initProjectDir,
   listVersions,
@@ -27,6 +34,16 @@ export function registerIpc(): void {
     encrypt: (plain) => safeStorage.encryptString(plain),
     decrypt: (data) => safeStorage.decryptString(data)
   })
+  // VIBE_FAKE_LLM=1 activa un LLM de mentira determinista (solo para pruebas e2e).
+  const fakeLlm = process.env['VIBE_FAKE_LLM'] === '1'
+  const llm = new LlmService(settings, fakeLlm)
+  const check = async (fn: () => Promise<string>): Promise<KeyCheck> => {
+    try {
+      return { ok: true, info: await fn() }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
   const providers = new Map<ProviderId, AudioProvider>([
     ['demo', demoProvider],
     ['replicate', createReplicateProvider(() => settings.getReplicateToken())]
@@ -78,7 +95,10 @@ export function registerIpc(): void {
   handle('generation:cancel', (jobId: string) => queue.cancel(jobId))
   handle('generation:list', () => queue.list())
 
-  handle('settings:get', () => settings.publicSettings())
+  handle('settings:get', async () => {
+    const pub = await settings.publicSettings()
+    return fakeLlm ? { ...pub, llm: { ...pub.llm, simulated: true } } : pub
+  })
   handle('settings:setReplicateToken', async (token: string) => {
     try {
       const username = await verifyReplicateToken(token.trim())
@@ -90,6 +110,29 @@ export function registerIpc(): void {
   })
   handle('settings:clearReplicateToken', () => settings.setReplicateToken(null))
   handle('settings:setDefaultProvider', (id: ProviderId) => settings.setDefaultProvider(id))
+
+  handle('settings:setLlm', (patch: Parameters<SettingsStore['setLlm']>[0]) =>
+    settings.setLlm(patch)
+  )
+  handle('settings:setLlmKey', (provider: string, key: string) =>
+    check(() => llm.setKey(provider, key))
+  )
+  handle('settings:clearLlmKey', (provider: string) =>
+    settings.setSecret(llmSecret(provider), null)
+  )
+  handle('settings:testLlm', (provider: string) => check(() => llm.test(provider)))
+  handle('llm:listModels', async (provider: string) => {
+    try {
+      return { ok: true, models: await llm.listModels(provider) }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle('llm:chat', (event, requestId: string, req: LlmRequest) =>
+    llm.chat(requestId, req, (text) => event.sender.send(LLM_DELTA_EVENT, requestId, text))
+  )
+  handle('llm:cancel', (requestId: string) => llm.cancel(requestId))
 
   handle('export:saveWav', (bytes: Uint8Array, name: string) => saveWavDialog(bytes, name))
   handle('app:version', () => app.getVersion())
