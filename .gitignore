@@ -21,3 +21,5 @@ __pycache__/
 sidecar/models_cache/
 *.egg-info/
 *.tsbuildinfo
+test-results/
+playwright-report/

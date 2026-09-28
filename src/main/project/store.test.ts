@@ -33,4 +33,17 @@ describe('project store', () => {
     expect((await loadVersion(dir, 1)).tracks).toHaveLength(0)
     expect((await loadProject(dir)).tracks).toHaveLength(1)
   })
+
+  it('guardados simultáneos no se pisan (cada uno recibe su propio número)', async () => {
+    const p = createProject('Demo')
+    await initProjectDir(dir, p)
+    await Promise.all([
+      saveProject(dir, { ...p, bpm: 90 }, 'A'),
+      saveProject(dir, { ...p, bpm: 100 }, 'B'),
+      saveProject(dir, { ...p, bpm: 110 }, 'C')
+    ])
+    const versions = await listVersions(dir)
+    expect(versions.map((v) => v.id)).toEqual([1, 2, 3, 4])
+    expect((await loadVersion(dir, 4)).bpm).toBe(110)
+  })
 })

@@ -195,13 +195,16 @@ function Playhead({ offset }: { offset: number }): React.JSX.Element {
   useEffect(() => {
     let raf = 0
     const tick = (): void => {
-      const { project } = useProject.getState()
-      const { pxPerBeat } = useUi.getState()
-      if (ref.current && project) {
-        const x = secondsToBeats(engine.positionSec, project.bpm) * pxPerBeat
-        ref.current.style.transform = `translateX(${offset + x}px)`
+      try {
+        const { project } = useProject.getState()
+        const { pxPerBeat } = useUi.getState()
+        if (ref.current && project) {
+          const x = secondsToBeats(engine.positionSec, project.bpm) * pxPerBeat
+          ref.current.style.transform = `translateX(${offset + x}px)`
+        }
+      } finally {
+        raf = requestAnimationFrame(tick)
       }
-      raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)

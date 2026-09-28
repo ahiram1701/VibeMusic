@@ -1,0 +1,140 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  _electron as electron,
+  expect,
+  test,
+  type ElectronApplication,
+  type Page
+} from '@playwright/test'
+import { encodeWav } from '../src/shared/wav'
+
+let app: ElectronApplication
+let page: Page
+let workDir: string
+
+/** WAV de prueba: un tono de `seconds` segundos. */
+async function makeWav(path: string, seconds: number, freq: number): Promise<void> {
+  const sr = 48000
+  const data = new Float32Array(sr * seconds)
+  for (let i = 0; i < data.length; i++) data[i] = 0.3 * Math.sin((2 * Math.PI * freq * i) / sr)
+  await writeFile(path, encodeWav([data, data], sr))
+}
+
+/** Sustituye los diálogos nativos de archivo por respuestas predefinidas, en orden. */
+async function queueDialogs(answers: string[][]): Promise<void> {
+  await app.evaluate(({ dialog }, queue) => {
+    dialog.showOpenDialog = (async () => {
+      const filePaths = queue.shift() ?? []
+      return { canceled: filePaths.length === 0, filePaths }
+    }) as typeof dialog.showOpenDialog
+  }, answers)
+}
+
+const playButton = (): ReturnType<Page['getByRole']> =>
+  page.getByRole('button', { name: /Play|Stop/ })
+
+const playheadX = (): Promise<number> =>
+  page.evaluate(() => {
+    const el = document.querySelector<HTMLElement>('.bg-white.w-px')
+    return el ? new DOMMatrix(getComputedStyle(el).transform).m41 : -1
+  })
+
+test.beforeAll(async () => {
+  workDir = await mkdtemp(join(tmpdir(), 'vibe-e2e-'))
+  await makeWav(join(workDir, 'drums.wav'), 2, 110)
+  await makeWav(join(workDir, 'bass.wav'), 2, 55)
+  app = await electron.launch({ args: ['.'] })
+  page = await app.firstWindow()
+})
+
+test.afterAll(async () => {
+  await app?.close()
+  await rm(workDir, { recursive: true, force: true })
+})
+
+test('crear proyecto e importar dos pistas', async () => {
+  await queueDialogs([
+    [join(workDir, 'proyecto')],
+    [join(workDir, 'drums.wav'), join(workDir, 'bass.wav')]
+  ])
+  await page.getByRole('button', { name: 'Nuevo proyecto' }).click()
+  await expect(page.getByText('Proyecto creado')).toBeVisible()
+
+  await page.getByRole('button', { name: 'Importar audio…' }).click()
+  await expect(page.getByText(/Importado drums, bass/)).toBeVisible()
+})
+
+test('play/stop con el botón y la línea de reproducción avanza', async () => {
+  await playButton().click()
+  await expect(playButton()).toHaveText('■ Stop')
+  const x1 = await playheadX()
+  await page.waitForTimeout(600)
+  const x2 = await playheadX()
+  expect(x2).toBeGreaterThan(x1)
+
+  await playButton().click()
+  await expect(playButton()).toHaveText('▶ Play')
+  const stoppedAt = await playheadX()
+  await page.waitForTimeout(300)
+  expect(await playheadX()).toBe(stoppedAt) // parada de verdad
+})
+
+test('Espacio alterna play/stop aunque el botón tenga el foco', async () => {
+  await playButton().focus()
+  await page.keyboard.press('Space')
+  await expect(playButton()).toHaveText('■ Stop')
+  await page.keyboard.press('Space')
+  await expect(playButton()).toHaveText('▶ Play')
+})
+
+test('al llegar al final se para y vuelve al inicio', async () => {
+  await page.getByRole('button', { name: '⏮' }).click()
+  await playButton().click()
+  await expect(playButton()).toHaveText('■ Stop')
+  // Las pistas duran 2 s: debe pararse sola.
+  await expect(playButton()).toHaveText('▶ Play', { timeout: 5000 })
+  await expect(page.getByText('1.1', { exact: true })).toBeVisible()
+  // Y se puede volver a reproducir.
+  await playButton().click()
+  await expect(playButton()).toHaveText('■ Stop')
+  await playButton().click()
+})
+
+test('restaurar recupera exactamente cada versión', async () => {
+  const mute = page.getByRole('button', { name: 'M', exact: true }).first()
+  // Clics rápidos seguidos: antes se pisaban las versiones.
+  await mute.click()
+  await mute.click()
+  await mute.click()
+
+  const items = page.locator('ol li')
+  await expect(items.filter({ hasText: /^v5 / })).toBeVisible()
+  const ids = await items.locator('span.text-muted').allTextContents()
+  expect(new Set(ids).size).toBe(ids.length) // sin números repetidos
+
+  const messages = await items.allTextContents()
+  expect(messages.slice(0, 3).map((m) => m.replace('restaurar', ''))).toEqual([
+    'v5 drums: mute',
+    'v4 drums: unmute',
+    'v3 drums: mute'
+  ])
+
+  const restore = (v: number): Promise<void> =>
+    items
+      .filter({ hasText: new RegExp(`^v${v} `) })
+      .getByRole('button', { name: 'restaurar' })
+      .click()
+
+  await restore(4) // sin mute
+  await expect(mute).not.toHaveClass(/bg-accent/)
+  await restore(3) // con mute
+  await expect(mute).toHaveClass(/bg-accent/)
+  await restore(2) // recién importado, sin mute
+  await expect(mute).not.toHaveClass(/bg-accent/)
+  await expect(page.getByText('bass', { exact: true }).first()).toBeVisible()
+  // v1 = proyecto vacío
+  await restore(1)
+  await expect(page.getByText(/Importa audio/)).toBeVisible()
+})

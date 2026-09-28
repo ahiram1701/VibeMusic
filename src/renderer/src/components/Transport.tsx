@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { formatPosition, type GridResolution } from '@shared/timeline'
 import { engine } from '../audio/engine'
 import { useProject } from '../store/project'
@@ -15,32 +15,32 @@ const GRIDS: { value: GridResolution; label: string }[] = [
 export function Transport(): React.JSX.Element | null {
   const { project, commit, importAudio, exportWav } = useProject()
   const { grid, setGrid, zoom } = useUi()
-  const [playing, setPlaying] = useState(false)
-  const [pos, setPos] = useState(0)
+  // El motor avisa cuando cambia play/stop; React se re-renderiza solo entonces.
+  const playing = useSyncExternalStore(engine.subscribe, engine.isPlaying)
   const [exporting, setExporting] = useState(false)
 
   useEffect(() => {
-    let raf = 0
-    const tick = (): void => {
-      setPos(engine.positionSec)
-      setPlaying(engine.playing)
-      raf = requestAnimationFrame(tick)
-    }
-    raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
-  }, [])
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.code !== 'Space' || (e.target as HTMLElement).closest('input, textarea')) return
+    // Espacio = play/stop en toda la app. Se captura antes que nadie y se cancela
+    // también el keyup: si no, un botón con foco recibe el Espacio como un clic
+    // y play/stop se alterna dos veces (parece que "no hace nada").
+    const isTyping = (e: KeyboardEvent): boolean =>
+      !!(e.target as HTMLElement).closest('input, textarea, select')
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.code !== 'Space' || isTyping(e)) return
       e.preventDefault()
+      if (e.repeat) return
       const p = useProject.getState().project
-      if (!p) return
-      if (engine.playing) engine.stop()
-      else void engine.play(p)
+      if (p) engine.toggle(p)
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    const onKeyUp = (e: KeyboardEvent): void => {
+      if (e.code === 'Space' && !isTyping(e)) e.preventDefault()
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    window.addEventListener('keyup', onKeyUp, true)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true)
+      window.removeEventListener('keyup', onKeyUp, true)
+    }
   }, [])
 
   if (!project) return null
@@ -51,7 +51,7 @@ export function Transport(): React.JSX.Element | null {
     <div className="flex items-center gap-2">
       <button
         className={`${btn} w-20 bg-accent/80 font-medium hover:bg-accent`}
-        onClick={() => (playing ? engine.stop() : void engine.play(project))}
+        onClick={() => engine.toggle(project)}
         title="Espacio"
       >
         {playing ? '■ Stop' : '▶ Play'}
@@ -59,7 +59,7 @@ export function Transport(): React.JSX.Element | null {
       <button className={btn} onClick={() => engine.seek(project, 0)} title="Al inicio">
         ⏮
       </button>
-      <span className="w-16 font-mono text-sm tabular-nums">{formatPosition(pos, project)}</span>
+      <PositionDisplay />
 
       <label className="ml-4 flex items-center gap-1 text-sm text-muted">
         BPM
@@ -123,4 +123,26 @@ export function Transport(): React.JSX.Element | null {
       </div>
     </div>
   )
+}
+
+/** Contador compás.beat. Se actualiza en su propio bucle para no re-renderizar toda la barra. */
+function PositionDisplay(): React.JSX.Element {
+  const [text, setText] = useState('1.1')
+
+  useEffect(() => {
+    let raf = 0
+    const tick = (): void => {
+      try {
+        const { project } = useProject.getState()
+        if (project) setText(formatPosition(engine.positionSec, project))
+      } finally {
+        // Pase lo que pase, el bucle sigue vivo (antes un error lo mataba para siempre).
+        raf = requestAnimationFrame(tick)
+      }
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [])
+
+  return <span className="w-16 font-mono text-sm tabular-nums">{text}</span>
 }

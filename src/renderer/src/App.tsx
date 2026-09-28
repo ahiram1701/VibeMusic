@@ -21,7 +21,7 @@ export default function App(): React.JSX.Element {
     const key = arrangementKey(project)
     if (key !== lastArrangement.current) {
       lastArrangement.current = key
-      if (engine.playing) void engine.play(project)
+      if (engine.isPlaying()) void engine.play(project)
     } else {
       engine.applyMix(project)
     }

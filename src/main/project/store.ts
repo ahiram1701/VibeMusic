@@ -38,11 +38,18 @@ export async function listVersions(dir: string): Promise<VersionMeta[]> {
   return metas.sort((a, b) => a.id - b.id)
 }
 
-export async function saveProject(
-  dir: string,
-  project: Project,
-  message: string
-): Promise<VersionMeta> {
+// Una cola de guardados por proyecto. Sin ella, dos guardados simultáneos leen
+// la misma "última versión", calculan el mismo id y el segundo pisa al primero.
+const saveQueues = new Map<string, Promise<unknown>>()
+
+export function saveProject(dir: string, project: Project, message: string): Promise<VersionMeta> {
+  const previous = saveQueues.get(dir) ?? Promise.resolve()
+  const next = previous.catch(() => undefined).then(() => writeVersion(dir, project, message))
+  saveQueues.set(dir, next)
+  return next
+}
+
+async function writeVersion(dir: string, project: Project, message: string): Promise<VersionMeta> {
   const versions = await listVersions(dir)
   const meta: VersionMeta = {
     id: (versions.at(-1)?.id ?? 0) + 1,

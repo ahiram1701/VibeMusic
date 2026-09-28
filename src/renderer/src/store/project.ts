@@ -13,6 +13,8 @@ import { engine, renderOffline } from '../audio/engine'
 interface ProjectState {
   dir: string | null
   project: Project | null
+  /** Último estado guardado en disco (para no crear versiones sin cambios). */
+  saved: Project | null
   versions: VersionMeta[]
   /** Se incrementa al cargar audio para que las formas de onda se redibujen. */
   clipsLoaded: number
@@ -30,6 +32,7 @@ interface ProjectState {
 export const useProject = create<ProjectState>((set, get) => ({
   dir: null,
   project: null,
+  saved: null,
   versions: [],
   clipsLoaded: 0,
 
@@ -38,7 +41,7 @@ export const useProject = create<ProjectState>((set, get) => ({
     if (!res) return
     engine.stop()
     engine.buffers.clear()
-    set({ ...res, versions: await window.vibe.project.listVersions(res.dir) })
+    set({ ...res, saved: res.project, versions: await window.vibe.project.listVersions(res.dir) })
   },
 
   async openProject() {
@@ -46,7 +49,7 @@ export const useProject = create<ProjectState>((set, get) => ({
     if (!res) return
     engine.stop()
     engine.buffers.clear()
-    set({ ...res, versions: await window.vibe.project.listVersions(res.dir) })
+    set({ ...res, saved: res.project, versions: await window.vibe.project.listVersions(res.dir) })
     await get().loadClips()
   },
 
@@ -57,7 +60,10 @@ export const useProject = create<ProjectState>((set, get) => ({
   async commit(next, message) {
     const { dir } = get()
     if (!dir) return
+    const unchanged = JSON.stringify(next) === JSON.stringify(get().saved)
     set({ project: next })
+    if (unchanged) return
+    set({ saved: next })
     const meta = await window.vibe.project.save(dir, next, message)
     set((s) => ({ versions: [...s.versions, meta] }))
   },

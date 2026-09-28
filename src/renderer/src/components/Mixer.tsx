@@ -60,6 +60,9 @@ function ChannelStrip({ track }: { track: Track }): React.JSX.Element {
           onPointerUp={(e) =>
             save({ gainDb: Number(e.currentTarget.value) }, `volumen ${e.currentTarget.value} dB`)
           }
+          onKeyUp={(e) =>
+            save({ gainDb: Number(e.currentTarget.value) }, `volumen ${e.currentTarget.value} dB`)
+          }
           onDoubleClick={() => save({ gainDb: 0 }, 'volumen a 0 dB')}
         />
       </label>
@@ -80,6 +83,7 @@ function ChannelStrip({ track }: { track: Track }): React.JSX.Element {
           className="w-full accent-accent"
           onChange={(e) => live({ pan: Number(e.target.value) })}
           onPointerUp={(e) => save({ pan: Number(e.currentTarget.value) }, 'panorama')}
+          onKeyUp={(e) => save({ pan: Number(e.currentTarget.value) }, 'panorama')}
           onDoubleClick={() => save({ pan: 0 }, 'panorama al centro')}
         />
       </label>
