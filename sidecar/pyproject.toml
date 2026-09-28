@@ -17,3 +17,11 @@ target-version = "py311"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Módulos sueltos (sin paquete): el servidor y los motores de generación.
+py-modules = ["server", "engine"]
