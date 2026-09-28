@@ -98,9 +98,12 @@ export function registerIpc(): { shutdown(): void } {
     return { dir, project: await loadProject(dir) }
   })
 
-  handle('project:save', (dir: string, project: Project, message: string) =>
-    saveProject(dir, project, message)
-  )
+  // VIBE_TEST_SAVE_DELAY_MS simula un disco lento en las pruebas e2e.
+  const saveDelay = Number(process.env['VIBE_TEST_SAVE_DELAY_MS'] ?? 0)
+  handle('project:save', async (dir: string, project: Project, message: string) => {
+    if (saveDelay > 0) await new Promise((r) => setTimeout(r, saveDelay))
+    return saveProject(dir, project, message)
+  })
   handle('project:listVersions', (dir: string) => listVersions(dir))
   handle('project:loadVersion', (dir: string, id: number) => loadVersion(dir, id))
   handle('clips:import', (dir: string) => importAudio(dir))

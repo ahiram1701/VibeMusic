@@ -47,7 +47,13 @@ test.beforeAll(async () => {
   await makeWav(join(workDir, 'bass.wav'), 2, 55)
   app = await electron.launch({
     args: ['.'],
-    env: { ...process.env, VIBE_USER_DATA: join(workDir, 'userdata'), VIBE_FAKE_LLM: '1' }
+    env: {
+      ...process.env,
+      VIBE_USER_DATA: join(workDir, 'userdata'),
+      VIBE_FAKE_LLM: '1',
+      // Disco lento a propósito: destapa carreras entre guardar y deshacer.
+      VIBE_TEST_SAVE_DELAY_MS: '120'
+    }
   })
   page = await app.firstWindow()
   // Cualquier error de la página hace fallar la prueba con un mensaje claro.
@@ -345,6 +351,9 @@ test('menú de región: variación, continuar y duplicar', async () => {
   await regions.last().click({ button: 'right' })
   await menu.getByRole('menuitem', { name: /Duplicar/ }).click()
   await expect(regions).toHaveCount(count + 2)
+  // Ctrl+Z inmediato, mientras el guardado aún está en curso: debe deshacer
+  // el duplicado (lo último), no la continuación anterior.
   await page.keyboard.press('Control+z')
   await expect(regions).toHaveCount(count + 1)
+  await expect(history).toContainText('Deshacer: Melodía: región duplicada')
 })
