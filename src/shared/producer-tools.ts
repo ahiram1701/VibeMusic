@@ -14,6 +14,7 @@ import {
 } from './project'
 import { barsToSeconds } from './prompt'
 import { MAX_GAIN_DB, MIN_GAIN_DB } from './mixer'
+import { copySection, sectionsOf, setSections } from './sections'
 import { projectEndSec } from './timeline'
 
 // Herramientas del agente productor. Hablan con la app a través de `ProducerHost`,
@@ -149,6 +150,12 @@ export function describeProject(p: Project, host: ProducerHost): unknown {
           max_bars_per_clip: maxBarsPerClip(p, provider)
         }
       : null,
+    sections: sectionsOf(p).map((s) => ({
+      id: s.id,
+      name: s.name,
+      start_bar: s.startBar,
+      bars: s.bars
+    })),
     tracks: p.tracks.map((t) => ({
       id: t.id,
       name: t.name,
@@ -220,6 +227,91 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             warning: `${result.skipped} imported clip(s) could not be stretched and will not match the new tempo.`
           })
         }
+      }
+    },
+    {
+      def: {
+        name: 'set_sections',
+        description:
+          'Defines the song structure as named sections (e.g. Intro, Verse, Chorus, Bridge, Outro), replacing any existing ones. Sections are markers in bars that help organise the song; they do not move audio. Use it to plan the arrangement before generating, then fill each section. Sections must not overlap.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            sections: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string', description: "Section name in the user's language" },
+                  start_bar: { type: 'integer', minimum: 1 },
+                  bars: { type: 'integer', minimum: 1 }
+                },
+                required: ['name', 'start_bar', 'bars'],
+                additionalProperties: false
+              }
+            }
+          },
+          required: ['sections'],
+          additionalProperties: false
+        }
+      },
+      run: async (input) => {
+        const raw = input.sections
+        if (!Array.isArray(raw)) throw new Error('"sections" debe ser una lista')
+        const list = raw.map((item, i) => {
+          const it = (item ?? {}) as Record<string, unknown>
+          if (typeof it.name !== 'string' || !it.name.trim()) {
+            throw new Error(`Sección ${i + 1}: falta "name"`)
+          }
+          return {
+            name: it.name,
+            startBar: Math.round(num(it, 'start_bar', 1, 1000)),
+            bars: Math.round(num(it, 'bars', 1, 256))
+          }
+        })
+        const next = setSections(host.getProject(), list)
+        await commit(next, `estructura: ${list.map((s) => `${s.name} ${s.bars}`).join(' · ')}`)
+        return {
+          ok: true,
+          sections: sectionsOf(next).map((s) => ({
+            id: s.id,
+            name: s.name,
+            start_bar: s.startBar,
+            bars: s.bars
+          }))
+        }
+      }
+    },
+    {
+      def: {
+        name: 'copy_section',
+        description:
+          'Copies a whole section, with all the audio regions that start inside it on every track, to another bar (default: right after the last section). Use it to repeat a finished chorus later in the song instead of generating it again.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            section_id: { type: 'string' },
+            to_bar: {
+              type: 'integer',
+              minimum: 1,
+              description: 'Destination start bar (omit to append at the end)'
+            }
+          },
+          required: ['section_id'],
+          additionalProperties: false
+        }
+      },
+      run: async (input) => {
+        const p = host.getProject()
+        const id = str(input, 'section_id')
+        const src = sectionsOf(p).find((s) => s.id === id)
+        if (!src)
+          throw new Error(`No existe la sección "${id}". Usa get_project_state para ver los ids.`)
+        const toBar = num(input, 'to_bar', 1, 1000, true)
+        const next = copySection(p, id, toBar === undefined ? undefined : Math.round(toBar))
+        const copy = sectionsOf(next).find((s) => !sectionsOf(p).some((o) => o.id === s.id))!
+        await commit(next, `sección ${src.name} copiada al compás ${copy.startBar}`)
+        return { ok: true, new_section_id: copy.id, start_bar: copy.startBar, bars: copy.bars }
       }
     },
     {

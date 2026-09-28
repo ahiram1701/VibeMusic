@@ -227,4 +227,37 @@ describe('herramientas del productor', () => {
       /No existe la región/
     )
   })
+
+  it('planifica la estructura y copia una sección con su audio', async () => {
+    const { state, run } = fakeHost({ ...createProject('X'), bpm: 120 })
+    const planned = (await run('set_sections', {
+      sections: [
+        { name: 'Intro', start_bar: 1, bars: 2 },
+        { name: 'Estribillo', start_bar: 3, bars: 4 }
+      ]
+    })) as { sections: { id: string; name: string }[] }
+    const chorus = planned.sections[1]
+    await run('generate_clip', { prompt: 'hook', role: 'melody', bars: 4, start_bar: 3 })
+
+    const copied = (await run('copy_section', { section_id: chorus.id })) as { start_bar: number }
+    expect(copied.start_bar).toBe(7)
+    expect(state.project.tracks[0].regions.map((r) => r.startBeat)).toEqual([8, 24])
+
+    const described = (await run('get_project_state')) as {
+      sections: { name: string; start_bar: number }[]
+    }
+    expect(described.sections.map((s) => [s.name, s.start_bar])).toEqual([
+      ['Intro', 1],
+      ['Estribillo', 3],
+      ['Estribillo', 7]
+    ])
+    await expect(
+      run('set_sections', {
+        sections: [
+          { name: 'A', start_bar: 1, bars: 4 },
+          { name: 'B', start_bar: 2, bars: 4 }
+        ]
+      })
+    ).rejects.toThrow(/se solapa/)
+  })
 })

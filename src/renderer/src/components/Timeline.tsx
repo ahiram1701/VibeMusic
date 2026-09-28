@@ -11,6 +11,7 @@ import {
 import { formatPosition, projectEndSec, snapBeat } from '@shared/timeline'
 import { engine } from '../audio/engine'
 import { ROLE_LABELS } from '../labels'
+import { AddSectionButton, SECTIONS_H, SectionsLane } from './SectionsLane'
 import { useProject } from '../store/project'
 import { useGeneration } from '../store/generation'
 import { useUi } from '../store/ui'
@@ -51,16 +52,24 @@ export function Timeline(): React.JSX.Element | null {
   if (!project) return null
 
   const perBar = project.timeSignature[0]
+  const lastSectionBar = Math.max(
+    0,
+    ...(project.sections ?? []).map((s) => s.startBar + s.bars - 1)
+  )
   const totalBeats = Math.max(
     perBar * 32,
-    Math.ceil(secondsToBeats(projectEndSec(project), project.bpm) / perBar + 8) * perBar
+    Math.ceil(secondsToBeats(projectEndSec(project), project.bpm) / perBar + 8) * perBar,
+    (lastSectionBar + 8) * perBar
   )
   const width = totalBeats * pxPerBeat
 
-  if (project.tracks.length === 0) {
+  if (project.tracks.length === 0 && !project.sections?.length) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-muted">
-        Importa audio o (próximamente) pídeselo al productor en el chat.
+      <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-muted">
+        <p>Pídele una canción al productor, genera un clip o importa audio.</p>
+        <div className="w-32">
+          <AddSectionButton />
+        </div>
       </div>
     )
   }
@@ -72,10 +81,22 @@ export function Timeline(): React.JSX.Element | null {
 
   return (
     <div className="relative min-h-full" style={{ width: width + HEADER_W }}>
-      {/* Regla de compases */}
+      {/* Secciones y regla de compases (fijas arriba al desplazarse) */}
       <div
-        className="sticky top-0 z-20 flex border-b border-line bg-panel"
-        style={{ height: RULER_H }}
+        className="sticky top-0 z-20 flex border-b border-line bg-bg"
+        style={{ height: SECTIONS_H }}
+      >
+        <div
+          className="sticky left-0 z-10 flex shrink-0 items-center bg-panel px-1"
+          style={{ width: HEADER_W }}
+        >
+          <AddSectionButton />
+        </div>
+        <SectionsLane project={project} width={width} />
+      </div>
+      <div
+        className="sticky z-20 flex border-b border-line bg-panel"
+        style={{ height: RULER_H, top: SECTIONS_H }}
       >
         <div className="sticky left-0 z-10 shrink-0 bg-panel" style={{ width: HEADER_W }} />
         <div className="relative cursor-pointer" style={{ width }} onClick={seekFromEvent}>

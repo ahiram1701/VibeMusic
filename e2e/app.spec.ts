@@ -50,6 +50,8 @@ test.beforeAll(async () => {
     env: {
       ...process.env,
       VIBE_USER_DATA: join(workDir, 'userdata'),
+      // Carpeta del motor local propia: las pruebas no deben ver el motor del usuario.
+      VIBE_ENGINE_DIR: join(workDir, 'engine'),
       VIBE_FAKE_LLM: '1',
       // Disco lento a propósito: destapa carreras entre guardar y deshacer.
       VIBE_TEST_SAVE_DELAY_MS: '120'
@@ -151,7 +153,7 @@ test('restaurar recupera exactamente cada versión', async () => {
   await expect(page.locator('section').getByText('bass', { exact: true })).toBeVisible()
   // v1 = proyecto vacío
   await restore(1)
-  await expect(page.getByText(/Importa audio/)).toBeVisible()
+  await expect(page.getByText(/importa audio/i)).toBeVisible()
 })
 
 test('deshacer y rehacer (botones y Ctrl+Z / Ctrl+Y)', async () => {
@@ -356,4 +358,47 @@ test('menú de región: variación, continuar y duplicar', async () => {
   await page.keyboard.press('Control+z')
   await expect(regions).toHaveCount(count + 1)
   await expect(history).toContainText('Deshacer: Melodía: región duplicada')
+})
+
+test('secciones: añadir, renombrar, redimensionar, bucle y copiar con audio', async () => {
+  const sections = page.getByTestId('section')
+  const before = await sections.count()
+  await page.getByRole('button', { name: '+ Sección' }).click()
+  await expect(sections).toHaveCount(before + 1)
+  const sec = sections.last()
+
+  // Renombrar con doble clic.
+  await sec.dblclick()
+  await page.getByLabel('Nombre de la sección').fill('Estribillo')
+  await page.keyboard.press('Enter')
+  await expect(sec).toContainText('Estribillo')
+  await expect(page.locator('ol li').first()).toContainText('Sección renombrada: Estribillo')
+
+  // Redimensionar arrastrando el borde derecho: de 8 a 1 compás.
+  const box = (await sec.boundingBox())!
+  const barPx = box.width / 8
+  await page.mouse.move(box.x + box.width - 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + barPx + 1, box.y + box.height / 2, { steps: 5 })
+  await page.mouse.up()
+  await expect(page.locator('ol li').first()).toContainText('Estribillo: 1 compás')
+
+  // Bucle: sigue sonando pasado el final de la sección (1 compás) y no se sale de ella.
+  await sec.click({ button: 'right' })
+  const menu = page.getByRole('menu', { name: 'Acciones de la sección' })
+  await menu.getByRole('menuitem', { name: /Repetir en bucle/ }).click()
+  await expect(sec).toContainText('🔁')
+  await playButton().click()
+  await page.waitForTimeout(3500) // más que la sección entera
+  await expect(playButton()).toHaveText('■ Stop')
+  await playButton().click()
+  await sec.click({ button: 'right' })
+  await menu.getByRole('menuitem', { name: /Quitar bucle/ }).click()
+  await expect(sec).not.toContainText('🔁')
+
+  // Copiar al final con su audio.
+  await sec.click({ button: 'right' })
+  await menu.getByRole('menuitem', { name: /Copiar al final/ }).click()
+  await expect(sections).toHaveCount(before + 2)
+  await expect(page.locator('ol li').first()).toContainText('Sección copiada al final: Estribillo')
 })

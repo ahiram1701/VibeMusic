@@ -84,6 +84,13 @@ function buildGraph(
   return { output: limiter, sources, tracks }
 }
 
+export interface LoopRange {
+  startSec: number
+  endSec: number
+  /** Qué se está repitiendo (p. ej. el id de la sección), para resaltarlo en la UI. */
+  id: string
+}
+
 class AudioEngine {
   readonly ctx = new AudioContext({ sampleRate: SAMPLE_RATE, latencyHint: 'interactive' })
   readonly buffers = new Map<string, AudioBuffer>()
@@ -96,6 +103,9 @@ class AudioEngine {
   private session = 0
   private watchdog = 0
   private listeners = new Set<() => void>()
+  /** Bucle activo (p. ej. una sección) o null. */
+  private loop: LoopRange | null = null
+  private lastProject: Project | null = null
 
   async loadClip(dir: string, clip: Clip): Promise<AudioBuffer> {
     const cached = this.buffers.get(clip.id)
@@ -116,6 +126,17 @@ class AudioEngine {
 
   isPlaying = (): boolean => this.playing
 
+  /** Bucle activo (referencia estable mientras no cambie, apta para useSyncExternalStore). */
+  getLoop = (): LoopRange | null => this.loop
+
+  /** Activa o quita el bucle. Si está sonando, salta al inicio del bucle. */
+  setLoop(project: Project, loop: LoopRange | null): void {
+    this.loop = loop
+    this.emit()
+    if (loop && this.playing) void this.play(project, loop.startSec)
+    else if (loop) this.seek(project, loop.startSec)
+  }
+
   private emit(): void {
     for (const fn of this.listeners) fn()
   }
@@ -133,9 +154,12 @@ class AudioEngine {
   }
 
   async play(project: Project, fromSec = this.positionSec): Promise<void> {
-    const endSec = projectEndSec(project)
+    const loop = this.loop
+    const endSec = loop ? loop.endSec : projectEndSec(project)
     if (endSec <= 0) return // nada que reproducir
-    if (fromSec >= endSec) fromSec = 0 // al final: volver a empezar
+    if (loop && (fromSec < loop.startSec || fromSec >= loop.endSec)) fromSec = loop.startSec
+    else if (fromSec >= endSec) fromSec = 0 // al final: volver a empezar
+    this.lastProject = project
 
     const session = ++this.session
     this.teardown()
@@ -195,6 +219,11 @@ class AudioEngine {
     const check = (): void => {
       if (session !== this.session) return
       if (this.positionSec >= this.endSec) {
+        // En bucle: vuelve al inicio sin parar. Si no, para y deja el cursor al inicio.
+        if (this.loop && this.lastProject) {
+          void this.play(this.lastProject, this.loop.startSec)
+          return
+        }
         this.stop()
         this.fromSec = 0
         this.emit()
