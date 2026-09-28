@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { ProviderId } from '@shared/generation'
 import { useGeneration } from '../store/generation'
 import { LlmSettingsSection } from './LlmSettingsSection'
+import { LocalEngineSection } from './LocalEngineSection'
 
 export function SettingsDialog({ onClose }: { onClose(): void }): React.JSX.Element {
   const { settings, providers, refresh } = useGeneration()
@@ -121,7 +122,13 @@ export function SettingsDialog({ onClose }: { onClose(): void }): React.JSX.Elem
           )}
         </section>
 
-        <section className="mt-5 space-y-2">
+        <hr className="my-5 border-line" />
+
+        <LocalEngineSection />
+
+        <hr className="my-5 border-line" />
+
+        <section className="space-y-2">
           <h3 className="text-sm font-medium">Motor de audio por defecto</h3>
           <select
             value={settings?.defaultProvider ?? 'demo'}

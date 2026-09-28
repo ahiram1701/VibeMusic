@@ -42,6 +42,8 @@ const host: ProducerHost = {
     return p
   },
   commit: (next, message) => useProject.getState().commit(next, message),
+  setTempo: (bpm, key, messagePrefix) =>
+    useProject.getState().setTempo(bpm, { key, messagePrefix }),
   audioProvider: () => {
     const { providers, settings } = useGeneration.getState()
     return providers.find((p) => p.id === settings?.defaultProvider) ?? providers[0]

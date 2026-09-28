@@ -31,6 +31,11 @@ function fakeHost(initial: Project, provider: ProviderInfo | undefined = demo) {
       state.project = next
       state.messages.push(message)
     },
+    setTempo: async (bpm, key, prefix) => {
+      state.project = { ...state.project, bpm, key: key ?? state.project.key }
+      state.messages.push(`${prefix}Tempo ${bpm} BPM`)
+      return { adjusted: 0, skipped: 0 }
+    },
     audioProvider: () => provider,
     generate: async (g) => {
       const p = state.project

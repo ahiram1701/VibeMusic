@@ -1,8 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { GenerationJob } from '@shared/generation'
+import type { LocalEngineStatus } from '@shared/local-engine'
 import {
   GENERATION_UPDATE_EVENT,
   LLM_DELTA_EVENT,
+  LOCAL_ENGINE_LOG_EVENT,
+  LOCAL_ENGINE_STATUS_EVENT,
   type IpcChannel,
   type VibeApi
 } from '@shared/ipc-contract'
@@ -44,11 +47,29 @@ const api: VibeApi = {
       return () => ipcRenderer.removeListener(LLM_DELTA_EVENT, handler)
     }
   },
+  localEngine: {
+    status: () => invoke('localEngine:status'),
+    install: (variant) => invoke('localEngine:install', variant),
+    uninstall: () => invoke('localEngine:uninstall'),
+    start: () => invoke('localEngine:start'),
+    stop: () => invoke('localEngine:stop'),
+    onStatus: (listener) => {
+      const handler = (_e: Electron.IpcRendererEvent, s: LocalEngineStatus): void => listener(s)
+      ipcRenderer.on(LOCAL_ENGINE_STATUS_EVENT, handler)
+      return () => ipcRenderer.removeListener(LOCAL_ENGINE_STATUS_EVENT, handler)
+    },
+    onLog: (listener) => {
+      const handler = (_e: Electron.IpcRendererEvent, line: string): void => listener(line)
+      ipcRenderer.on(LOCAL_ENGINE_LOG_EVENT, handler)
+      return () => ipcRenderer.removeListener(LOCAL_ENGINE_LOG_EVENT, handler)
+    }
+  },
   settings: {
     get: () => invoke('settings:get'),
     setReplicateToken: (token) => invoke('settings:setReplicateToken', token),
     clearReplicateToken: () => invoke('settings:clearReplicateToken'),
     setDefaultProvider: (id) => invoke('settings:setDefaultProvider', id),
+    setLocalModel: (id) => invoke('settings:setLocalModel', id),
     setLlm: (patch) => invoke('settings:setLlm', patch),
     setLlmKey: (provider, key) => invoke('settings:setLlmKey', provider, key),
     clearLlmKey: (provider) => invoke('settings:clearLlmKey', provider),

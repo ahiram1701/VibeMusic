@@ -24,6 +24,12 @@ import { projectEndSec } from './timeline'
 export interface ProducerHost {
   getProject(): Project
   commit(next: Project, message: string): Promise<void>
+  /** Cambia tempo/tonalidad estirando el audio generado; devuelve cuántos clips se ajustaron. */
+  setTempo(
+    bpm: number,
+    key: string | undefined,
+    messagePrefix: string
+  ): Promise<{ adjusted: number; skipped: number }>
   /** Motor de audio que se usará para generar (el predeterminado). */
   audioProvider(): ProviderInfo | undefined
   generate(input: {
@@ -175,7 +181,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       def: {
         name: 'set_tempo_key',
         description:
-          'Sets the song tempo (BPM) and/or musical key, e.g. "A minor", "F# major". New clips are generated at this tempo and key. Existing audio is NOT time-stretched, so changing the tempo after clips exist will misalign them: prefer setting it before generating.',
+          'Sets the song tempo (BPM) and/or musical key, e.g. "A minor", "F# major". New clips are generated at this tempo and key. Existing generated clips are automatically time-stretched to keep their length in bars (pitch is not changed, so changing the key does not transpose existing audio). Imported audio is not stretched.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -190,19 +196,21 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         const bpm = num(input, 'bpm', 40, 240, true)
         const key = str(input, 'key', true)
         if (bpm === undefined && key === undefined) throw new Error('Indica bpm y/o key')
-        const next = { ...p, bpm: bpm !== undefined ? Math.round(bpm) : p.bpm, key: key ?? p.key }
-        await commit(next, `tempo ${next.bpm} BPM · ${next.key}`)
-        const hasAudio = p.tracks.some((t) => t.regions.length > 0)
+        const newBpm = bpm !== undefined ? Math.round(bpm) : p.bpm
+        if (newBpm === p.bpm) {
+          const next = { ...p, key: key ?? p.key }
+          await commit(next, `tonalidad ${next.key}`)
+          return { ok: true, bpm: p.bpm, key: next.key }
+        }
+        const result = await host.setTempo(newBpm, key, AGENT_PREFIX)
         return {
           ok: true,
-          bpm: next.bpm,
-          key: next.key,
-          ...(hasAudio &&
-            bpm !== undefined &&
-            bpm !== p.bpm && {
-              warning:
-                'Existing clips were generated at the old tempo and will not line up with the new grid.'
-            })
+          bpm: newBpm,
+          key: key ?? p.key,
+          clips_time_stretched: result.adjusted,
+          ...(result.skipped > 0 && {
+            warning: `${result.skipped} imported clip(s) could not be stretched and will not match the new tempo.`
+          })
         }
       }
     },

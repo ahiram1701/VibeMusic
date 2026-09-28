@@ -1,0 +1,4 @@
+# Servidor (ligero). Lo instala la app en su entorno propio.
+fastapi>=0.115
+uvicorn>=0.32
+numpy>=1.26

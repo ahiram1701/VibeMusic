@@ -1,0 +1,2 @@
+# Modelos. torch se instala aparte (CPU o CUDA) antes que esto.
+transformers>=4.45

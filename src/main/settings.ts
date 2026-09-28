@@ -3,6 +3,7 @@ import { dirname } from 'node:path'
 import type { AppSettings, ProviderId } from '@shared/generation'
 import type { LlmProviderId } from '@shared/llm'
 import { findProvider, LLM_PROVIDERS } from '@shared/llm-providers'
+import { DEFAULT_LOCAL_MODEL, LOCAL_MODELS } from '@shared/local-engine'
 
 // Ajustes de la app en <userData>/settings.json.
 // Los secretos (API keys) se guardan cifrados con el cifrado del sistema operativo
@@ -21,6 +22,7 @@ export const llmSecret = (providerId: string): SecretName => `llm:${providerId}`
 
 interface SettingsFile {
   defaultProvider: ProviderId
+  localModel: string
   llmProvider: LlmProviderId
   llmModels: Record<string, string>
   llmUrls: Record<string, string>
@@ -51,6 +53,7 @@ export class SettingsStore {
   private defaults(): SettingsFile {
     return {
       defaultProvider: 'demo',
+      localModel: DEFAULT_LOCAL_MODEL,
       llmProvider: 'anthropic',
       llmModels: Object.fromEntries(LLM_PROVIDERS.map((p) => [p.id, p.defaultModel])),
       llmUrls: {},
@@ -77,6 +80,7 @@ export class SettingsStore {
 
       this.cache = {
         defaultProvider: raw.defaultProvider ?? d.defaultProvider,
+        localModel: raw.localModel ?? d.localModel,
         llmProvider: raw.llmProvider ?? d.llmProvider,
         // Modelos vacíos se rellenan con los del catálogo.
         llmModels: {
@@ -103,6 +107,7 @@ export class SettingsStore {
     return {
       defaultProvider: s.defaultProvider,
       hasReplicateToken: !!s.secrets.replicateToken,
+      localModel: s.localModel,
       llm: {
         provider: s.llmProvider,
         models: s.llmModels,
@@ -120,6 +125,16 @@ export class SettingsStore {
   async setDefaultProvider(id: ProviderId): Promise<void> {
     const s = await this.load()
     await this.save({ ...s, defaultProvider: id })
+  }
+
+  async setLocalModel(id: string): Promise<void> {
+    if (!LOCAL_MODELS.some((m) => m.id === id)) throw new Error(`Modelo local desconocido: ${id}`)
+    const s = await this.load()
+    await this.save({ ...s, localModel: id })
+  }
+
+  async getLocalModel(): Promise<string> {
+    return (await this.load()).localModel
   }
 
   async setLlm(patch: {
