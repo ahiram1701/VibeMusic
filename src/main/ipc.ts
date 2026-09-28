@@ -8,6 +8,7 @@ import {
   loadVersion,
   saveProject
 } from './project/store'
+import { importAudio, readClip, saveWavDialog } from './project/clips'
 
 function handle(channel: IpcChannel, fn: (...args: never[]) => unknown): void {
   ipcMain.handle(channel, (_event, ...args) => fn(...(args as never[])))
@@ -41,5 +42,8 @@ export function registerIpc(): void {
   )
   handle('project:listVersions', (dir: string) => listVersions(dir))
   handle('project:loadVersion', (dir: string, id: number) => loadVersion(dir, id))
+  handle('clips:import', (dir: string) => importAudio(dir))
+  handle('clips:read', (dir: string, file: string) => readClip(dir, file))
+  handle('export:saveWav', (bytes: Uint8Array, name: string) => saveWavDialog(bytes, name))
   handle('app:version', () => app.getVersion())
 }

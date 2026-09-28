@@ -8,7 +8,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/OWNER/VibeMusic.git"
+    "url": "https://github.com/ahiram1701/VibeMusic.git"
   },
   "scripts": {
     "dev": "electron-vite dev",

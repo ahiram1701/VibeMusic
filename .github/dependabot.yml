@@ -5,6 +5,20 @@ updates:
     schedule: { interval: weekly }
     groups:
       dev-deps: { dependency-type: development }
+    ignore:
+      # electron-vite 5 solo admite Vite ≤7 y typescript-eslint exige TS <6.1.
+      # Quitar estas reglas cuando esas dependencias soporten las nuevas majors.
+      - dependency-name: vite
+        update-types: ['version-update:semver-major']
+      - dependency-name: vitest
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@vitejs/plugin-react'
+        update-types: ['version-update:semver-major']
+      - dependency-name: typescript
+        update-types: ['version-update:semver-major']
+      # Tipos de Node alineados con el Node que trae Electron, no con el último.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
   - package-ecosystem: pip
     directory: /sidecar
     schedule: { interval: weekly }
