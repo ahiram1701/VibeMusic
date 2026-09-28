@@ -7,6 +7,7 @@ import {
   LLM_DELTA_EVENT,
   LOCAL_ENGINE_LOG_EVENT,
   LOCAL_ENGINE_STATUS_EVENT,
+  STEMS_PROGRESS_EVENT,
   type IpcChannel,
   type KeyCheck
 } from '@shared/ipc-contract'
@@ -21,6 +22,7 @@ import { GenerationQueue } from './generation/queue'
 import { LlmService } from './llm/service'
 import { llmSecret, SettingsStore } from './settings'
 import { SidecarManager } from './sidecar/manager'
+import { StemsService } from './stems'
 import {
   initProjectDir,
   listVersions,
@@ -147,6 +149,22 @@ export function registerIpc(): { shutdown(): void } {
     }
   })
   handle('localEngine:uninstall', () => sidecar.uninstall())
+  handle('localEngine:installStems', async () => {
+    try {
+      await sidecar.installStems()
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  const stems = new StemsService(sidecar)
+  ipcMain.handle('stems:separate', (event, requestId: string, dir: string, clipFile: string) =>
+    stems.separate(requestId, dir, clipFile, (progress, stage) =>
+      event.sender.send(STEMS_PROGRESS_EVENT, requestId, progress, stage)
+    )
+  )
+  handle('stems:cancel', (requestId: string) => stems.cancel(requestId))
   handle('localEngine:start', async () => {
     try {
       await sidecar.ensureRunning()

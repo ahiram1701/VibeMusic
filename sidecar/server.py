@@ -1,12 +1,13 @@
-"""Sidecar local de VibeMusic: genera audio en este equipo (CPU o GPU).
+"""Sidecar local de VibeMusic: genera y separa audio en este equipo (CPU o GPU).
 
 La app Electron lo lanza como proceso hijo y habla con él por HTTP en 127.0.0.1.
-Las generaciones son trabajos en segundo plano, uno detrás de otro:
-    POST   /jobs              crea un trabajo → {id}
-    GET    /jobs/{id}         estado, progreso y etapa
-    GET    /jobs/{id}/audio   WAV resultante
+Los trabajos se ejecutan en segundo plano, uno detrás de otro:
+    POST   /jobs              genera audio → {id}
+    POST   /separations       separa un archivo en pistas (stems) → {id}
+    GET    /jobs/{id}         estado, progreso, etapa (y pistas, al separar)
+    GET    /jobs/{id}/audio   WAV generado
     DELETE /jobs/{id}         cancela
-    GET    /health            estado del servidor, dispositivo y modelos
+    GET    /health            estado del servidor, dispositivo, modelos y funciones
 """
 
 from __future__ import annotations
@@ -25,8 +26,9 @@ from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from engine import DEFAULT_MODEL, MAX_SECONDS, MODELS, Audio, Cancelled, Engine
+from separator import Separator, Stem
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 
 def decode_wav(data: bytes) -> Audio:
@@ -55,11 +57,17 @@ def encode_wav(audio: Audio) -> bytes:
 @dataclass
 class Job:
     id: str
-    prompt: str
-    seconds: float
-    seed: int | None
-    model: str
+    kind: str = "generate"  # generate | separate
+    # generar
+    prompt: str = ""
+    seconds: float = 0
+    seed: int | None = None
+    model: str = DEFAULT_MODEL
     prompt_audio: Audio | None = None
+    # separar
+    input_path: str = ""
+    output_dir: str = ""
+    stems: list[Stem] | None = None
     status: str = "queued"  # queued | running | done | error | cancelled
     progress: float | None = None
     stage: str = "En cola"
@@ -68,20 +76,25 @@ class Job:
     cancel: threading.Event = field(default_factory=threading.Event)
 
     def public(self) -> dict[str, object]:
-        return {
+        data: dict[str, object] = {
             "id": self.id,
+            "kind": self.kind,
             "status": self.status,
             "progress": self.progress,
             "stage": self.stage,
             "error": self.error,
         }
+        if self.stems is not None:
+            data["stems"] = [{"name": s.name, "path": s.path, "rms": s.rms} for s in self.stems]
+        return data
 
 
 class JobRunner:
     """Ejecuta los trabajos de uno en uno en un hilo aparte (el modelo no es reentrante)."""
 
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, separator: Separator | None) -> None:
         self.engine = engine
+        self.separator = separator
         self.jobs: dict[str, Job] = {}
         self.queue: Queue[Job] = Queue()
         threading.Thread(target=self._worker, daemon=True).start()
@@ -104,11 +117,15 @@ class JobRunner:
                 job.progress, job.stage = progress, stage
 
             try:
-                audio = self.engine.generate(
-                    job.prompt, job.seconds, job.seed, job.model, on_progress, job.prompt_audio
-                )
-                job.prompt_audio = None  # ya no hace falta
-                job.wav = encode_wav(audio)
+                if job.kind == "separate":
+                    assert self.separator is not None
+                    job.stems = self.separator.separate(job.input_path, job.output_dir, on_progress)
+                else:
+                    audio = self.engine.generate(
+                        job.prompt, job.seconds, job.seed, job.model, on_progress, job.prompt_audio
+                    )
+                    job.prompt_audio = None  # ya no hace falta
+                    job.wav = encode_wav(audio)
                 job.status, job.progress, job.stage = "done", 1.0, "Listo"
             except Cancelled:
                 job.status, job.stage = "cancelled", "Cancelado"
@@ -125,9 +142,15 @@ class JobRequest(BaseModel):
     audio_b64: str | None = Field(default=None, max_length=4_000_000)
 
 
-def create_app(engine: Engine) -> FastAPI:
+class SeparationRequest(BaseModel):
+    # Rutas absolutas de este equipo (el servidor solo escucha en 127.0.0.1).
+    input_path: str = Field(min_length=1, max_length=1000)
+    output_dir: str = Field(min_length=1, max_length=1000)
+
+
+def create_app(engine: Engine, separator: Separator | None = None) -> FastAPI:
     app = FastAPI(title="VibeMusic sidecar", version=VERSION)
-    runner = JobRunner(engine)
+    runner = JobRunner(engine, separator)
 
     @app.get("/health")
     def health() -> dict[str, object]:
@@ -137,6 +160,10 @@ def create_app(engine: Engine) -> FastAPI:
             "device": engine.device_info(),
             "models": [{"id": k, **v} for k, v in MODELS.items()],
             "max_seconds": MAX_SECONDS,
+            "features": {
+                "generate": True,
+                "separate": bool(separator and separator.available()),
+            },
         }
 
     @app.post("/jobs")
@@ -156,11 +183,31 @@ def create_app(engine: Engine) -> FastAPI:
                 )
         job = Job(
             id=uuid.uuid4().hex[:12],
+            kind="generate",
             prompt=req.prompt,
             seconds=req.seconds,
             seed=req.seed,
             model=req.model,
             prompt_audio=prompt_audio,
+        )
+        runner.submit(job)
+        return job.public()
+
+    @app.post("/separations")
+    def create_separation(req: SeparationRequest) -> dict[str, object]:
+        if not (separator and separator.available()):
+            raise HTTPException(
+                409, "La separación de pistas no está instalada en el motor local (Ajustes)"
+            )
+        if not os.path.isabs(req.input_path) or not os.path.isabs(req.output_dir):
+            raise HTTPException(400, "Las rutas deben ser absolutas")
+        if not os.path.isfile(req.input_path):
+            raise HTTPException(400, f"No existe el archivo: {req.input_path}")
+        job = Job(
+            id=uuid.uuid4().hex[:12],
+            kind="separate",
+            input_path=req.input_path,
+            output_dir=req.output_dir,
         )
         runner.submit(job)
         return job.public()
@@ -198,7 +245,9 @@ if __name__ == "__main__":
     import uvicorn
 
     from engine import MusicGenEngine
+    from separator import DemucsSeparator
 
     port = int(os.environ.get("VIBE_SIDECAR_PORT", "8765"))
     # Solo escucha en local: nadie de la red puede usarlo.
-    uvicorn.run(create_app(MusicGenEngine()), host="127.0.0.1", port=port, log_level="warning")
+    app = create_app(MusicGenEngine(), DemucsSeparator())
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")

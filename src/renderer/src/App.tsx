@@ -4,7 +4,7 @@ import { ChatPanel } from './components/ChatPanel'
 import { GeneratePanel } from './components/GeneratePanel'
 import { History } from './components/History'
 import { Mixer } from './components/Mixer'
-import { RegionMenu, Toast } from './components/RegionMenu'
+import { RegionMenu, TaskList, Toast } from './components/RegionMenu'
 import { SettingsDialog } from './components/SettingsDialog'
 import { Timeline } from './components/Timeline'
 import { Transport } from './components/Transport'
@@ -119,6 +119,7 @@ export default function App(): React.JSX.Element {
 
       {showSettings && <SettingsDialog onClose={() => setShowSettings(false)} />}
       <RegionMenu />
+      <TaskList />
       <Toast />
     </div>
   )

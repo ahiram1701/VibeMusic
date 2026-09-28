@@ -25,7 +25,7 @@ export async function importAudio(dir: string): Promise<ImportedFile[]> {
 }
 
 /** Resuelve una ruta dentro del proyecto. Rechaza rutas que escapen de su carpeta. */
-function projectPath(dir: string, file: string): string {
+export function projectPath(dir: string, file: string): string {
   const root = resolve(dir)
   const full = resolve(root, file)
   const rel = relative(root, full)

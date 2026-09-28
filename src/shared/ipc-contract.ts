@@ -1,6 +1,7 @@
 import type { AppSettings, GenerationJob, ProviderId, ProviderInfo } from './generation'
 import type { LlmProviderId, LlmRequest, LlmResponse } from './llm'
 import type { LocalEngineStatus, TorchVariant } from './local-engine'
+import type { StemResult } from './stems'
 import type { GenerationSpec, Project, VersionMeta } from './project'
 
 export type KeyCheck = { ok: true; info: string } | { ok: false; error: string }
@@ -51,10 +52,20 @@ export interface VibeApi {
     /** Instala el motor local (Python + PyTorch + MusicGen). Tarda varios minutos. */
     install(variant: TorchVariant): Promise<{ ok: true } | { ok: false; error: string }>
     uninstall(): Promise<void>
+    /** Añade la separación de pistas (Demucs) a una instalación existente. */
+    installStems(): Promise<{ ok: true } | { ok: false; error: string }>
     start(): Promise<{ ok: true } | { ok: false; error: string }>
     stop(): Promise<void>
     onStatus(listener: (status: LocalEngineStatus) => void): () => void
     onLog(listener: (line: string) => void): () => void
+  }
+  stems: {
+    /** Separa un clip del proyecto en pistas. El progreso llega por `onProgress`. */
+    separate(requestId: string, dir: string, clipFile: string): Promise<StemResult[]>
+    cancel(requestId: string): Promise<void>
+    onProgress(
+      listener: (requestId: string, progress: number | null, stage: string) => void
+    ): () => void
   }
   settings: {
     get(): Promise<AppSettings>
@@ -109,6 +120,9 @@ export type IpcChannel =
   | 'localEngine:status'
   | 'localEngine:install'
   | 'localEngine:uninstall'
+  | 'localEngine:installStems'
+  | 'stems:separate'
+  | 'stems:cancel'
   | 'localEngine:start'
   | 'localEngine:stop'
   | 'settings:setLlm'
@@ -128,3 +142,4 @@ export const GENERATION_UPDATE_EVENT = 'generation:update'
 export const LLM_DELTA_EVENT = 'llm:delta'
 export const LOCAL_ENGINE_STATUS_EVENT = 'localEngine:status'
 export const LOCAL_ENGINE_LOG_EVENT = 'localEngine:log'
+export const STEMS_PROGRESS_EVENT = 'stems:progress'

@@ -468,3 +468,15 @@ test('exportar: mezcla en MP3, una sección en WAV y pistas por separado', async
   expect(files).toHaveLength(expected)
   expect(files.every((f) => /- \d{2} /.test(f))).toBe(true)
 })
+
+test('separar en pistas sin motor local: explica qué instalar', async () => {
+  const region = page.locator('.cursor-grab').first()
+  await region.click({ button: 'right' })
+  await page
+    .getByRole('menu', { name: 'Acciones de la región' })
+    .getByRole('menuitem', { name: /Separar en pistas/ })
+    .click()
+  await expect(page.getByRole('status').filter({ hasText: /instala el motor local/ })).toBeVisible({
+    timeout: 10_000
+  })
+})

@@ -86,6 +86,10 @@ function fakeHost(initial: Project, provider: ProviderInfo | undefined = demo) {
       state.messages.push(`extend ${regionId} ${bars} ${instructions ?? ''}`.trim())
       return { trackId: 't', regionId: 'continuada' }
     },
+    separate: async (regionId) => {
+      state.messages.push(`separate ${regionId}`)
+      return { trackIds: ['v', 'd'], stems: ['Voz', 'Batería'], skipped: ['Bajo'] }
+    },
     playheadSec: () => 0,
     play: (sec) => {
       state.playedFrom = sec
@@ -259,5 +263,22 @@ describe('herramientas del productor', () => {
         ]
       })
     ).rejects.toThrow(/se solapa/)
+  })
+
+  it('separa una región en pistas a través del host', async () => {
+    const { state, run } = fakeHost(createProject('X'))
+    const a = (await run('generate_clip', {
+      prompt: 'song',
+      role: 'full',
+      bars: 4,
+      start_bar: 1
+    })) as {
+      region_id: string
+    }
+    expect(await run('separate_stems', { region_id: a.region_id })).toMatchObject({
+      stems: ['Voz', 'Batería'],
+      empty_stems_skipped: ['Bajo']
+    })
+    expect(state.messages.at(-1)).toBe(`separate ${a.region_id}`)
   })
 })
