@@ -1,5 +1,5 @@
-import { copyFile, readFile, writeFile } from 'node:fs/promises'
-import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path'
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { dialog } from 'electron'
 import type { ImportedFile } from '@shared/ipc-contract'
 import { newId } from '@shared/project'
@@ -24,15 +24,25 @@ export async function importAudio(dir: string): Promise<ImportedFile[]> {
   )
 }
 
-/** Lee un clip del proyecto. Rechaza rutas que escapen de la carpeta del proyecto. */
-export async function readClip(dir: string, file: string): Promise<Uint8Array> {
+/** Resuelve una ruta dentro del proyecto. Rechaza rutas que escapen de su carpeta. */
+function projectPath(dir: string, file: string): string {
   const root = resolve(dir)
   const full = resolve(root, file)
   const rel = relative(root, full)
-  if (rel.startsWith('..') || isAbsolute(rel)) {
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
     throw new Error(`Ruta de clip fuera del proyecto: ${file}`)
   }
-  return readFile(full)
+  return full
+}
+
+export async function readClip(dir: string, file: string): Promise<Uint8Array> {
+  return readFile(projectPath(dir, file))
+}
+
+export async function writeClip(dir: string, file: string, bytes: Uint8Array): Promise<void> {
+  const full = projectPath(dir, file)
+  await mkdir(dirname(full), { recursive: true })
+  await writeFile(full, bytes)
 }
 
 export async function saveWavDialog(
