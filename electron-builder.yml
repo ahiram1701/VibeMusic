@@ -6,6 +6,8 @@ directories:
 files:
   - out/**
   - package.json
+  - LICENSE
+  - THIRD_PARTY_NOTICES.md
 extraResources:
   - from: sidecar
     to: sidecar

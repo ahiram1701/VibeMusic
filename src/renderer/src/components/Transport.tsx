@@ -3,6 +3,7 @@ import { formatPosition, type GridResolution } from '@shared/timeline'
 import { engine } from '../audio/engine'
 import { useProject } from '../store/project'
 import { useUi } from '../store/ui'
+import { ExportDialog } from './ExportDialog'
 
 const GRIDS: { value: GridResolution; label: string }[] = [
   { value: 'bar', label: 'Compás' },
@@ -13,11 +14,11 @@ const GRIDS: { value: GridResolution; label: string }[] = [
 ]
 
 export function Transport(): React.JSX.Element | null {
-  const { project, setTempo, importAudio, exportWav } = useProject()
+  const { project, setTempo, importAudio } = useProject()
   const { grid, setGrid, zoom } = useUi()
   // El motor avisa cuando cambia play/stop; React se re-renderiza solo entonces.
   const playing = useSyncExternalStore(engine.subscribe, engine.isPlaying)
-  const [exporting, setExporting] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
 
   useEffect(() => {
     // Espacio = play/stop en toda la app. Se captura antes que nadie y se cancela
@@ -108,19 +109,13 @@ export function Transport(): React.JSX.Element | null {
         </button>
         <button
           className={`${btn} border border-line disabled:opacity-50`}
-          disabled={exporting || project.tracks.length === 0}
-          onClick={async () => {
-            setExporting(true)
-            try {
-              await exportWav()
-            } finally {
-              setExporting(false)
-            }
-          }}
+          disabled={project.tracks.length === 0}
+          onClick={() => setExportOpen(true)}
         >
-          {exporting ? 'Exportando…' : 'Exportar WAV'}
+          Exportar…
         </button>
       </div>
+      {exportOpen && <ExportDialog onClose={() => setExportOpen(false)} />}
     </div>
   )
 }

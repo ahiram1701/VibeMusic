@@ -252,10 +252,31 @@ class AudioEngine {
 export const engine = new AudioEngine()
 
 /** Renderiza la canción completa fuera de tiempo real para exportarla. */
-export async function renderOffline(project: Project): Promise<AudioBuffer> {
-  const length = Math.max(1, Math.ceil(projectEndSec(project) * SAMPLE_RATE))
+export interface RenderOptions {
+  /** Solo este tramo (p. ej. una sección). Por defecto, la canción entera. */
+  range?: { startSec: number; endSec: number }
+  /** Solo esta pista, con su volumen y panorama (para exportar stems). */
+  trackId?: string
+}
+
+export async function renderOffline(
+  project: Project,
+  opts: RenderOptions = {}
+): Promise<AudioBuffer> {
+  const startSec = opts.range?.startSec ?? 0
+  const endSec = opts.range?.endSec ?? projectEndSec(project)
+  // Una pista sola: se ignoran mute/solo de las demás (es una exportación aislada).
+  const source = opts.trackId
+    ? {
+        ...project,
+        tracks: project.tracks
+          .filter((t) => t.id === opts.trackId)
+          .map((t) => ({ ...t, mute: false, solo: false }))
+      }
+    : project
+  const length = Math.max(1, Math.ceil((endSec - startSec) * SAMPLE_RATE))
   const ctx = new OfflineAudioContext(2, length, SAMPLE_RATE)
-  buildGraph(ctx, project, engine.buffers, 0)
+  buildGraph(ctx, source, engine.buffers, startSec)
   return ctx.startRendering()
 }
 
