@@ -402,3 +402,69 @@ test('secciones: añadir, renombrar, redimensionar, bucle y copiar con audio', a
   await expect(sections).toHaveCount(before + 2)
   await expect(page.locator('ol li').first()).toContainText('Sección copiada al final: Estribillo')
 })
+
+test('exportar: mezcla en MP3, una sección en WAV y pistas por separado', async () => {
+  const { readFile, readdir, mkdir } = await import('node:fs/promises')
+  const outDir = join(workDir, 'exportados')
+  const stemsDir = join(workDir, 'stems')
+  await mkdir(stemsDir, { recursive: true })
+  await app.evaluate(
+    ({ dialog }, paths) => {
+      let n = 0
+      dialog.showSaveDialog = (async () => ({
+        canceled: false,
+        filePath: `${paths.out}\\export-${++n}.${n === 1 ? 'mp3' : 'wav'}`
+      })) as typeof dialog.showSaveDialog
+      dialog.showOpenDialog = (async () => ({
+        canceled: false,
+        filePaths: [paths.stems]
+      })) as typeof dialog.showOpenDialog
+    },
+    { out: outDir, stems: stemsDir }
+  )
+  await mkdir(outDir, { recursive: true })
+
+  const openDialog = async (): Promise<ReturnType<Page['getByRole']>> => {
+    await page.getByRole('button', { name: 'Exportar…' }).click()
+    return page.getByRole('dialog', { name: 'Exportar' })
+  }
+
+  // 1) Mezcla completa en MP3 320
+  let dialog = await openDialog()
+  await dialog.getByRole('button', { name: /Mezcla/ }).click()
+  await dialog.getByLabel('Formato').selectOption('mp3')
+  await dialog.getByRole('button', { name: 'Exportar', exact: true }).click()
+  await expect(dialog).toBeHidden({ timeout: 30_000 })
+  const mp3 = await readFile(join(outDir, 'export-1.mp3'))
+  expect(mp3[0] === 0xff || mp3.subarray(0, 3).toString() === 'ID3').toBe(true)
+  expect(mp3.length).toBeGreaterThan(10_000)
+
+  // 2) Solo una sección (1 compás) en WAV: duración exacta
+  dialog = await openDialog()
+  await dialog.getByLabel('Formato').selectOption('wav')
+  const sectionOption = dialog
+    .getByLabel('Tramo')
+    .locator('option', { hasText: 'Estribillo' })
+    .first()
+  await dialog.getByLabel('Tramo').selectOption((await sectionOption.getAttribute('value'))!)
+  await dialog.getByRole('button', { name: 'Exportar', exact: true }).click()
+  await expect(dialog).toBeHidden({ timeout: 30_000 })
+  const wav = await readFile(join(outDir, 'export-2.wav'))
+  const bpm = Number(await page.locator('input[type=number]').inputValue())
+  const seconds = (wav.length - 44) / (48000 * 2 * 2)
+  expect(seconds).toBeCloseTo((4 * 60) / bpm, 2) // 1 compás de 4/4
+
+  // 3) Pistas por separado: un archivo por pista con audio, sin pisarse.
+  //    El diálogo recuerda el formato anterior (WAV).
+  dialog = await openDialog()
+  await expect(dialog.getByLabel('Formato')).toHaveValue('wav')
+  await dialog.getByRole('button', { name: /Pistas por separado/ }).click()
+  const expected = Number(
+    (await dialog.getByText(/archivos? \(stems\)/).textContent())!.match(/\d+/)![0]
+  )
+  await dialog.getByRole('button', { name: 'Exportar', exact: true }).click()
+  await expect(dialog).toBeHidden({ timeout: 60_000 })
+  const files = (await readdir(stemsDir)).filter((f) => f.endsWith('.wav'))
+  expect(files).toHaveLength(expected)
+  expect(files.every((f) => /- \d{2} /.test(f))).toBe(true)
+})

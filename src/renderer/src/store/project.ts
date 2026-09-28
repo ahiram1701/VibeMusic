@@ -18,7 +18,7 @@ import {
 import { planRetempo } from '@shared/retempo'
 import { timeStretch } from '@shared/stretch'
 import { encodeWav } from '@shared/wav'
-import { engine, renderOffline } from '../audio/engine'
+import { engine } from '../audio/engine'
 
 interface ProjectState {
   dir: string | null
@@ -50,7 +50,6 @@ interface ProjectState {
   ): Promise<{ adjusted: number; skipped: number }>
   loadClips(): Promise<void>
   importAudio(): Promise<void>
-  exportWav(): Promise<string | null>
 }
 
 export const useProject = create<ProjectState>((set, get) => ({
@@ -222,16 +221,6 @@ export const useProject = create<ProjectState>((set, get) => ({
     )
     await get().commit(next, `Importado ${imported.join(', ')} (${bars} compases)`)
     set((s) => ({ clipsLoaded: s.clipsLoaded + 1 }))
-  },
-
-  async exportWav() {
-    const { project } = get()
-    if (!project) return null
-    const rendered = await renderOffline(project)
-    const channels = Array.from({ length: rendered.numberOfChannels }, (_, i) =>
-      rendered.getChannelData(i)
-    )
-    return window.vibe.export.saveWav(encodeWav(channels, rendered.sampleRate), project.name)
   }
 }))
 

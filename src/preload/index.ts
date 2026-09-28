@@ -76,7 +76,10 @@ const api: VibeApi = {
     testLlm: (provider) => invoke('settings:testLlm', provider)
   },
   export: {
-    saveWav: (bytes, name) => invoke('export:saveWav', bytes, name)
+    saveFile: (bytes, name, ext) => invoke('export:saveFile', bytes, name, ext),
+    chooseFolder: () => invoke('export:chooseFolder'),
+    writeInFolder: (token, fileName, bytes) =>
+      invoke('export:writeInFolder', token, fileName, bytes)
   },
   app: {
     version: () => invoke('app:version')

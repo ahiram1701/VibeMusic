@@ -44,17 +44,3 @@ export async function writeClip(dir: string, file: string, bytes: Uint8Array): P
   await mkdir(dirname(full), { recursive: true })
   await writeFile(full, bytes)
 }
-
-export async function saveWavDialog(
-  bytes: Uint8Array,
-  suggestedName: string
-): Promise<string | null> {
-  const res = await dialog.showSaveDialog({
-    title: 'Exportar mezcla',
-    defaultPath: `${suggestedName}.wav`,
-    filters: [{ name: 'WAV', extensions: ['wav'] }]
-  })
-  if (res.canceled || !res.filePath) return null
-  await writeFile(res.filePath, bytes)
-  return res.filePath
-}

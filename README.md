@@ -44,3 +44,9 @@ Un proyecto es una carpeta: `project.json`, `versions/<n>.json` (snapshots) y `c
 npm version minor
 git push --follow-tags
 ```
+
+## Licencias
+
+Código bajo licencia MIT. Componentes y modelos de terceros (LAME para MP3, MusicGen, servicios
+en la nube) tienen sus propias licencias: ver [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+En particular, los pesos de **MusicGen son CC-BY-NC 4.0 (no comercial)**.

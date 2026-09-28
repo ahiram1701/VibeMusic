@@ -28,7 +28,8 @@ import {
   loadVersion,
   saveProject
 } from './project/store'
-import { importAudio, readClip, saveWavDialog, writeClip } from './project/clips'
+import { ExportFolders, saveFileDialog, type ExportExt } from './export'
+import { importAudio, readClip, writeClip } from './project/clips'
 
 function handle(channel: IpcChannel, fn: (...args: never[]) => unknown): void {
   ipcMain.handle(channel, (_event, ...args) => fn(...(args as never[])))
@@ -179,7 +180,14 @@ export function registerIpc(): { shutdown(): void } {
   )
   handle('llm:cancel', (requestId: string) => llm.cancel(requestId))
 
-  handle('export:saveWav', (bytes: Uint8Array, name: string) => saveWavDialog(bytes, name))
+  const exportFolders = new ExportFolders()
+  handle('export:saveFile', (bytes: Uint8Array, name: string, ext: ExportExt) =>
+    saveFileDialog(bytes, name, ext)
+  )
+  handle('export:chooseFolder', () => exportFolders.choose())
+  handle('export:writeInFolder', (token: string, fileName: string, bytes: Uint8Array) =>
+    exportFolders.write(token, fileName, bytes)
+  )
   handle('app:version', () => app.getVersion())
 
   return { shutdown: () => sidecar.killNow() }

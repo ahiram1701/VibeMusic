@@ -77,7 +77,11 @@ export interface VibeApi {
     testLlm(provider: LlmProviderId): Promise<KeyCheck>
   }
   export: {
-    saveWav(bytes: Uint8Array, suggestedName: string): Promise<string | null>
+    /** Guarda un archivo donde elija el usuario. Devuelve la ruta o null si cancela. */
+    saveFile(bytes: Uint8Array, suggestedName: string, ext: 'wav' | 'mp3'): Promise<string | null>
+    /** Pide una carpeta (para varias pistas). Devuelve un token para escribir en ella. */
+    chooseFolder(): Promise<{ token: string; path: string } | null>
+    writeInFolder(token: string, fileName: string, bytes: Uint8Array): Promise<string>
   }
   app: {
     version(): Promise<string>
@@ -114,7 +118,9 @@ export type IpcChannel =
   | 'llm:listModels'
   | 'llm:chat'
   | 'llm:cancel'
-  | 'export:saveWav'
+  | 'export:saveFile'
+  | 'export:chooseFolder'
+  | 'export:writeInFolder'
   | 'app:version'
 
 /** Eventos main → renderer. */
