@@ -67,6 +67,16 @@ export interface Project {
   timeSignature: [number, number]
   tracks: Track[]
   clips: Record<string, Clip>
+  /** Estructura de la canción (intro, estrofa…). Opcional: proyectos antiguos no la tienen. */
+  sections?: Section[]
+}
+
+/** Una parte de la canción, medida en compases (el primero es el 1). */
+export interface Section {
+  id: string
+  name: string
+  startBar: number
+  bars: number
 }
 
 export interface VersionMeta {
