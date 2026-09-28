@@ -8,6 +8,10 @@
   --color-muted: #8a8a9a;
 }
 
+html {
+  color-scheme: dark;
+}
+
 html,
 body,
 #root {

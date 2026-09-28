@@ -11,7 +11,7 @@ interface TrackNodes {
 }
 
 interface Graph {
-  master: GainNode
+  output: AudioNode
   sources: AudioBufferSourceNode[]
   tracks: Map<string, TrackNodes>
 }
@@ -81,7 +81,7 @@ function buildGraph(
       sources.push(src)
     }
   }
-  return { master, sources, tracks }
+  return { output: limiter, sources, tracks }
 }
 
 class AudioEngine {
@@ -91,7 +91,11 @@ class AudioEngine {
   private startedAt = 0
   private fromSec = 0
   private endSec = 0
-  playing = false
+  private playing = false
+  /** Cambia en cada play/stop: descarta un play() antiguo que termine tarde. */
+  private session = 0
+  private watchdog = 0
+  private listeners = new Set<() => void>()
 
   async loadClip(dir: string, clip: Clip): Promise<AudioBuffer> {
     const cached = this.buffers.get(clip.id)
@@ -103,36 +107,73 @@ class AudioEngine {
     return buffer
   }
 
+  // --- Estado observable (para useSyncExternalStore en React) ---
+
+  subscribe = (fn: () => void): (() => void) => {
+    this.listeners.add(fn)
+    return () => this.listeners.delete(fn)
+  }
+
+  isPlaying = (): boolean => this.playing
+
+  private emit(): void {
+    for (const fn of this.listeners) fn()
+  }
+
+  /**
+   * Posición actual en segundos. Es una lectura pura: nunca cambia el estado
+   * (antes llamaba a stop() al llegar al final y entraba en bucle infinito).
+   * Resta la latencia de salida para que el cursor coincida con lo que se oye.
+   */
   get positionSec(): number {
     if (!this.playing) return this.fromSec
-    const pos = this.fromSec + this.ctx.currentTime - this.startedAt
-    if (pos >= this.endSec) {
-      this.stop()
-      this.fromSec = 0
-      return 0
-    }
-    return pos
+    const latency = this.ctx.outputLatency || this.ctx.baseLatency || 0
+    const elapsed = Math.max(0, this.ctx.currentTime - this.startedAt - latency)
+    return Math.min(this.fromSec + elapsed, this.endSec)
   }
 
   async play(project: Project, fromSec = this.positionSec): Promise<void> {
-    await this.ctx.resume()
+    const endSec = projectEndSec(project)
+    if (endSec <= 0) return // nada que reproducir
+    if (fromSec >= endSec) fromSec = 0 // al final: volver a empezar
+
+    const session = ++this.session
     this.teardown()
+    this.playing = true
+    this.fromSec = fromSec
+    this.endSec = endSec
+    this.emit()
+
+    await this.ctx.resume()
+    if (session !== this.session) return // hubo un stop/play mientras tanto
+
     this.graph = buildGraph(this.ctx, project, this.buffers, fromSec)
     this.startedAt = this.ctx.currentTime
-    this.fromSec = fromSec
-    this.endSec = projectEndSec(project)
-    this.playing = true
+    this.watchEnd(session)
   }
 
   stop(): void {
     this.fromSec = this.positionSec
+    this.session++
     this.teardown()
-    this.playing = false
+    if (this.playing) {
+      this.playing = false
+      this.emit()
+    }
+  }
+
+  toggle(project: Project): void {
+    if (this.playing) this.stop()
+    else void this.play(project)
   }
 
   seek(project: Project, sec: number): void {
-    if (this.playing) void this.play(project, sec)
-    else this.fromSec = sec
+    const to = Math.max(0, sec)
+    if (this.playing) void this.play(project, to)
+    else {
+      this.fromSec = to
+      this.emit()
+    }
   }
 
   /** Aplica volumen/pan/mute/solo en caliente, sin reiniciar la reproducción. */
@@ -148,7 +189,24 @@ class AudioEngine {
     }
   }
 
+  /** Detecta el final de la canción: para y deja el cursor al inicio. */
+  private watchEnd(session: number): void {
+    cancelAnimationFrame(this.watchdog)
+    const check = (): void => {
+      if (session !== this.session) return
+      if (this.positionSec >= this.endSec) {
+        this.stop()
+        this.fromSec = 0
+        this.emit()
+        return
+      }
+      this.watchdog = requestAnimationFrame(check)
+    }
+    this.watchdog = requestAnimationFrame(check)
+  }
+
   private teardown(): void {
+    cancelAnimationFrame(this.watchdog)
     if (!this.graph) return
     for (const src of this.graph.sources) {
       try {
@@ -157,7 +215,7 @@ class AudioEngine {
         // ya había terminado
       }
     }
-    this.graph.master.disconnect()
+    this.graph.output.disconnect()
     this.graph = null
   }
 }

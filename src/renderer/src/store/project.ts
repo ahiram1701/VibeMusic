@@ -7,20 +7,35 @@ import {
   type Region,
   type VersionMeta
 } from '@shared/project'
+import {
+  baseMessage,
+  emptyUndo,
+  recordChange,
+  takeRedo,
+  takeUndo,
+  type UndoState
+} from '@shared/history'
 import { encodeWav } from '@shared/wav'
 import { engine, renderOffline } from '../audio/engine'
 
 interface ProjectState {
   dir: string | null
   project: Project | null
+  /** Último estado guardado en disco (para no crear versiones sin cambios). */
+  saved: Project | null
   versions: VersionMeta[]
+  history: UndoState
   /** Se incrementa al cargar audio para que las formas de onda se redibujen. */
   clipsLoaded: number
   newProject(name: string): Promise<void>
   openProject(): Promise<void>
   /** Cambio temporal (p. ej. mientras arrastras un fader): se oye pero no crea versión. */
   preview(next: Project): void
+  /** Guarda un cambio del usuario (o del agente) como versión nueva y lo hace deshacible. */
   commit(next: Project, message: string): Promise<void>
+  undo(): Promise<void>
+  redo(): Promise<void>
+  /** Vuelve al estado que había justo después de la versión indicada. */
   checkout(versionId: number): Promise<void>
   loadClips(): Promise<void>
   importAudio(): Promise<void>
@@ -30,7 +45,9 @@ interface ProjectState {
 export const useProject = create<ProjectState>((set, get) => ({
   dir: null,
   project: null,
+  saved: null,
   versions: [],
+  history: emptyUndo,
   clipsLoaded: 0,
 
   async newProject(name) {
@@ -38,7 +55,12 @@ export const useProject = create<ProjectState>((set, get) => ({
     if (!res) return
     engine.stop()
     engine.buffers.clear()
-    set({ ...res, versions: await window.vibe.project.listVersions(res.dir) })
+    set({
+      ...res,
+      saved: res.project,
+      history: emptyUndo,
+      versions: await window.vibe.project.listVersions(res.dir)
+    })
   },
 
   async openProject() {
@@ -46,7 +68,12 @@ export const useProject = create<ProjectState>((set, get) => ({
     if (!res) return
     engine.stop()
     engine.buffers.clear()
-    set({ ...res, versions: await window.vibe.project.listVersions(res.dir) })
+    set({
+      ...res,
+      saved: res.project,
+      history: emptyUndo,
+      versions: await window.vibe.project.listVersions(res.dir)
+    })
     await get().loadClips()
   },
 
@@ -55,20 +82,37 @@ export const useProject = create<ProjectState>((set, get) => ({
   },
 
   async commit(next, message) {
-    const { dir } = get()
-    if (!dir) return
-    set({ project: next })
-    const meta = await window.vibe.project.save(dir, next, message)
-    set((s) => ({ versions: [...s.versions, meta] }))
+    const { saved, history } = get()
+    if (!saved || !(await persist(next, message))) return
+    set({ history: recordChange(history, saved, message) })
+  },
+
+  async undo() {
+    const { saved, history } = get()
+    const step = saved && takeUndo(history, saved)
+    if (!step) return
+    set({ history: step.state })
+    await persist(step.entry.project, `Deshacer: ${baseMessage(step.entry.message)}`)
+    await get().loadClips()
+  },
+
+  async redo() {
+    const { saved, history } = get()
+    const step = saved && takeRedo(history, saved)
+    if (!step) return
+    set({ history: step.state })
+    await persist(step.entry.project, `Rehacer: ${baseMessage(step.entry.message)}`)
+    await get().loadClips()
   },
 
   async checkout(versionId) {
     const { dir, versions } = get()
     if (!dir) return
     const snapshot = await window.vibe.project.loadVersion(dir, versionId)
-    const label = versions.find((v) => v.id === versionId)?.message ?? ''
-    // Volver atrás crea una versión nueva (como `git revert`), nunca borra historia.
-    await get().commit(snapshot, `Restaurada v${versionId}: ${label}`)
+    const label = baseMessage(versions.find((v) => v.id === versionId)?.message ?? '')
+    // Volver atrás crea una versión nueva (como `git revert`), nunca borra historia,
+    // y se puede deshacer con Ctrl+Z como cualquier otro cambio.
+    await get().commit(snapshot, `Vuelta a v${versionId}: ${label}`)
     await get().loadClips()
   },
 
@@ -142,3 +186,17 @@ export const useProject = create<ProjectState>((set, get) => ({
     return window.vibe.export.saveWav(encodeWav(channels, rendered.sampleRate), project.name)
   }
 }))
+
+/**
+ * Guarda `next` en disco como versión nueva. Devuelve false si no había cambios
+ * respecto a lo último guardado (así no se crean versiones vacías).
+ */
+async function persist(next: Project, message: string): Promise<boolean> {
+  const { dir, saved } = useProject.getState()
+  useProject.setState({ project: next })
+  if (!dir || JSON.stringify(next) === JSON.stringify(saved)) return false
+  useProject.setState({ saved: next })
+  const meta = await window.vibe.project.save(dir, next, message)
+  useProject.setState((s) => ({ versions: [...s.versions, meta] }))
+  return true
+}
