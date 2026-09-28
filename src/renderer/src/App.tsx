@@ -1,4 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { arrangementKey, engine } from './audio/engine'
+import { Mixer } from './components/Mixer'
+import { Timeline } from './components/Timeline'
+import { Transport } from './components/Transport'
 import { useProject } from './store/project'
 
 export default function App(): React.JSX.Element {
@@ -8,6 +12,20 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     window.vibe.app.version().then(setVersion)
   }, [])
+
+  // Sincroniza el motor con el proyecto: si cambian posiciones/tempo reprograma
+  // las fuentes; si solo cambia la mezcla, la aplica en caliente sin cortes.
+  const lastArrangement = useRef('')
+  useEffect(() => {
+    if (!project) return
+    const key = arrangementKey(project)
+    if (key !== lastArrangement.current) {
+      lastArrangement.current = key
+      if (engine.playing) void engine.play(project)
+    } else {
+      engine.applyMix(project)
+    }
+  }, [project])
 
   if (!project) {
     return (
@@ -36,12 +54,15 @@ export default function App(): React.JSX.Element {
   }
 
   return (
-    <div className="grid h-full grid-cols-[340px_1fr] grid-rows-[48px_1fr_180px]">
+    <div className="grid h-full grid-cols-[340px_1fr] grid-rows-[48px_1fr_190px]">
       <header className="col-span-2 flex items-center gap-4 border-b border-line bg-panel px-4">
-        <strong>{project.name}</strong>
-        <span className="text-sm text-muted">
-          {project.bpm} BPM · {project.key} · {project.timeSignature.join('/')}
+        <strong className="shrink-0">{project.name}</strong>
+        <span className="shrink-0 text-sm text-muted">
+          {project.key} · {project.timeSignature.join('/')}
         </span>
+        <div className="flex-1">
+          <Transport />
+        </div>
       </header>
 
       <aside className="row-span-2 flex flex-col border-r border-line bg-panel">
@@ -66,12 +87,12 @@ export default function App(): React.JSX.Element {
         </div>
       </aside>
 
-      <section className="overflow-auto p-4 text-sm text-muted">
-        {project.tracks.length === 0 ? 'Timeline vacío — timeline multipista en fase 2' : null}
+      <section className="overflow-auto">
+        <Timeline />
       </section>
 
-      <footer className="border-t border-line bg-panel p-4 text-sm text-muted">
-        Mezclador (fase 2)
+      <footer className="border-t border-line bg-panel">
+        <Mixer />
       </footer>
     </div>
   )

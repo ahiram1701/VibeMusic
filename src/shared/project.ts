@@ -95,3 +95,40 @@ export function beatsToSeconds(beats: number, bpm: number): number {
 export function secondsToBeats(sec: number, bpm: number): number {
   return (sec * bpm) / 60
 }
+
+// Actualizaciones inmutables: devuelven un proyecto nuevo, así cada versión es un snapshot limpio.
+
+export function updateTrack(project: Project, trackId: string, patch: Partial<Track>): Project {
+  return {
+    ...project,
+    tracks: project.tracks.map((t) => (t.id === trackId ? { ...t, ...patch } : t))
+  }
+}
+
+export function updateRegion(
+  project: Project,
+  regionId: string,
+  fn: (region: Region) => Region
+): Project {
+  return {
+    ...project,
+    tracks: project.tracks.map((t) => ({
+      ...t,
+      regions: t.regions.map((r) => (r.id === regionId ? fn(r) : r))
+    }))
+  }
+}
+
+export function removeRegion(project: Project, regionId: string): Project {
+  return {
+    ...project,
+    tracks: project.tracks.map((t) => ({
+      ...t,
+      regions: t.regions.filter((r) => r.id !== regionId)
+    }))
+  }
+}
+
+export function removeTrack(project: Project, trackId: string): Project {
+  return { ...project, tracks: project.tracks.filter((t) => t.id !== trackId) }
+}

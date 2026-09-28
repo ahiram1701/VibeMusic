@@ -11,6 +11,13 @@ const api: VibeApi = {
     listVersions: (dir) => invoke('project:listVersions', dir),
     loadVersion: (dir, id) => invoke('project:loadVersion', dir, id)
   },
+  clips: {
+    import: (dir) => invoke('clips:import', dir),
+    read: (dir, file) => invoke('clips:read', dir, file)
+  },
+  export: {
+    saveWav: (bytes, name) => invoke('export:saveWav', bytes, name)
+  },
   app: {
     version: () => invoke('app:version')
   }

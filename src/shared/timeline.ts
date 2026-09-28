@@ -1,4 +1,4 @@
-import type { Project, Region } from './project'
+import { beatsToSeconds, secondsToBeats, type Project, type Region } from './project'
 
 // Utilidades puras del timeline. Las usan tanto la UI (arrastrar regiones)
 // como el agente productor (herramienta `move_region`), así que viven en shared/.
@@ -44,4 +44,22 @@ export function moveRegion(
   project: Project
 ): Region {
   return { ...region, startBeat: snapBeat(rawBeat, grid, project) }
+}
+
+/** Segundo en el que termina la última región del proyecto (duración de la canción). */
+export function projectEndSec(project: Project): number {
+  let end = 0
+  for (const track of project.tracks) {
+    for (const r of track.regions) {
+      end = Math.max(end, beatsToSeconds(r.startBeat, project.bpm) + r.lengthSec)
+    }
+  }
+  return end
+}
+
+/** Formatea una posición como "compás.beat" (1-indexado), como en cualquier DAW. */
+export function formatPosition(sec: number, project: Project): string {
+  const beats = secondsToBeats(sec, project.bpm)
+  const perBar = project.timeSignature[0]
+  return `${Math.floor(beats / perBar) + 1}.${Math.floor(beats % perBar) + 1}`
 }
