@@ -10,6 +10,7 @@ import {
 } from '@shared/project'
 import { formatPosition, projectEndSec, snapBeat } from '@shared/timeline'
 import { engine } from '../audio/engine'
+import { ROLE_LABELS } from '../labels'
 import { useProject } from '../store/project'
 import { useUi } from '../store/ui'
 import { Waveform } from './Waveform'
@@ -96,7 +97,7 @@ export function Timeline(): React.JSX.Element | null {
             style={{ width: HEADER_W, borderLeft: `3px solid ${ROLE_COLORS[track.role]}` }}
           >
             <span className="truncate text-sm">{track.name}</span>
-            <span className="text-[10px] uppercase text-muted">{track.role}</span>
+            <span className="text-[10px] uppercase text-muted">{ROLE_LABELS[track.role]}</span>
           </div>
           <div
             className="relative"

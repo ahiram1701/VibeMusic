@@ -45,8 +45,14 @@ test.beforeAll(async () => {
   workDir = await mkdtemp(join(tmpdir(), 'vibe-e2e-'))
   await makeWav(join(workDir, 'drums.wav'), 2, 110)
   await makeWav(join(workDir, 'bass.wav'), 2, 55)
-  app = await electron.launch({ args: ['.'] })
+  app = await electron.launch({
+    args: ['.'],
+    env: { ...process.env, VIBE_USER_DATA: join(workDir, 'userdata') }
+  })
   page = await app.firstWindow()
+  // Cualquier error de la página hace fallar la prueba con un mensaje claro.
+  page.on('pageerror', (e) => console.log('[pageerror]', e.message))
+  page.on('console', (m) => m.type() === 'error' && console.log('[console.error]', m.text()))
 })
 
 test.afterAll(async () => {
@@ -133,7 +139,7 @@ test('restaurar recupera exactamente cada versión', async () => {
   await expect(mute).toHaveClass(/bg-accent/)
   await restore(2) // recién importado, sin mute
   await expect(mute).not.toHaveClass(/bg-accent/)
-  await expect(page.getByText('bass', { exact: true }).first()).toBeVisible()
+  await expect(page.locator('section').getByText('bass', { exact: true })).toBeVisible()
   // v1 = proyecto vacío
   await restore(1)
   await expect(page.getByText(/Importa audio/)).toBeVisible()
@@ -142,7 +148,7 @@ test('restaurar recupera exactamente cada versión', async () => {
 test('deshacer y rehacer (botones y Ctrl+Z / Ctrl+Y)', async () => {
   // Venimos de "volver a v1" (proyecto vacío): deshacer recupera las pistas.
   await page.keyboard.press('Control+z')
-  await expect(page.getByText('bass', { exact: true }).first()).toBeVisible()
+  await expect(page.locator('section').getByText('bass', { exact: true })).toBeVisible()
 
   // Borrar una región y recuperarla: justo lo que "restaurar" no hacía.
   const regions = page.locator('.cursor-grab')
@@ -160,4 +166,36 @@ test('deshacer y rehacer (botones y Ctrl+Z / Ctrl+Y)', async () => {
   await expect(regions).toHaveCount(1)
   await expect(page.locator('ol li').first()).toContainText('Rehacer: Región eliminada')
   await expect(page.getByRole('button', { name: '↷ Rehacer' })).toBeDisabled()
+})
+
+test('generar con el motor Demo añade una pista al timeline', async () => {
+  const regions = page.locator('.cursor-grab')
+  const before = await regions.count()
+
+  await page.getByPlaceholder(/Describe el sonido/).fill('bajo profundo de prueba')
+  await page.getByLabel('Tipo').selectOption('bass')
+  await page.getByLabel('Duración').selectOption('2')
+  await page.getByLabel('Motor').selectOption('demo')
+  await page.getByRole('button', { name: /^Generar 2 compases/ }).click()
+
+  await expect(page.getByText('Añadido al timeline')).toBeVisible({ timeout: 10_000 })
+  await expect(regions).toHaveCount(before + 1)
+  await expect(page.locator('ol li').first()).toContainText(
+    'Generado bajo: "bajo profundo de prueba"'
+  )
+
+  // Es un cambio normal: se puede deshacer.
+  await page.keyboard.press('Control+z')
+  await expect(regions).toHaveCount(before)
+})
+
+test('Replicate sin token avisa y no deja generar', async () => {
+  await page.getByLabel('Motor').selectOption('replicate')
+  await expect(page.getByText(/Falta la API key de Replicate/)).toBeVisible()
+  await expect(page.getByRole('button', { name: /^Generar/ })).toBeDisabled()
+  await page.getByRole('button', { name: 'Abrir ajustes' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Ajustes' })
+  await expect(dialog.getByText('sin token')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
 })

@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { arrangementKey, engine } from './audio/engine'
+import { GeneratePanel } from './components/GeneratePanel'
 import { History } from './components/History'
 import { Mixer } from './components/Mixer'
+import { SettingsDialog } from './components/SettingsDialog'
 import { Timeline } from './components/Timeline'
 import { Transport } from './components/Transport'
 import { useProject } from './store/project'
@@ -9,6 +11,7 @@ import { useProject } from './store/project'
 export default function App(): React.JSX.Element {
   const { project, newProject, openProject } = useProject()
   const [version, setVersion] = useState('')
+  const [showSettings, setShowSettings] = useState(false)
 
   useEffect(() => {
     window.vibe.app.version().then(setVersion)
@@ -67,7 +70,7 @@ export default function App(): React.JSX.Element {
       </header>
 
       <aside className="row-span-2 flex min-h-0 flex-col border-r border-line bg-panel">
-        <div className="h-1/2 shrink-0 p-4 text-sm text-muted">Chat del productor (fase 4)</div>
+        <GeneratePanel onOpenSettings={() => setShowSettings(true)} />
         <History />
       </aside>
 
@@ -78,6 +81,8 @@ export default function App(): React.JSX.Element {
       <footer className="border-t border-line bg-panel">
         <Mixer />
       </footer>
+
+      {showSettings && <SettingsDialog onClose={() => setShowSettings(false)} />}
     </div>
   )
 }

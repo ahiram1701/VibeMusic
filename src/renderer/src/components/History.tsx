@@ -31,7 +31,7 @@ export function History(): React.JSX.Element {
     'rounded border border-line px-2 py-0.5 text-xs hover:bg-line disabled:cursor-not-allowed disabled:opacity-40'
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col border-t border-line p-3">
+    <div className="flex h-[38%] min-h-40 shrink-0 flex-col border-t border-line p-3">
       <div className="mb-2 flex items-center gap-2">
         <h2 className="text-xs uppercase tracking-wide text-muted">Historial</h2>
         <div className="ml-auto flex gap-1">

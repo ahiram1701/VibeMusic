@@ -3,6 +3,9 @@ import { app, BrowserWindow, shell } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { registerIpc } from './ipc'
 
+// Las pruebas e2e usan su propia carpeta de datos para no tocar los ajustes reales.
+if (process.env['VIBE_USER_DATA']) app.setPath('userData', process.env['VIBE_USER_DATA'])
+
 function createWindow(): void {
   const win = new BrowserWindow({
     width: 1440,
