@@ -115,7 +115,7 @@ test('restaurar recupera exactamente cada versión', async () => {
   expect(new Set(ids).size).toBe(ids.length) // sin números repetidos
 
   const messages = await items.allTextContents()
-  expect(messages.slice(0, 3).map((m) => m.replace('restaurar', ''))).toEqual([
+  expect(messages.slice(0, 3).map((m) => m.replace(/volver aquí|actual/, ''))).toEqual([
     'v5 drums: mute',
     'v4 drums: unmute',
     'v3 drums: mute'
@@ -124,7 +124,7 @@ test('restaurar recupera exactamente cada versión', async () => {
   const restore = (v: number): Promise<void> =>
     items
       .filter({ hasText: new RegExp(`^v${v} `) })
-      .getByRole('button', { name: 'restaurar' })
+      .getByRole('button', { name: 'volver aquí' })
       .click()
 
   await restore(4) // sin mute
@@ -137,4 +137,27 @@ test('restaurar recupera exactamente cada versión', async () => {
   // v1 = proyecto vacío
   await restore(1)
   await expect(page.getByText(/Importa audio/)).toBeVisible()
+})
+
+test('deshacer y rehacer (botones y Ctrl+Z / Ctrl+Y)', async () => {
+  // Venimos de "volver a v1" (proyecto vacío): deshacer recupera las pistas.
+  await page.keyboard.press('Control+z')
+  await expect(page.getByText('bass', { exact: true }).first()).toBeVisible()
+
+  // Borrar una región y recuperarla: justo lo que "restaurar" no hacía.
+  const regions = page.locator('.cursor-grab')
+  await expect(regions).toHaveCount(2)
+  await regions.first().click()
+  await page.keyboard.press('Delete')
+  await expect(regions).toHaveCount(1)
+  await expect(page.locator('ol li').first()).toContainText('Región eliminada')
+
+  await page.getByRole('button', { name: '↶ Deshacer' }).click()
+  await expect(regions).toHaveCount(2)
+  await expect(page.locator('ol li').first()).toContainText('Deshacer: Región eliminada')
+
+  await page.keyboard.press('Control+y')
+  await expect(regions).toHaveCount(1)
+  await expect(page.locator('ol li').first()).toContainText('Rehacer: Región eliminada')
+  await expect(page.getByRole('button', { name: '↷ Rehacer' })).toBeDisabled()
 })

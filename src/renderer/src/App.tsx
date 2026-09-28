@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { arrangementKey, engine } from './audio/engine'
+import { History } from './components/History'
 import { Mixer } from './components/Mixer'
 import { Timeline } from './components/Timeline'
 import { Transport } from './components/Transport'
 import { useProject } from './store/project'
 
 export default function App(): React.JSX.Element {
-  const { project, versions, newProject, openProject, checkout } = useProject()
+  const { project, newProject, openProject } = useProject()
   const [version, setVersion] = useState('')
 
   useEffect(() => {
@@ -65,26 +66,9 @@ export default function App(): React.JSX.Element {
         </div>
       </header>
 
-      <aside className="row-span-2 flex flex-col border-r border-line bg-panel">
-        <div className="flex-1 p-4 text-sm text-muted">Chat del productor (fase 4)</div>
-        <div className="border-t border-line p-3">
-          <h2 className="mb-2 text-xs uppercase tracking-wide text-muted">Historial</h2>
-          <ol className="max-h-48 space-y-1 overflow-auto text-sm">
-            {[...versions].reverse().map((v) => (
-              <li key={v.id} className="flex items-center justify-between gap-2">
-                <span className="truncate">
-                  <span className="text-muted">v{v.id}</span> {v.message}
-                </span>
-                <button
-                  className="text-xs text-accent hover:underline"
-                  onClick={() => checkout(v.id)}
-                >
-                  restaurar
-                </button>
-              </li>
-            ))}
-          </ol>
-        </div>
+      <aside className="row-span-2 flex min-h-0 flex-col border-r border-line bg-panel">
+        <div className="h-1/2 shrink-0 p-4 text-sm text-muted">Chat del productor (fase 4)</div>
+        <History />
       </aside>
 
       <section className="overflow-auto">
