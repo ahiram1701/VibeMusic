@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { AppSettings, ProviderId } from '@shared/generation'
+import type { LlmProviderId, LlmSettings } from '@shared/llm'
 
 // Ajustes de la app en <userData>/settings.json.
 // Los secretos (API keys) se guardan cifrados con el cifrado del sistema operativo
@@ -12,28 +13,55 @@ export interface SecretCipher {
   decrypt(data: Buffer): string
 }
 
+export type SecretName = 'replicateToken' | 'anthropicKey' | 'openaiKey'
+type LlmModels = LlmSettings['models']
+
 interface SettingsFile {
   defaultProvider: ProviderId
-  secrets: { replicateToken?: string }
+  llmProvider: LlmProviderId
+  llmModels: LlmModels
+  ollamaUrl: string
+  secrets: Partial<Record<SecretName, string>>
 }
 
-const DEFAULTS: SettingsFile = { defaultProvider: 'demo', secrets: {} }
+export interface LlmDefaults {
+  models: LlmModels
+  ollamaUrl: string
+}
 
 export class SettingsStore {
   private cache: SettingsFile | null = null
+  private readonly defaults: SettingsFile
 
   constructor(
     private readonly file: string,
-    private readonly cipher: SecretCipher
-  ) {}
+    private readonly cipher: SecretCipher,
+    llmDefaults: LlmDefaults = {
+      models: { anthropic: '', openai: '', ollama: '' },
+      ollamaUrl: 'http://localhost:11434'
+    }
+  ) {
+    this.defaults = {
+      defaultProvider: 'demo',
+      llmProvider: 'anthropic',
+      llmModels: llmDefaults.models,
+      ollamaUrl: llmDefaults.ollamaUrl,
+      secrets: {}
+    }
+  }
 
   private async load(): Promise<SettingsFile> {
     if (this.cache) return this.cache
     try {
       const raw = JSON.parse(await readFile(this.file, 'utf8')) as Partial<SettingsFile>
-      this.cache = { ...DEFAULTS, ...raw, secrets: { ...raw.secrets } }
+      this.cache = {
+        ...this.defaults,
+        ...raw,
+        llmModels: { ...this.defaults.llmModels, ...raw.llmModels },
+        secrets: { ...raw.secrets }
+      }
     } catch {
-      this.cache = { ...DEFAULTS, secrets: {} }
+      this.cache = { ...this.defaults, secrets: {} }
     }
     return this.cache
   }
@@ -46,7 +74,17 @@ export class SettingsStore {
 
   async publicSettings(): Promise<AppSettings> {
     const s = await this.load()
-    return { defaultProvider: s.defaultProvider, hasReplicateToken: !!s.secrets.replicateToken }
+    return {
+      defaultProvider: s.defaultProvider,
+      hasReplicateToken: !!s.secrets.replicateToken,
+      llm: {
+        provider: s.llmProvider,
+        models: s.llmModels,
+        ollamaUrl: s.ollamaUrl,
+        hasAnthropicKey: !!s.secrets.anthropicKey,
+        hasOpenaiKey: !!s.secrets.openaiKey
+      }
+    }
   }
 
   async setDefaultProvider(id: ProviderId): Promise<void> {
@@ -54,8 +92,29 @@ export class SettingsStore {
     await this.save({ ...s, defaultProvider: id })
   }
 
-  async getReplicateToken(): Promise<string | null> {
-    const enc = (await this.load()).secrets.replicateToken
+  async setLlm(patch: {
+    provider?: LlmProviderId
+    model?: { provider: keyof LlmModels; name: string }
+    ollamaUrl?: string
+  }): Promise<void> {
+    const s = await this.load()
+    await this.save({
+      ...s,
+      llmProvider: patch.provider ?? s.llmProvider,
+      llmModels: patch.model
+        ? { ...s.llmModels, [patch.model.provider]: patch.model.name.trim() }
+        : s.llmModels,
+      ollamaUrl: patch.ollamaUrl?.trim() || s.ollamaUrl
+    })
+  }
+
+  async llmConfig(): Promise<{ provider: LlmProviderId; models: LlmModels; ollamaUrl: string }> {
+    const s = await this.load()
+    return { provider: s.llmProvider, models: s.llmModels, ollamaUrl: s.ollamaUrl }
+  }
+
+  async getSecret(name: SecretName): Promise<string | null> {
+    const enc = (await this.load()).secrets[name]
     if (!enc) return null
     try {
       return this.cipher.decrypt(Buffer.from(enc, 'base64'))
@@ -64,15 +123,23 @@ export class SettingsStore {
     }
   }
 
-  async setReplicateToken(token: string | null): Promise<void> {
+  async setSecret(name: SecretName, value: string | null): Promise<void> {
     const s = await this.load()
     const secrets = { ...s.secrets }
-    if (token) {
+    if (value) {
       if (!this.cipher.isAvailable()) throw new Error('El cifrado del sistema no está disponible')
-      secrets.replicateToken = this.cipher.encrypt(token).toString('base64')
+      secrets[name] = this.cipher.encrypt(value).toString('base64')
     } else {
-      delete secrets.replicateToken
+      delete secrets[name]
     }
     await this.save({ ...s, secrets })
+  }
+
+  getReplicateToken(): Promise<string | null> {
+    return this.getSecret('replicateToken')
+  }
+
+  setReplicateToken(token: string | null): Promise<void> {
+    return this.setSecret('replicateToken', token)
   }
 }

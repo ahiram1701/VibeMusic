@@ -64,13 +64,6 @@ export function GeneratePanel({ onOpenSettings }: { onOpenSettings(): void }): R
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden p-3">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xs uppercase tracking-wide text-muted">Generar con IA</h2>
-        <button className="text-xs text-muted hover:text-white" onClick={onOpenSettings}>
-          ⚙ Ajustes
-        </button>
-      </div>
-
       <textarea
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}

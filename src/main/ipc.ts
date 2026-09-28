@@ -1,12 +1,21 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, safeStorage } from 'electron'
 import type { ProviderId } from '@shared/generation'
-import { GENERATION_UPDATE_EVENT, type IpcChannel } from '@shared/ipc-contract'
+import {
+  GENERATION_UPDATE_EVENT,
+  LLM_DELTA_EVENT,
+  type IpcChannel,
+  type KeyCheck
+} from '@shared/ipc-contract'
+import type { LlmRequest } from '@shared/llm'
 import { createProject, type GenerationSpec, type Project } from '@shared/project'
 import { demoProvider } from './audio-providers/demo'
 import { createReplicateProvider, verifyReplicateToken } from './audio-providers/replicate'
 import type { AudioProvider } from './audio-providers/types'
 import { GenerationQueue } from './generation/queue'
+import { DEFAULT_ANTHROPIC_MODEL } from './llm/anthropic'
+import { DEFAULT_OLLAMA_MODEL, DEFAULT_OPENAI_MODEL } from './llm/openai-compatible'
+import { LlmService } from './llm/service'
 import { SettingsStore } from './settings'
 import {
   initProjectDir,
@@ -22,11 +31,32 @@ function handle(channel: IpcChannel, fn: (...args: never[]) => unknown): void {
 }
 
 export function registerIpc(): void {
-  const settings = new SettingsStore(join(app.getPath('userData'), 'settings.json'), {
-    isAvailable: () => safeStorage.isEncryptionAvailable(),
-    encrypt: (plain) => safeStorage.encryptString(plain),
-    decrypt: (data) => safeStorage.decryptString(data)
-  })
+  const settings = new SettingsStore(
+    join(app.getPath('userData'), 'settings.json'),
+    {
+      isAvailable: () => safeStorage.isEncryptionAvailable(),
+      encrypt: (plain) => safeStorage.encryptString(plain),
+      decrypt: (data) => safeStorage.decryptString(data)
+    },
+    {
+      models: {
+        anthropic: DEFAULT_ANTHROPIC_MODEL,
+        openai: DEFAULT_OPENAI_MODEL,
+        ollama: DEFAULT_OLLAMA_MODEL
+      },
+      ollamaUrl: 'http://localhost:11434'
+    }
+  )
+  // VIBE_FAKE_LLM=1 activa un LLM de mentira determinista (solo para pruebas e2e).
+  const fakeLlm = process.env['VIBE_FAKE_LLM'] === '1'
+  const llm = new LlmService(settings, fakeLlm)
+  const check = async (fn: () => Promise<string>): Promise<KeyCheck> => {
+    try {
+      return { ok: true, info: await fn() }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
   const providers = new Map<ProviderId, AudioProvider>([
     ['demo', demoProvider],
     ['replicate', createReplicateProvider(() => settings.getReplicateToken())]
@@ -78,7 +108,10 @@ export function registerIpc(): void {
   handle('generation:cancel', (jobId: string) => queue.cancel(jobId))
   handle('generation:list', () => queue.list())
 
-  handle('settings:get', () => settings.publicSettings())
+  handle('settings:get', async () => {
+    const pub = await settings.publicSettings()
+    return fakeLlm ? { ...pub, llm: { ...pub.llm, provider: 'fake' as const } } : pub
+  })
   handle('settings:setReplicateToken', async (token: string) => {
     try {
       const username = await verifyReplicateToken(token.trim())
@@ -90,6 +123,22 @@ export function registerIpc(): void {
   })
   handle('settings:clearReplicateToken', () => settings.setReplicateToken(null))
   handle('settings:setDefaultProvider', (id: ProviderId) => settings.setDefaultProvider(id))
+
+  handle('settings:setLlm', (patch: Parameters<SettingsStore['setLlm']>[0]) =>
+    settings.setLlm(patch)
+  )
+  handle('settings:setLlmKey', (provider: 'anthropic' | 'openai', key: string) =>
+    check(() => llm.setKey(provider, key))
+  )
+  handle('settings:clearLlmKey', (provider: 'anthropic' | 'openai') =>
+    settings.setSecret(provider === 'anthropic' ? 'anthropicKey' : 'openaiKey', null)
+  )
+  handle('settings:testOllama', () => check(() => llm.testOllama()))
+
+  ipcMain.handle('llm:chat', (event, requestId: string, req: LlmRequest) =>
+    llm.chat(requestId, req, (text) => event.sender.send(LLM_DELTA_EVENT, requestId, text))
+  )
+  handle('llm:cancel', (requestId: string) => llm.cancel(requestId))
 
   handle('export:saveWav', (bytes: Uint8Array, name: string) => saveWavDialog(bytes, name))
   handle('app:version', () => app.getVersion())

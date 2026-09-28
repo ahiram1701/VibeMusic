@@ -1,3 +1,4 @@
+import type { LlmSettings } from './llm'
 import type { GenerationSpec } from './project'
 
 // Tipos compartidos del sistema de generación de audio (main ↔ renderer).
@@ -45,4 +46,5 @@ export interface AppSettings {
   defaultProvider: ProviderId
   /** Solo indica si hay token guardado; el token nunca sale del proceso principal. */
   hasReplicateToken: boolean
+  llm: LlmSettings
 }
