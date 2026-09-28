@@ -13,7 +13,7 @@ const GRIDS: { value: GridResolution; label: string }[] = [
 ]
 
 export function Transport(): React.JSX.Element | null {
-  const { project, commit, importAudio, exportWav } = useProject()
+  const { project, setTempo, importAudio, exportWav } = useProject()
   const { grid, setGrid, zoom } = useUi()
   // El motor avisa cuando cambia play/stop; React se re-renderiza solo entonces.
   const playing = useSyncExternalStore(engine.subscribe, engine.isPlaying)
@@ -73,7 +73,7 @@ export function Transport(): React.JSX.Element | null {
           onBlur={(e) => {
             const bpm = Math.round(Number(e.target.value))
             if (bpm >= 40 && bpm <= 240 && bpm !== project.bpm) {
-              void commit({ ...project, bpm }, `Tempo cambiado a ${bpm} BPM`)
+              void setTempo(bpm)
             } else e.target.value = String(project.bpm)
           }}
           onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}

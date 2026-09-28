@@ -26,6 +26,11 @@ export interface Clip {
   spec: GenerationSpec | null
   provider: string
   parentClipId?: string
+  /**
+   * Si este clip es una versión estirada a otro tempo: el clip original y su BPM.
+   * Los cambios de tempo siempre parten del original para no acumular pérdidas.
+   */
+  original?: { clipId: string; bpm: number }
 }
 
 export interface Region {

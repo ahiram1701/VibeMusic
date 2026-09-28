@@ -1,5 +1,6 @@
 import type { AppSettings, GenerationJob, ProviderId, ProviderInfo } from './generation'
 import type { LlmProviderId, LlmRequest, LlmResponse } from './llm'
+import type { LocalEngineStatus, TorchVariant } from './local-engine'
 import type { GenerationSpec, Project, VersionMeta } from './project'
 
 export type KeyCheck = { ok: true; info: string } | { ok: false; error: string }
@@ -45,6 +46,16 @@ export interface VibeApi {
     ): Promise<{ ok: true; models: string[] } | { ok: false; error: string }>
     onDelta(listener: (requestId: string, text: string) => void): () => void
   }
+  localEngine: {
+    status(): Promise<LocalEngineStatus>
+    /** Instala el motor local (Python + PyTorch + MusicGen). Tarda varios minutos. */
+    install(variant: TorchVariant): Promise<{ ok: true } | { ok: false; error: string }>
+    uninstall(): Promise<void>
+    start(): Promise<{ ok: true } | { ok: false; error: string }>
+    stop(): Promise<void>
+    onStatus(listener: (status: LocalEngineStatus) => void): () => void
+    onLog(listener: (line: string) => void): () => void
+  }
   settings: {
     get(): Promise<AppSettings>
     /** Comprueba el token con Replicate y, si es válido, lo guarda cifrado. */
@@ -53,6 +64,7 @@ export interface VibeApi {
     ): Promise<{ ok: true; username: string } | { ok: false; error: string }>
     clearReplicateToken(): Promise<void>
     setDefaultProvider(id: ProviderId): Promise<void>
+    setLocalModel(id: string): Promise<void>
     setLlm(patch: {
       provider?: LlmProviderId
       model?: { provider: LlmProviderId; name: string }
@@ -89,6 +101,12 @@ export type IpcChannel =
   | 'settings:setReplicateToken'
   | 'settings:clearReplicateToken'
   | 'settings:setDefaultProvider'
+  | 'settings:setLocalModel'
+  | 'localEngine:status'
+  | 'localEngine:install'
+  | 'localEngine:uninstall'
+  | 'localEngine:start'
+  | 'localEngine:stop'
   | 'settings:setLlm'
   | 'settings:setLlmKey'
   | 'settings:clearLlmKey'
@@ -102,3 +120,5 @@ export type IpcChannel =
 /** Eventos main → renderer. */
 export const GENERATION_UPDATE_EVENT = 'generation:update'
 export const LLM_DELTA_EVENT = 'llm:delta'
+export const LOCAL_ENGINE_STATUS_EVENT = 'localEngine:status'
+export const LOCAL_ENGINE_LOG_EVENT = 'localEngine:log'

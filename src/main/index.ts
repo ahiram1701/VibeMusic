@@ -34,7 +34,9 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
-  registerIpc()
+  const services = registerIpc()
+  // El motor local es un proceso aparte: se cierra con la app.
+  app.on('before-quit', () => services.shutdown())
   createWindow()
 
   // CD: las builds publicadas en GitHub Releases se auto-actualizan.

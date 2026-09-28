@@ -1,20 +1,26 @@
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, safeStorage } from 'electron'
 import type { ProviderId } from '@shared/generation'
 import {
   GENERATION_UPDATE_EVENT,
   LLM_DELTA_EVENT,
+  LOCAL_ENGINE_LOG_EVENT,
+  LOCAL_ENGINE_STATUS_EVENT,
   type IpcChannel,
   type KeyCheck
 } from '@shared/ipc-contract'
 import type { LlmRequest } from '@shared/llm'
+import type { TorchVariant } from '@shared/local-engine'
 import { createProject, type GenerationSpec, type Project } from '@shared/project'
 import { demoProvider } from './audio-providers/demo'
+import { createLocalProvider } from './audio-providers/local'
 import { createReplicateProvider, verifyReplicateToken } from './audio-providers/replicate'
 import type { AudioProvider } from './audio-providers/types'
 import { GenerationQueue } from './generation/queue'
 import { LlmService } from './llm/service'
 import { llmSecret, SettingsStore } from './settings'
+import { SidecarManager } from './sidecar/manager'
 import {
   initProjectDir,
   listVersions,
@@ -28,7 +34,7 @@ function handle(channel: IpcChannel, fn: (...args: never[]) => unknown): void {
   ipcMain.handle(channel, (_event, ...args) => fn(...(args as never[])))
 }
 
-export function registerIpc(): void {
+export function registerIpc(): { shutdown(): void } {
   const settings = new SettingsStore(join(app.getPath('userData'), 'settings.json'), {
     isAvailable: () => safeStorage.isEncryptionAvailable(),
     encrypt: (plain) => safeStorage.encryptString(plain),
@@ -44,9 +50,24 @@ export function registerIpc(): void {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
   }
+  // Motor local (sidecar Python). En la app instalada, sidecar/ va en resources/.
+  const sidecar = new SidecarManager({
+    sidecarDir: app.isPackaged
+      ? join(process.resourcesPath, 'sidecar')
+      : join(app.getAppPath(), 'sidecar'),
+    // Ruta corta a propósito (ver SidecarPaths.envDir). Las pruebas pueden cambiarla.
+    envDir: process.env['VIBE_ENGINE_DIR'] ?? join(homedir(), '.vibemusic', 'engine')
+  })
+  const broadcast = (channel: string, ...args: unknown[]): void => {
+    for (const win of BrowserWindow.getAllWindows()) win.webContents.send(channel, ...args)
+  }
+  sidecar.onStatus((status) => broadcast(LOCAL_ENGINE_STATUS_EVENT, status))
+  sidecar.onLog((line) => broadcast(LOCAL_ENGINE_LOG_EVENT, line))
+
   const providers = new Map<ProviderId, AudioProvider>([
     ['demo', demoProvider],
-    ['replicate', createReplicateProvider(() => settings.getReplicateToken())]
+    ['replicate', createReplicateProvider(() => settings.getReplicateToken())],
+    ['local', createLocalProvider(sidecar, () => settings.getLocalModel())]
   ])
   const queue = new GenerationQueue(providers)
   queue.on('update', (job) => {
@@ -111,6 +132,27 @@ export function registerIpc(): void {
   handle('settings:clearReplicateToken', () => settings.setReplicateToken(null))
   handle('settings:setDefaultProvider', (id: ProviderId) => settings.setDefaultProvider(id))
 
+  handle('settings:setLocalModel', (id: string) => settings.setLocalModel(id))
+  handle('localEngine:status', () => sidecar.status())
+  handle('localEngine:install', async (variant: TorchVariant) => {
+    try {
+      await sidecar.install(variant)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+  handle('localEngine:uninstall', () => sidecar.uninstall())
+  handle('localEngine:start', async () => {
+    try {
+      await sidecar.ensureRunning()
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+  handle('localEngine:stop', () => sidecar.stop())
+
   handle('settings:setLlm', (patch: Parameters<SettingsStore['setLlm']>[0]) =>
     settings.setLlm(patch)
   )
@@ -136,4 +178,6 @@ export function registerIpc(): void {
 
   handle('export:saveWav', (bytes: Uint8Array, name: string) => saveWavDialog(bytes, name))
   handle('app:version', () => app.getVersion())
+
+  return { shutdown: () => sidecar.killNow() }
 }

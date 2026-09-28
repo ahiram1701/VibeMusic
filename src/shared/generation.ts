@@ -3,7 +3,7 @@ import type { GenerationSpec } from './project'
 
 // Tipos compartidos del sistema de generación de audio (main ↔ renderer).
 
-export type ProviderId = 'demo' | 'replicate'
+export type ProviderId = 'demo' | 'replicate' | 'local'
 
 export interface ProviderCapabilities {
   maxDurationSec: number
@@ -46,5 +46,7 @@ export interface AppSettings {
   defaultProvider: ProviderId
   /** Solo indica si hay token guardado; el token nunca sale del proceso principal. */
   hasReplicateToken: boolean
+  /** Modelo del motor local (ver LOCAL_MODELS). */
+  localModel: string
   llm: LlmSettings
 }

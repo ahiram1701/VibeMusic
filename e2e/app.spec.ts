@@ -82,8 +82,11 @@ test('play/stop con el botón y la línea de reproducción avanza', async () => 
 
   await playButton().click()
   await expect(playButton()).toHaveText('▶ Play')
+  // La línea se redibuja en el siguiente fotograma: se espera a que se asiente
+  // antes de medir (en máquinas lentas, como el CI, puede tardar un poco).
+  await page.waitForTimeout(150)
   const stoppedAt = await playheadX()
-  await page.waitForTimeout(300)
+  await page.waitForTimeout(400)
   expect(await playheadX()).toBe(stoppedAt) // parada de verdad
 })
 
@@ -223,7 +226,7 @@ test('el productor (chat) mira el proyecto, pone el tempo y genera capas', async
   await expect(regions).toHaveCount(before + 2)
   await expect(page.locator('input[type=number]')).toHaveValue('90')
   // Los cambios del productor quedan en el historial, marcados con 🤖.
-  await expect(page.locator('ol li').filter({ hasText: '🤖 tempo 90 BPM' })).toBeVisible()
+  await expect(page.locator('ol li').filter({ hasText: '🤖 Tempo 90 BPM' })).toBeVisible()
   await expect(page.locator('ol li').filter({ hasText: '🤖 Generado bajo' })).toBeVisible()
 })
 
@@ -256,4 +259,42 @@ test('ajustes: cualquier proveedor de LLM (Groq, personalizado)', async () => {
 
   await page.keyboard.press('Escape')
   await expect(dialog).toBeHidden()
+})
+
+test('motor local sin instalar: lo indica en ajustes y en el panel manual', async () => {
+  await page.getByRole('button', { name: '⚙ Ajustes' }).first().click()
+  const dialog = page.getByRole('dialog', { name: 'Ajustes' })
+  await expect(dialog.getByText('Motor de audio: Local (tu equipo)')).toBeVisible()
+  await expect(dialog.getByText('no instalado')).toBeVisible()
+  await expect(dialog.getByRole('button', { name: 'Instalar motor local' })).toBeVisible()
+  await page.keyboard.press('Escape')
+
+  await page.getByRole('tab', { name: 'Generar manual' }).click()
+  await page.getByLabel('Motor').selectOption('local')
+  await expect(page.getByText(/El motor local no está instalado/)).toBeVisible()
+  await page.getByLabel('Motor').selectOption('demo')
+})
+
+test('cambiar el tempo estira el audio generado y sigue ocupando los mismos compases', async () => {
+  await page.getByRole('tab', { name: 'Generar manual' }).click()
+  await page.getByPlaceholder(/Describe el sonido/).fill('pad para estirar')
+  await page.getByLabel('Tipo').selectOption('chords')
+  await page.getByLabel('Duración').selectOption('2')
+  await page.getByLabel('Motor').selectOption('demo')
+  await page.getByRole('button', { name: /^Generar 2 compases/ }).click()
+  await expect(page.locator('ol li').first()).toContainText('pad para estirar', { timeout: 10_000 })
+
+  const pad = page.locator('.cursor-grab').last()
+  const before = (await pad.boundingBox())!.width
+  const bpm = page.locator('input[type=number]')
+  const current = Number(await bpm.inputValue())
+  await bpm.fill(String(current - 20))
+  await bpm.press('Enter')
+  await expect(page.locator('ol li').first()).toContainText(`Tempo ${current - 20} BPM ·`)
+  await expect(page.locator('ol li').first()).toContainText('clip(s) ajustados')
+  expect(Math.abs((await pad.boundingBox())!.width - before)).toBeLessThan(2)
+
+  // Deshacer recupera el tempo y el clip original.
+  await page.keyboard.press('Control+z')
+  await expect(bpm).toHaveValue(String(current))
 })

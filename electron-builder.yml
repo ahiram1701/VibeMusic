@@ -9,7 +9,14 @@ files:
 extraResources:
   - from: sidecar
     to: sidecar
-    filter: ['**/*', '!**/__pycache__', '!.venv', '!tests']
+    filter:
+      - '**/*'
+      - '!.venv/**'
+      - '!tests/**'
+      - '!**/__pycache__/**'
+      - '!*.egg-info/**'
+      - '!.pytest_cache/**'
+      - '!.ruff_cache/**'
 win:
   target: nsis
   artifactName: ${productName}-Setup-${version}.${ext}

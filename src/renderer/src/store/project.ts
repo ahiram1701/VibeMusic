@@ -15,6 +15,8 @@ import {
   takeUndo,
   type UndoState
 } from '@shared/history'
+import { planRetempo } from '@shared/retempo'
+import { timeStretch } from '@shared/stretch'
 import { encodeWav } from '@shared/wav'
 import { engine, renderOffline } from '../audio/engine'
 
@@ -37,6 +39,15 @@ interface ProjectState {
   redo(): Promise<void>
   /** Vuelve al estado que había justo después de la versión indicada. */
   checkout(versionId: number): Promise<void>
+  /**
+   * Cambia tempo (y tonalidad) estirando el audio generado para que siga ocupando
+   * los mismos compases. Devuelve cuántos clips se ajustaron y cuántos no se pudieron
+   * (audio importado, cuyo tempo no se conoce).
+   */
+  setTempo(
+    bpm: number,
+    opts?: { key?: string; messagePrefix?: string }
+  ): Promise<{ adjusted: number; skipped: number }>
   loadClips(): Promise<void>
   importAudio(): Promise<void>
   exportWav(): Promise<string | null>
@@ -114,6 +125,36 @@ export const useProject = create<ProjectState>((set, get) => ({
     // y se puede deshacer con Ctrl+Z como cualquier otro cambio.
     await get().commit(snapshot, `Vuelta a v${versionId}: ${label}`)
     await get().loadClips()
+  },
+
+  async setTempo(bpm, opts = {}) {
+    const { dir, project } = get()
+    if (!dir || !project) return { adjusted: 0, skipped: 0 }
+    const plan = planRetempo(project, bpm)
+    const next = { ...plan.project, key: opts.key ?? project.key }
+
+    for (const job of plan.jobs) {
+      const source = project.clips[job.sourceClipId]
+      const buffer = engine.buffers.get(source.id) ?? (await engine.loadClip(dir, source))
+      const input = Array.from({ length: buffer.numberOfChannels }, (_, i) =>
+        buffer.getChannelData(i)
+      )
+      const stretched = timeStretch(input, buffer.sampleRate, job.ratio)
+      const file = next.clips[job.newClipId].file
+      await window.vibe.clips.write(dir, file, encodeWav(stretched, buffer.sampleRate))
+      const out = engine.ctx.createBuffer(stretched.length, stretched[0].length, buffer.sampleRate)
+      stretched.forEach((ch, i) => out.copyToChannel(ch as Float32Array<ArrayBuffer>, i))
+      engine.buffers.set(job.newClipId, out)
+      // Duración real tras el estirado (puede diferir en alguna muestra).
+      next.clips[job.newClipId] = { ...next.clips[job.newClipId], durationSec: out.duration }
+    }
+
+    const parts = [`Tempo ${bpm} BPM`]
+    if (opts.key && opts.key !== project.key) parts.push(opts.key)
+    if (plan.jobs.length > 0) parts.push(`${plan.jobs.length} clip(s) ajustados`)
+    await get().commit(next, `${opts.messagePrefix ?? ''}${parts.join(' · ')}`)
+    set((s) => ({ clipsLoaded: s.clipsLoaded + 1 }))
+    return { adjusted: plan.jobs.length, skipped: plan.skipped.length }
   },
 
   async loadClips() {
