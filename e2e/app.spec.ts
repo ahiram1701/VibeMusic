@@ -82,8 +82,11 @@ test('play/stop con el botón y la línea de reproducción avanza', async () => 
 
   await playButton().click()
   await expect(playButton()).toHaveText('▶ Play')
+  // La línea se redibuja en el siguiente fotograma: se espera a que se asiente
+  // antes de medir (en máquinas lentas, como el CI, puede tardar un poco).
+  await page.waitForTimeout(150)
   const stoppedAt = await playheadX()
-  await page.waitForTimeout(300)
+  await page.waitForTimeout(400)
   expect(await playheadX()).toBe(stoppedAt) // parada de verdad
 })
 
