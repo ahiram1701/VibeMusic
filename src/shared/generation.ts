@@ -39,6 +39,11 @@ export interface GenerationJob {
   error?: string
   /** Ruta relativa (en el proyecto) del audio en bruto devuelto por el proveedor. */
   rawFile?: string
+  /**
+   * Segundos a descartar al principio del audio en bruto (algunos modelos devuelven
+   * el fragmento de partida seguido de la continuación).
+   */
+  trimStartSec?: number
   createdAt: number
 }
 

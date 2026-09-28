@@ -7,6 +7,15 @@ export interface GenerateContext {
   onProgress(progress: number | null, stage: string): void
   /** Ruta absoluta sin extensión donde escribir el audio. El proveedor añade la extensión. */
   outBase: string
+  /** Ruta absoluta del WAV de partida cuando se continúa un clip (spec.conditioning). */
+  conditioningPath?: string
+}
+
+export interface GenerateResult {
+  /** Ruta absoluta del archivo de audio escrito. */
+  path: string
+  /** Segundos del principio que no son audio nuevo (el fragmento de partida). */
+  trimStartSec?: number
 }
 
 /**
@@ -19,8 +28,8 @@ export interface AudioProvider {
   description: string
   capabilities: ProviderCapabilities
   status(): Promise<{ ready: boolean; reason?: string }>
-  /** Genera el audio y devuelve la ruta absoluta del archivo escrito. */
-  generate(spec: GenerationSpec, ctx: GenerateContext): Promise<string>
+  /** Genera el audio y lo escribe en disco. */
+  generate(spec: GenerationSpec, ctx: GenerateContext): Promise<GenerateResult>
 }
 
 export class CancelledError extends Error {

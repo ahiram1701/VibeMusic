@@ -298,3 +298,53 @@ test('cambiar el tempo estira el audio generado y sigue ocupando los mismos comp
   await page.keyboard.press('Control+z')
   await expect(bpm).toHaveValue(String(current))
 })
+
+test('menú de región: variación, continuar y duplicar', async () => {
+  await page.getByRole('tab', { name: 'Generar manual' }).click()
+  await page.getByPlaceholder(/Describe el sonido/).fill('riff para variar')
+  await page.getByLabel('Tipo').selectOption('melody')
+  await page.getByLabel('Duración').selectOption('2')
+  await page.getByLabel('Motor').selectOption('demo')
+  await page.getByRole('button', { name: /^Generar 2 compases/ }).click()
+  const history = page.locator('ol li').first()
+  await expect(history).toContainText('riff para variar', { timeout: 10_000 })
+
+  const regions = page.locator('.cursor-grab')
+  const count = await regions.count()
+  const riff = regions.last()
+  // Posición dentro de la pista (no en pantalla: el timeline puede desplazarse).
+  const layout = (el: typeof riff) =>
+    el.evaluate((n) => ({
+      left: parseFloat((n as HTMLElement).style.left),
+      width: parseFloat((n as HTMLElement).style.width),
+      lane: Array.from(n.parentElement!.parentElement!.parentElement!.children).indexOf(
+        n.parentElement!.parentElement!
+      )
+    }))
+  const box = await layout(riff)
+
+  // Variación: sustituye la región en el mismo sitio.
+  await riff.click({ button: 'right' })
+  const menu = page.getByRole('menu', { name: 'Acciones de la región' })
+  await menu.getByLabel('Indicaciones para la IA').fill('more staccato')
+  await menu.getByRole('menuitem', { name: /Variación/ }).click()
+  await expect(history).toContainText('Variación de Melodía: "more staccato"', { timeout: 10_000 })
+  await expect(regions).toHaveCount(count)
+
+  // Continuar: región nueva justo después, en la misma pista.
+  await regions.last().click({ button: 'right' })
+  await menu.getByRole('menuitem', { name: '+2 compases' }).click()
+  await expect(page.getByTestId('pending-region')).toBeVisible()
+  await expect(history).toContainText('Continuación de Melodía (+2 compases)', { timeout: 10_000 })
+  await expect(regions).toHaveCount(count + 1)
+  const cont = await layout(regions.last())
+  expect(cont.left).toBeCloseTo(box.left + box.width, 0) // justo después
+  expect(cont.lane).toBe(box.lane) // en la misma pista
+
+  // Duplicar (sin IA) y deshacer.
+  await regions.last().click({ button: 'right' })
+  await menu.getByRole('menuitem', { name: /Duplicar/ }).click()
+  await expect(regions).toHaveCount(count + 2)
+  await page.keyboard.press('Control+z')
+  await expect(regions).toHaveCount(count + 1)
+})

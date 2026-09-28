@@ -1,4 +1,4 @@
-import { writeFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import type { LocalEngineStatus } from '@shared/local-engine'
 import { buildMusicPrompt } from '@shared/prompt'
 import { CancelledError, sleep, throwIfAborted, type AudioProvider } from './types'
@@ -47,7 +47,7 @@ export function createLocalProvider(
     capabilities: {
       maxDurationSec: MAX_SEC,
       supportsSeed: true,
-      supportsContinue: false,
+      supportsContinue: true,
       supportsMelody: false
     },
 
@@ -75,7 +75,12 @@ export function createLocalProvider(
             prompt: buildMusicPrompt(spec),
             seconds: Math.min(MAX_SEC, Math.ceil(spec.durationSec * 10) / 10),
             seed: spec.seed === undefined ? null : spec.seed % 2 ** 31,
-            model: await getModel()
+            model: await getModel(),
+            // Continuar: el servidor recibe el fragmento de partida y devuelve solo lo nuevo.
+            audio_b64:
+              spec.conditioning && ctx.conditioningPath
+                ? (await readFile(ctx.conditioningPath)).toString('base64')
+                : null
           })
         })
       ).json()) as RemoteJob
@@ -101,7 +106,7 @@ export function createLocalProvider(
         const audio = await call(`/jobs/${job.id}/audio`)
         const path = `${ctx.outBase}.wav`
         await writeFile(path, new Uint8Array(await audio.arrayBuffer()))
-        return path
+        return { path }
       } finally {
         ctx.signal.removeEventListener('abort', cancelRemote)
       }

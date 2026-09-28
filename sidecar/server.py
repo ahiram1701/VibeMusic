@@ -11,6 +11,7 @@ Las generaciones son trabajos en segundo plano, uno detrás de otro:
 
 from __future__ import annotations
 
+import base64
 import io
 import os
 import threading
@@ -26,6 +27,17 @@ from pydantic import BaseModel, Field
 from engine import DEFAULT_MODEL, MAX_SECONDS, MODELS, Audio, Cancelled, Engine
 
 VERSION = "0.2.0"
+
+
+def decode_wav(data: bytes) -> Audio:
+    """WAV PCM 16 bits → Audio (float32, canales × muestras)."""
+    with wave.open(io.BytesIO(data)) as w:
+        if w.getsampwidth() != 2:
+            raise ValueError("El audio de partida debe ser WAV PCM de 16 bits")
+        channels = w.getnchannels()
+        pcm = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")
+        samples = pcm.reshape(-1, channels).T.astype(np.float32) / 32768
+        return Audio(samples=samples, sample_rate=w.getframerate())
 
 
 def encode_wav(audio: Audio) -> bytes:
@@ -47,6 +59,7 @@ class Job:
     seconds: float
     seed: int | None
     model: str
+    prompt_audio: Audio | None = None
     status: str = "queued"  # queued | running | done | error | cancelled
     progress: float | None = None
     stage: str = "En cola"
@@ -92,8 +105,9 @@ class JobRunner:
 
             try:
                 audio = self.engine.generate(
-                    job.prompt, job.seconds, job.seed, job.model, on_progress
+                    job.prompt, job.seconds, job.seed, job.model, on_progress, job.prompt_audio
                 )
+                job.prompt_audio = None  # ya no hace falta
                 job.wav = encode_wav(audio)
                 job.status, job.progress, job.stage = "done", 1.0, "Listo"
             except Cancelled:
@@ -107,6 +121,8 @@ class JobRequest(BaseModel):
     seconds: float = Field(gt=0, le=MAX_SECONDS)
     seed: int | None = None
     model: str = DEFAULT_MODEL
+    # WAV (PCM 16 bits) en base64 para continuar un audio; como máximo ~10 s.
+    audio_b64: str | None = Field(default=None, max_length=4_000_000)
 
 
 def create_app(engine: Engine) -> FastAPI:
@@ -127,12 +143,24 @@ def create_app(engine: Engine) -> FastAPI:
     def create_job(req: JobRequest) -> dict[str, object]:
         if req.model not in MODELS:
             raise HTTPException(400, f"Modelo no soportado: {req.model}")
+        prompt_audio = None
+        if req.audio_b64:
+            try:
+                prompt_audio = decode_wav(base64.b64decode(req.audio_b64))
+            except Exception as err:
+                raise HTTPException(400, f"Audio de partida no válido: {err}") from err
+            lead = prompt_audio.samples.shape[1] / prompt_audio.sample_rate
+            if lead + req.seconds > MAX_SECONDS:
+                raise HTTPException(
+                    400, f"Audio de partida ({lead:.1f} s) + nuevo supera {MAX_SECONDS} s"
+                )
         job = Job(
             id=uuid.uuid4().hex[:12],
             prompt=req.prompt,
             seconds=req.seconds,
             seed=req.seed,
             model=req.model,
+            prompt_audio=prompt_audio,
         )
         runner.submit(job)
         return job.public()

@@ -65,7 +65,7 @@ describe('proveedor local', () => {
     const h = host()
     const progress: (number | null)[] = []
     const provider = createLocalProvider(h, async () => 'facebook/musicgen-small', fetchImpl, 1)
-    const path = await provider.generate(spec, {
+    const { path } = await provider.generate(spec, {
       signal: new AbortController().signal,
       outBase: join(dir, 'out'),
       onProgress: (p) => progress.push(p)

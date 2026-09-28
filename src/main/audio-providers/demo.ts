@@ -104,10 +104,11 @@ export const demoProvider: AudioProvider = {
   id: 'demo',
   label: 'Demo (sin IA)',
   description: 'Sintetizador local sencillo. Gratis y sin conexión, útil para probar.',
+  // "Continuar" en Demo solo sigue el mismo patrón: no escucha el audio de partida.
   capabilities: {
     maxDurationSec: 120,
     supportsSeed: true,
-    supportsContinue: false,
+    supportsContinue: true,
     supportsMelody: false
   },
 
@@ -126,6 +127,6 @@ export const demoProvider: AudioProvider = {
     const path = `${ctx.outBase}.wav`
     await writeFile(path, encodeWav([mono, mono], SR))
     ctx.onProgress(1, 'Listo')
-    return path
+    return { path }
   }
 }
