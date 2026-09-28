@@ -1,11 +1,13 @@
+import base64
 import io
 import time
 import wave
 
+import numpy as np
 from fastapi.testclient import TestClient
 
-from engine import FakeEngine
-from server import create_app
+from engine import Audio, FakeEngine
+from server import create_app, encode_wav
 
 
 def wait_for(client: TestClient, job_id: str, status: str, timeout: float = 5.0) -> dict:
@@ -58,3 +60,24 @@ def test_validates_input() -> None:
         == 400
     )
     assert client.get("/jobs/nope").status_code == 404
+
+
+def test_continuation_receives_prompt_audio() -> None:
+    engine = FakeEngine()
+    client = TestClient(create_app(engine))
+    prompt = Audio(samples=np.zeros((2, 16000), dtype=np.float32), sample_rate=16000)
+    b64 = base64.b64encode(encode_wav(prompt)).decode()
+    job = client.post("/jobs", json={"prompt": "x", "seconds": 2, "audio_b64": b64}).json()
+    wait_for(client, job["id"], "done")
+    assert engine.last_prompt_audio.sample_rate == 16000
+    assert engine.last_prompt_audio.samples.shape == (2, 16000)
+
+
+def test_continuation_limits() -> None:
+    client = TestClient(create_app(FakeEngine()))
+    long = Audio(samples=np.zeros((1, 32000 * 25), dtype=np.float32), sample_rate=32000)
+    b64 = base64.b64encode(encode_wav(long)).decode()
+    res = client.post("/jobs", json={"prompt": "x", "seconds": 10, "audio_b64": b64})
+    assert res.status_code == 400
+    bad = client.post("/jobs", json={"prompt": "x", "seconds": 2, "audio_b64": "no-es-wav"})
+    assert bad.status_code == 400

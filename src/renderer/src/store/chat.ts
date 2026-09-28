@@ -5,6 +5,7 @@ import { newId } from '@shared/project'
 import { PRODUCER_SYSTEM_PROMPT } from '@shared/producer-prompt'
 import { AGENT_PREFIX, createProducerTools, type ProducerHost } from '@shared/producer-tools'
 import { engine } from '../audio/engine'
+import { continueRegion, varyRegion } from './clip-actions'
 import { useGeneration, waitForJob } from './generation'
 import { useProject } from './project'
 
@@ -66,8 +67,24 @@ const host: ProducerHost = {
       controller?.signal.removeEventListener('abort', onAbort)
     }
   },
+  vary: (regionId, instructions) =>
+    agentJob(varyRegion(regionId, { instructions, messagePrefix: AGENT_PREFIX })),
+  extend: (regionId, bars, instructions) =>
+    agentJob(continueRegion(regionId, bars, { instructions, messagePrefix: AGENT_PREFIX })),
   playheadSec: () => engine.positionSec,
   play: (sec) => void engine.play(host.getProject(), sec)
+}
+
+/** Espera a que termine una generación lanzada por el agente; "Parar" la cancela. */
+async function agentJob(started: Promise<string>): Promise<{ trackId: string; regionId: string }> {
+  const jobId = await started
+  const onAbort = (): void => void useGeneration.getState().cancel(jobId)
+  controller?.signal.addEventListener('abort', onAbort, { once: true })
+  try {
+    return await waitForJob(jobId)
+  } finally {
+    controller?.signal.removeEventListener('abort', onAbort)
+  }
 }
 
 const tools = createProducerTools(host)

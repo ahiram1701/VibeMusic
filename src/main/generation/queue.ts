@@ -42,7 +42,16 @@ export class GenerationQueue extends EventEmitter<{ update: [GenerationJob] }> {
   enqueue(dir: string, providerId: ProviderId, spec: GenerationSpec): GenerationJob {
     const provider = this.providers.get(providerId)
     if (!provider) throw new Error(`Proveedor desconocido: ${providerId}`)
-    if (spec.durationSec > provider.capabilities.maxDurationSec) {
+    if (spec.mode === 'continue' && !provider.capabilities.supportsContinue) {
+      throw new Error(`${provider.label} no sabe continuar clips`)
+    }
+    const lead = spec.conditioning?.seconds ?? 0
+    if (lead + spec.durationSec > provider.capabilities.maxDurationSec) {
+      if (lead > 0) {
+        throw new Error(
+          `${provider.label} admite como máximo ${provider.capabilities.maxDurationSec} s entre el fragmento de partida (${lead.toFixed(1)} s) y el audio nuevo`
+        )
+      }
       throw new Error(
         `${provider.label} admite como máximo ${provider.capabilities.maxDurationSec} s por generación`
       )
@@ -97,15 +106,18 @@ export class GenerationQueue extends EventEmitter<{ update: [GenerationJob] }> {
     try {
       const rawDir = join(job.dir, 'clips', 'raw')
       await mkdir(rawDir, { recursive: true })
-      const path = await provider.generate(job.spec, {
+      const { path, trimStartSec } = await provider.generate(job.spec, {
         signal: controller.signal,
         outBase: join(rawDir, job.id),
+        conditioningPath: job.spec.conditioning
+          ? join(job.dir, job.spec.conditioning.file)
+          : undefined,
         onProgress: (progress, stage) => {
           if (job.status === 'running') this.patch(job, { progress, stage })
         }
       })
       const rawFile = relative(job.dir, path).split('\\').join('/')
-      this.patch(job, { status: 'done', progress: 1, stage: 'Listo', rawFile })
+      this.patch(job, { status: 'done', progress: 1, stage: 'Listo', rawFile, trimStartSec })
     } catch (err) {
       if (err instanceof CancelledError || controller.signal.aborted) {
         this.patch(job, { status: 'cancelled', stage: 'Cancelado' })

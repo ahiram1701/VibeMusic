@@ -94,8 +94,11 @@ export const useProject = create<ProjectState>((set, get) => ({
 
   async commit(next, message) {
     const { saved, history } = get()
-    if (!saved || !(await persist(next, message))) return
+    if (!saved || !stage(next)) return
+    // Se registra en "deshacer" YA, antes de esperar al disco: si el usuario pulsa
+    // Ctrl+Z durante el guardado, debe deshacer este cambio y no el anterior.
     set({ history: recordChange(history, saved, message) })
+    await write(next, message)
   },
 
   async undo() {
@@ -103,7 +106,9 @@ export const useProject = create<ProjectState>((set, get) => ({
     const step = saved && takeUndo(history, saved)
     if (!step) return
     set({ history: step.state })
-    await persist(step.entry.project, `Deshacer: ${baseMessage(step.entry.message)}`)
+    if (stage(step.entry.project)) {
+      await write(step.entry.project, `Deshacer: ${baseMessage(step.entry.message)}`)
+    }
     await get().loadClips()
   },
 
@@ -112,7 +117,9 @@ export const useProject = create<ProjectState>((set, get) => ({
     const step = saved && takeRedo(history, saved)
     if (!step) return
     set({ history: step.state })
-    await persist(step.entry.project, `Rehacer: ${baseMessage(step.entry.message)}`)
+    if (stage(step.entry.project)) {
+      await write(step.entry.project, `Rehacer: ${baseMessage(step.entry.message)}`)
+    }
     await get().loadClips()
   },
 
@@ -228,16 +235,25 @@ export const useProject = create<ProjectState>((set, get) => ({
   }
 }))
 
-/**
- * Guarda `next` en disco como versión nueva. Devuelve false si no había cambios
- * respecto a lo último guardado (así no se crean versiones vacías).
- */
-async function persist(next: Project, message: string): Promise<boolean> {
+// Guardar un cambio tiene dos mitades:
+//   stage(): síncrono. Aplica el cambio en memoria (pantalla, audio, "deshacer").
+//   write(): asíncrono. Lo escribe en disco como versión nueva.
+// Separarlas garantiza que el estado en memoria nunca va por detrás de lo que el
+// usuario ve, aunque el disco tarde.
+
+/** Aplica `next` en memoria. Devuelve false si no cambia nada (sin versiones vacías). */
+function stage(next: Project): boolean {
   const { dir, saved } = useProject.getState()
   useProject.setState({ project: next })
   if (!dir || JSON.stringify(next) === JSON.stringify(saved)) return false
   useProject.setState({ saved: next })
+  return true
+}
+
+/** Escribe en disco la versión (el proceso principal las guarda en orden de llegada). */
+async function write(next: Project, message: string): Promise<void> {
+  const { dir } = useProject.getState()
+  if (!dir) return
   const meta = await window.vibe.project.save(dir, next, message)
   useProject.setState((s) => ({ versions: [...s.versions, meta] }))
-  return true
 }

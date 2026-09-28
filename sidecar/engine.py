@@ -45,8 +45,24 @@ class Engine(Protocol):
     def device_info(self) -> dict[str, object]: ...
 
     def generate(
-        self, prompt: str, seconds: float, seed: int | None, model: str, on_progress: ProgressFn
+        self,
+        prompt: str,
+        seconds: float,
+        seed: int | None,
+        model: str,
+        on_progress: ProgressFn,
+        prompt_audio: Audio | None = None,
     ) -> Audio: ...
+
+
+def to_mono_at(audio: Audio, sample_rate: int) -> np.ndarray:
+    """Mezcla a mono y remuestrea (interpolación lineal; suficiente para condicionar)."""
+    mono = audio.samples.mean(axis=0) if audio.samples.ndim == 2 else audio.samples
+    if audio.sample_rate == sample_rate:
+        return mono.astype(np.float32)
+    n = round(len(mono) * sample_rate / audio.sample_rate)
+    x = np.linspace(0, len(mono) - 1, n)
+    return np.interp(x, np.arange(len(mono)), mono).astype(np.float32)
 
 
 def detect_device() -> dict[str, object]:
@@ -99,8 +115,15 @@ class MusicGenEngine:
         self._model_id = model_id
 
     def generate(
-        self, prompt: str, seconds: float, seed: int | None, model: str, on_progress: ProgressFn
+        self,
+        prompt: str,
+        seconds: float,
+        seed: int | None,
+        model: str,
+        on_progress: ProgressFn,
+        prompt_audio: Audio | None = None,
     ) -> Audio:
+        """Genera `seconds` de audio nuevo. Con `prompt_audio`, continúa ese audio."""
         import torch
         from transformers import LogitsProcessor, LogitsProcessorList
 
@@ -126,11 +149,19 @@ class MusicGenEngine:
                     on_progress(min(1.0, self.step / steps), "Generando…")
                 return scores
 
+        sr = int(self._model.config.audio_encoder.sampling_rate)
         if seed is not None:
             torch.manual_seed(seed)
-        inputs = self._processor(text=[prompt], padding=True, return_tensors="pt").to(
-            self._model.device
-        )
+        lead = 0
+        if prompt_audio is not None:
+            wave_in = to_mono_at(prompt_audio, sr)
+            lead = len(wave_in)
+            inputs = self._processor(
+                audio=wave_in, sampling_rate=sr, text=[prompt], padding=True, return_tensors="pt"
+            )
+        else:
+            inputs = self._processor(text=[prompt], padding=True, return_tensors="pt")
+        inputs = inputs.to(self._model.device)
         on_progress(0.0, "Generando…")
         with torch.inference_mode():
             out = self._model.generate(
@@ -141,7 +172,8 @@ class MusicGenEngine:
                 logits_processor=LogitsProcessorList([Progress()]),
             )
         samples = out[0].float().cpu().numpy()  # (canales, muestras)
-        sr = int(self._model.config.audio_encoder.sampling_rate)
+        # MusicGen devuelve el audio de partida seguido de la continuación: solo lo nuevo.
+        samples = samples[:, lead:]
         return Audio(samples=np.clip(samples, -1, 1).astype(np.float32), sample_rate=sr)
 
 
@@ -155,9 +187,17 @@ class FakeEngine:
         return {"device": "cpu", "gpu": None, "loaded_model": "fake", "threads": 1}
 
     def generate(
-        self, prompt: str, seconds: float, seed: int | None, model: str, on_progress: ProgressFn
+        self,
+        prompt: str,
+        seconds: float,
+        seed: int | None,
+        model: str,
+        on_progress: ProgressFn,
+        prompt_audio: Audio | None = None,
     ) -> Audio:
         import time
+
+        self.last_prompt_audio = prompt_audio
 
         for i in range(10):
             on_progress(i / 10, "Generando…")

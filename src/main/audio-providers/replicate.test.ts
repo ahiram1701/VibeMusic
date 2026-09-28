@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -64,7 +64,7 @@ describe('Replicate provider', () => {
       () => new Response(new Uint8Array([82, 73, 70, 70]))
     ])
     const provider = createReplicateProvider(async () => 'tok', fetch, 1)
-    const path = await provider.generate(spec, ctx())
+    const { path } = await provider.generate(spec, ctx())
 
     expect(calls[0]).toMatchObject({
       url: 'https://api.replicate.com/v1/predictions',
@@ -110,5 +110,30 @@ describe('Replicate provider', () => {
   it('lee el progreso de los logs de MusicGen', () => {
     expect(progressFromLogs(' 10%|#  \n 73%|#######')).toBeCloseTo(0.73)
     expect(progressFromLogs('cargando modelo')).toBeNull()
+  })
+
+  it('continuar: envía el audio de partida y pide recortarlo del resultado', async () => {
+    const cond = join(dir, 'partida.wav')
+    await writeFile(cond, new Uint8Array([82, 73, 70, 70, 1, 2, 3]))
+    const { fetch, calls } = fakeFetch([
+      () =>
+        json({ id: 'p2', status: 'succeeded', output: 'https://x/c.wav', error: null, logs: '' }),
+      () => new Response(new Uint8Array([82, 73, 70, 70]))
+    ])
+    const provider = createReplicateProvider(async () => 'tok', fetch, 1)
+    const result = await provider.generate(
+      {
+        ...spec,
+        mode: 'continue',
+        durationSec: 8,
+        conditioning: { clipId: 'c', file: 'x', seconds: 6.5 }
+      },
+      { ...ctx(), conditioningPath: cond }
+    )
+    const input = (calls[0].body as { input: Record<string, unknown> }).input
+    expect(input.continuation).toBe(true)
+    expect(input.duration).toBe(15) // 6.5 s de partida + 8 s nuevos, redondeado
+    expect(String(input.input_audio)).toMatch(/^data:audio\/wav;base64,UklGRg/)
+    expect(result.trimStartSec).toBe(6.5)
   })
 })

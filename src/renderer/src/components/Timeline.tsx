@@ -12,6 +12,7 @@ import { formatPosition, projectEndSec, snapBeat } from '@shared/timeline'
 import { engine } from '../audio/engine'
 import { ROLE_LABELS } from '../labels'
 import { useProject } from '../store/project'
+import { useGeneration } from '../store/generation'
 import { useUi } from '../store/ui'
 import { Waveform } from './Waveform'
 
@@ -116,6 +117,7 @@ export function Timeline(): React.JSX.Element | null {
                 selected={region.id === selectedRegionId}
               />
             ))}
+            <PendingRegions track={track} color={ROLE_COLORS[track.role]} />
           </div>
         </div>
       ))}
@@ -156,9 +158,14 @@ function RegionView({
         outline: selected ? '2px solid white' : `1px solid ${color}`
       }}
       title={`${formatPosition(beatsToSeconds(beat, project.bpm), project)}`}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        useUi.getState().openRegionMenu(region.id, e.clientX, e.clientY)
+      }}
       onPointerDown={(e) => {
         e.stopPropagation()
         select(region.id)
+        if (e.button !== 0) return // clic derecho: menú, no arrastre
         e.currentTarget.setPointerCapture(e.pointerId)
         drag.current = { x: e.clientX, beat: region.startBeat }
       }}
@@ -213,5 +220,58 @@ function Playhead({ offset }: { offset: number }): React.JSX.Element {
 
   return (
     <div ref={ref} className="pointer-events-none absolute top-0 bottom-0 z-30 w-px bg-white" />
+  )
+}
+
+/**
+ * Generaciones en curso que caerán en esta pista (variaciones, continuaciones o
+ * generaciones en una pista existente): un "fantasma" con el progreso en el sitio
+ * donde aparecerá el audio.
+ */
+function PendingRegions({ track, color }: { track: Track; color: string }): React.JSX.Element {
+  const jobs = useGeneration((s) => s.jobs)
+  const project = useProject((s) => s.project)
+  const pxPerBeat = useUi((s) => s.pxPerBeat)
+  if (!project) return <></>
+  const perBar = project.timeSignature[0]
+  const pending = Object.values(jobs).filter((v) => {
+    const active =
+      v.job.status === 'queued' ||
+      v.job.status === 'running' ||
+      (v.job.status === 'done' && !v.added && !v.localError)
+    const here =
+      v.placement.trackId === track.id ||
+      (!!v.placement.replaceRegionId &&
+        track.regions.some((r) => r.id === v.placement.replaceRegionId))
+    return active && here
+  })
+  return (
+    <>
+      {pending.map((v) => {
+        const pct = v.job.progress === null ? null : Math.round(v.job.progress * 100)
+        return (
+          <div
+            key={v.job.id}
+            data-testid="pending-region"
+            className="pointer-events-none absolute top-1 bottom-1 flex flex-col justify-end overflow-hidden rounded-md border border-dashed px-1.5 pb-1 text-[10px] text-white"
+            style={{
+              left: v.placement.atBeat * pxPerBeat,
+              width: v.placement.bars * perBar * pxPerBeat,
+              borderColor: color,
+              background: `repeating-linear-gradient(45deg, ${color}22 0 6px, transparent 6px 12px)`
+            }}
+            title={v.job.stage}
+          >
+            <span className="truncate">{v.job.stage}</span>
+            <div className="mt-0.5 h-1 overflow-hidden rounded bg-black/40">
+              <div
+                className={`h-full ${pct === null ? 'w-1/3 animate-pulse' : ''}`}
+                style={{ background: color, ...(pct !== null && { width: `${pct}%` }) }}
+              />
+            </div>
+          </div>
+        )
+      })}
+    </>
   )
 }

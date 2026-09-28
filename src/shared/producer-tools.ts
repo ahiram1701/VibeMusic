@@ -40,6 +40,14 @@ export interface ProducerHost {
     trackId: string | null
     trackName?: string
   }): Promise<{ trackId: string; regionId: string }>
+  /** Otra toma de una región (misma descripción, otra semilla); la sustituye. */
+  vary(regionId: string, instructions?: string): Promise<{ trackId: string; regionId: string }>
+  /** Continúa una región `bars` compases a partir de su final, justo después. */
+  extend(
+    regionId: string,
+    bars: number,
+    instructions?: string
+  ): Promise<{ trackId: string; regionId: string }>
   playheadSec(): number
   play(fromSec: number): void
 }
@@ -277,6 +285,62 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           region_id: result.regionId,
           start_bar: startBar,
           bars
+        }
+      }
+    },
+    {
+      def: {
+        name: 'create_variation',
+        description:
+          'Replaces a region with a new take of the same idea: same prompt, new random seed, optionally with extra instructions (e.g. "more energetic", "no cymbals"). Use it when the user wants "another version" of a part. Waits until the audio is ready.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            region_id: { type: 'string' },
+            instructions: { type: 'string', description: 'Optional extra direction, in English' }
+          },
+          required: ['region_id'],
+          additionalProperties: false
+        }
+      },
+      run: async (input) => {
+        const p = host.getProject()
+        const { track, region } = findRegion(p, str(input, 'region_id'))
+        const result = await host.vary(region.id, str(input, 'instructions', true))
+        return { ok: true, track_id: track.id, new_region_id: result.regionId }
+      }
+    },
+    {
+      def: {
+        name: 'extend_region',
+        description:
+          'Continues a region with NEW music that follows on from its ending (the audio engine listens to the last seconds and keeps playing), placed right after it on the same track. Unlike repeat_region, the continuation evolves instead of looping. Waits until the audio is ready.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            region_id: { type: 'string' },
+            bars: { type: 'integer', minimum: 1, description: 'How many new bars to add' },
+            instructions: {
+              type: 'string',
+              description: 'Optional direction for the continuation, in English'
+            }
+          },
+          required: ['region_id', 'bars'],
+          additionalProperties: false
+        }
+      },
+      run: async (input) => {
+        const p = host.getProject()
+        const { track, region } = findRegion(p, str(input, 'region_id'))
+        const bars = Math.round(num(input, 'bars', 1, 64))
+        const result = await host.extend(region.id, bars, str(input, 'instructions', true))
+        return {
+          ok: true,
+          track_id: track.id,
+          new_region_id: result.regionId,
+          starts_at_bar: round2(
+            barOfBeat(p, region.startBeat + secondsToBeats(region.lengthSec, p.bpm))
+          )
         }
       }
     },

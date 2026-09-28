@@ -78,6 +78,14 @@ function fakeHost(initial: Project, provider: ProviderInfo | undefined = demo) {
       }
       return { trackId: track.id, regionId: region.id }
     },
+    vary: async (regionId) => {
+      state.messages.push(`vary ${regionId}`)
+      return { trackId: 't', regionId: 'variada' }
+    },
+    extend: async (regionId, bars, instructions) => {
+      state.messages.push(`extend ${regionId} ${bars} ${instructions ?? ''}`.trim())
+      return { trackId: 't', regionId: 'continuada' }
+    },
     playheadSec: () => 0,
     play: (sec) => {
       state.playedFrom = sec
@@ -193,5 +201,30 @@ describe('herramientas del productor', () => {
   it('calcula cuántos compases caben por clip', () => {
     expect(maxBarsPerClip({ ...createProject('x'), bpm: 90 }, demo)).toBe(11)
     expect(maxBarsPerClip(createProject('x'), undefined)).toBe(0)
+  })
+
+  it('pide variaciones y continuaciones al host con la región correcta', async () => {
+    const { state, run } = fakeHost(createProject('X'))
+    const a = (await run('generate_clip', {
+      prompt: 'a',
+      role: 'bass',
+      bars: 4,
+      start_bar: 1
+    })) as {
+      region_id: string
+    }
+    expect(await run('create_variation', { region_id: a.region_id })).toMatchObject({
+      new_region_id: 'variada'
+    })
+    expect(
+      await run('extend_region', { region_id: a.region_id, bars: 2, instructions: 'build up' })
+    ).toMatchObject({ new_region_id: 'continuada', starts_at_bar: 5 })
+    expect(state.messages.slice(-2)).toEqual([
+      `vary ${a.region_id}`,
+      `extend ${a.region_id} 2 build up`
+    ])
+    await expect(run('extend_region', { region_id: 'nope', bars: 2 })).rejects.toThrow(
+      /No existe la región/
+    )
   })
 })

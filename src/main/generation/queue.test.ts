@@ -104,4 +104,43 @@ describe('GenerationQueue', () => {
     const failed = await waitFor(q, job.id, 'error')
     expect(failed.error).toBe('sin crédito')
   })
+
+  it('continuar: pasa la ruta del audio de partida y el recorte al resultado', async () => {
+    let seenPath: string | undefined
+    const continuing: AudioProvider = {
+      ...demoProvider,
+      async generate(s, ctx) {
+        seenPath = ctx.conditioningPath
+        const r = await demoProvider.generate(s, ctx)
+        return { ...r, trimStartSec: 3 }
+      }
+    }
+    const q = new GenerationQueue(new Map([['demo', continuing]]))
+    const job = q.enqueue(dir, 'demo', {
+      ...spec,
+      mode: 'continue',
+      conditioning: { clipId: 'c1', file: 'clips/raw/partida.wav', seconds: 3 }
+    })
+    const done = await waitFor(q, job.id, 'done')
+    expect(seenPath).toBe(join(dir, 'clips/raw/partida.wav'))
+    expect(done.trimStartSec).toBe(3)
+  })
+
+  it('rechaza continuar con motores que no saben o si no cabe', () => {
+    const noContinue: AudioProvider = {
+      ...demoProvider,
+      capabilities: { ...demoProvider.capabilities, supportsContinue: false }
+    }
+    const q = new GenerationQueue(new Map([['demo', noContinue]]))
+    const cont = {
+      ...spec,
+      mode: 'continue' as const,
+      conditioning: { clipId: 'c', file: 'f', seconds: 5 }
+    }
+    expect(() => q.enqueue(dir, 'demo', cont)).toThrow(/no sabe continuar/)
+    const q2 = new GenerationQueue(new Map([['demo', demoProvider]]))
+    expect(() => q2.enqueue(dir, 'demo', { ...cont, durationSec: 118 })).toThrow(
+      /fragmento de partida/
+    )
+  })
 })

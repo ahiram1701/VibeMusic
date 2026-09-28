@@ -13,7 +13,11 @@ export interface GenerationSpec {
   durationSec: number
   role: TrackRole
   seed?: number
-  conditioningClipId?: string
+  /**
+   * Audio de partida para "continuar" (mode 'continue'): un fragmento corto del final
+   * del clip original, guardado como WAV mono en el proyecto.
+   */
+  conditioning?: { clipId: string; file: string; seconds: number }
   mode: GenerationMode
 }
 

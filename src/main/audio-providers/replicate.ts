@@ -1,4 +1,4 @@
-import { writeFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { buildMusicPrompt, requestSeconds } from '@shared/prompt'
 import { CancelledError, sleep, throwIfAborted, type AudioProvider } from './types'
 
@@ -93,14 +93,22 @@ export function createReplicateProvider(
       if (!token) throw new ReplicateError('Falta la API key de Replicate. Añádela en Ajustes.')
 
       ctx.onProgress(null, 'Enviando a Replicate…')
+      const lead = spec.conditioning && ctx.conditioningPath ? spec.conditioning.seconds : 0
       const input: Record<string, unknown> = {
         model_version: 'stereo-large',
         prompt: buildMusicPrompt(spec),
-        duration: requestSeconds(spec.durationSec, MAX_SEC),
+        // Al continuar, la duración es total: fragmento de partida + audio nuevo.
+        duration: requestSeconds(lead + spec.durationSec, MAX_SEC),
         output_format: 'wav',
         normalization_strategy: 'peak'
       }
       if (spec.seed !== undefined) input.seed = spec.seed
+      if (lead > 0) {
+        // Replicate acepta archivos pequeños (< 1 MB) como data URL.
+        const wav = await readFile(ctx.conditioningPath!)
+        input.input_audio = `data:audio/wav;base64,${wav.toString('base64')}`
+        input.continuation = true
+      }
 
       let pred = (await (
         await call(token, '/predictions', {
@@ -139,7 +147,8 @@ export function createReplicateProvider(
         throwIfAborted(ctx.signal)
         const path = `${ctx.outBase}.wav`
         await writeFile(path, new Uint8Array(await audio.arrayBuffer()))
-        return path
+        // MusicGen devuelve el fragmento de partida seguido de la continuación.
+        return { path, trimStartSec: lead || undefined }
       } finally {
         ctx.signal.removeEventListener('abort', cancelRemote)
       }

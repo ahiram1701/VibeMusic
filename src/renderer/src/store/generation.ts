@@ -25,6 +25,11 @@ interface Placement {
   bars: number
   /** Prefijo del mensaje en el historial (p. ej. 🤖 si lo pidió el productor). */
   messagePrefix?: string
+  /** Variación: la región nueva sustituye a esta (mismo sitio y pista). */
+  replaceRegionId?: string
+  /** Texto del historial en lugar del genérico "Generado …". */
+  message?: string
+  parentClipId?: string
 }
 
 export interface JobView {
@@ -46,6 +51,12 @@ export interface GenerateInput {
   trackName?: string
   messagePrefix?: string
   seed?: number
+  replaceRegionId?: string
+  message?: string
+  /** Variación/continuación: se parte de un clip existente. */
+  mode?: GenerationSpec['mode']
+  conditioning?: GenerationSpec['conditioning']
+  parentClipId?: string
 }
 
 /** Resultado de una generación ya colocada en el timeline. */
@@ -136,7 +147,8 @@ export const useGeneration = create<GenerationState>((set, get) => ({
       bpm: project.bpm,
       key: project.key,
       durationSec: barsToSeconds(input.bars, project),
-      mode: 'text',
+      mode: input.mode ?? 'text',
+      ...(input.conditioning && { conditioning: input.conditioning }),
       // Siempre guardamos una semilla: así cualquier clip se puede volver a generar igual.
       seed: input.seed ?? Math.floor(Math.random() * 2 ** 31)
     }
@@ -153,7 +165,10 @@ export const useGeneration = create<GenerationState>((set, get) => ({
             trackId: input.trackId,
             trackName: input.trackName,
             bars: input.bars,
-            messagePrefix: input.messagePrefix
+            messagePrefix: input.messagePrefix,
+            replaceRegionId: input.replaceRegionId,
+            message: input.message,
+            parentClipId: input.parentClipId
           },
           added: false
         }
@@ -179,7 +194,12 @@ export const useGeneration = create<GenerationState>((set, get) => ({
       atBeat: view.placement.atBeat,
       trackId: view.placement.trackId,
       trackName: view.placement.trackName,
-      messagePrefix: view.placement.messagePrefix
+      messagePrefix: view.placement.messagePrefix,
+      replaceRegionId: view.placement.replaceRegionId,
+      message: view.placement.message,
+      parentClipId: view.placement.parentClipId,
+      mode: view.job.spec.mode,
+      conditioning: view.job.spec.conditioning
     })
   },
 
@@ -220,7 +240,10 @@ async function finalize(jobId: string): Promise<void> {
     const source = Array.from({ length: decoded.numberOfChannels }, (_, i) =>
       decoded.getChannelData(i)
     )
-    const stereo = source.length === 1 ? [source[0], source[0]] : source.slice(0, 2)
+    // Algunos motores devuelven el fragmento de partida antes del audio nuevo: fuera.
+    const skip = Math.round((job.trimStartSec ?? 0) * decoded.sampleRate)
+    const fresh = skip > 0 ? source.map((ch) => ch.subarray(Math.min(skip, ch.length))) : source
+    const stereo = fresh.length === 1 ? [fresh[0], fresh[0]] : fresh.slice(0, 2)
     const channels = conformAudio(stereo, {
       targetSec: job.spec.durationSec,
       sampleRate: decoded.sampleRate
@@ -245,7 +268,11 @@ async function finalize(jobId: string): Promise<void> {
       fadeInSec: 0,
       fadeOutSec: 0
     }
-    const target = placement.trackId && project.tracks.find((t) => t.id === placement.trackId)
+    const replaced =
+      placement.replaceRegionId &&
+      project.tracks.find((t) => t.regions.some((r) => r.id === placement.replaceRegionId))
+    const target =
+      replaced || (placement.trackId && project.tracks.find((t) => t.id === placement.trackId))
     const label = ROLE_LABELS[job.spec.role]
     const newTrack = target
       ? null
@@ -259,12 +286,18 @@ async function finalize(jobId: string): Promise<void> {
           file,
           durationSec: buffer.duration,
           spec: job.spec,
-          provider: job.providerId
+          provider: job.providerId,
+          ...(placement.parentClipId && { parentClipId: placement.parentClipId })
         }
       },
       tracks: target
         ? project.tracks.map((t) =>
-            t.id === target.id ? { ...t, regions: [...t.regions, region] } : t
+            t.id === target.id
+              ? {
+                  ...t,
+                  regions: [...t.regions.filter((r) => r.id !== placement.replaceRegionId), region]
+                }
+              : t
           )
         : [...project.tracks, newTrack!]
     }
@@ -273,7 +306,9 @@ async function finalize(jobId: string): Promise<void> {
       .getState()
       .commit(
         next,
-        `${placement.messagePrefix ?? ''}Generado ${label.toLowerCase()}: "${short}" (${placement.bars} compases)`
+        placement.message
+          ? `${placement.messagePrefix ?? ''}${placement.message}`
+          : `${placement.messagePrefix ?? ''}Generado ${label.toLowerCase()}: "${short}" (${placement.bars} compases)`
       )
     useProject.setState((s) => ({ clipsLoaded: s.clipsLoaded + 1 }))
     setView({ added: true })
