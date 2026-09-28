@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { LlmMessage } from '@shared/llm'
 import { toAnthropicMessages } from './anthropic'
-import { createOpenAiCompatibleAdapter, toChatMessages } from './openai-compatible'
+import {
+  createOpenAiCompatibleAdapter,
+  listOpenAiCompatibleModels,
+  stripReasoning,
+  toChatMessages
+} from './openai-compatible'
 
 const conversation: LlmMessage[] = [
   { role: 'user', content: [{ type: 'text', text: 'pon 90 bpm' }] },
@@ -102,5 +107,51 @@ describe('OpenAI/Ollama: conversión y respuesta', () => {
       { type: 'tool_use', id: 'a', name: 'x', input: { bpm: 80 } },
       { type: 'tool_use', id: 'b', name: 'y', input: {} }
     ])
+  })
+})
+
+describe('proveedores compatibles con OpenAI', () => {
+  it('quita el razonamiento <think> del texto visible', () => {
+    expect(stripReasoning('<think>hmm, 90 bpm…</think>Listo, a 90 BPM.')).toBe('Listo, a 90 BPM.')
+    expect(stripReasoning('<think>sin cerrar')).toBe('')
+  })
+
+  it('lista modelos (formato OpenAI) y explica errores de clave', async () => {
+    const ok = (async () =>
+      Response.json({
+        data: [{ id: 'llama-3.3-70b-versatile' }, { id: 'openai/gpt-oss-120b' }]
+      })) as unknown as typeof fetch
+    expect(
+      await listOpenAiCompatibleModels('https://api.groq.com/openai/v1', 'k', 'Groq', ok)
+    ).toEqual(['llama-3.3-70b-versatile', 'openai/gpt-oss-120b'])
+    const denied = (async () =>
+      Response.json(
+        { error: { message: 'Invalid API Key' } },
+        { status: 401 }
+      )) as unknown as typeof fetch
+    await expect(
+      listOpenAiCompatibleModels('https://x/v1', 'mala', 'Groq', denied)
+    ).rejects.toThrow(/API key de Groq no es válida/)
+  })
+
+  it('explica cuando un modelo no soporta herramientas', async () => {
+    const adapter = createOpenAiCompatibleAdapter({
+      baseUrl: 'http://x/v1',
+      model: 'tiny-model',
+      label: 'Groq',
+      tokensParam: 'max_completion_tokens',
+      fetchImpl: (async () =>
+        Response.json(
+          { error: { message: 'tools are not supported for this model' } },
+          { status: 400 }
+        )) as unknown as typeof fetch
+    })
+    await expect(
+      adapter.chat(
+        { system: 's', messages: [], tools: [], maxTokens: 10 },
+        () => undefined,
+        new AbortController().signal
+      )
+    ).rejects.toThrow(/no soporta "tool calling"/)
   })
 })

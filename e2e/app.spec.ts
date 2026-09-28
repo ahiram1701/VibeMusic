@@ -226,3 +226,34 @@ test('el productor (chat) mira el proyecto, pone el tempo y genera capas', async
   await expect(page.locator('ol li').filter({ hasText: '🤖 tempo 90 BPM' })).toBeVisible()
   await expect(page.locator('ol li').filter({ hasText: '🤖 Generado bajo' })).toBeVisible()
 })
+
+test('ajustes: cualquier proveedor de LLM (Groq, personalizado)', async () => {
+  await page.getByRole('button', { name: '⚙ Ajustes' }).first().click()
+  const dialog = page.getByRole('dialog', { name: 'Ajustes' })
+  const provider = dialog.getByLabel('Proveedor del productor')
+
+  await provider.selectOption('groq')
+  await expect(dialog.getByText(/Muy rápido y con capa gratuita/)).toBeVisible()
+  await expect(dialog.getByLabel('Modelo del productor')).toHaveValue('llama-3.3-70b-versatile')
+  await expect(dialog.getByRole('link', { name: 'conseguir una clave' })).toHaveAttribute(
+    'href',
+    'https://console.groq.com/keys'
+  )
+  await expect(dialog.getByLabel('API key de Groq')).toBeVisible()
+
+  await provider.selectOption('custom')
+  const url = dialog.getByLabel('URL base de la API')
+  await url.fill('ftp://no-vale')
+  await url.press('Enter')
+  await expect(dialog.getByText(/debe empezar por http/)).toBeVisible()
+  await url.fill('https://api.together.xyz/v1')
+  await url.press('Enter')
+  await expect(dialog.getByText(/debe empezar por http/)).toBeHidden()
+
+  await provider.selectOption('ollama')
+  await expect(dialog.getByLabel('URL base de la API')).toHaveValue('http://localhost:11434/v1')
+  await expect(dialog.getByLabel(/API key de Ollama/)).toHaveCount(0) // local: sin clave
+
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+})

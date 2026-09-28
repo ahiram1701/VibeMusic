@@ -141,11 +141,13 @@ export function createAnthropicAdapter(apiKey: string, model: string): LlmAdapte
   }
 }
 
-/** Comprueba una API key listando modelos (petición barata, sin coste de tokens). */
-export async function verifyAnthropicKey(apiKey: string): Promise<string> {
+/** Lista los modelos disponibles para la clave (sirve también para comprobarla). */
+export async function listAnthropicModels(apiKey: string): Promise<string[]> {
   try {
-    const page = await new Anthropic({ apiKey }).models.list({ limit: 1 })
-    return page.data[0]?.display_name ?? 'ok'
+    const ids: string[] = []
+    for await (const model of new Anthropic({ apiKey }).models.list({ limit: 100 }))
+      ids.push(model.id)
+    return ids
   } catch (err) {
     throw explain(err, '')
   }

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { AgentCancelled, runAgent, type AgentEvent } from '@shared/agent'
-import type { LlmMessage } from '@shared/llm'
+import { textOf, type LlmMessage } from '@shared/llm'
 import { newId } from '@shared/project'
 import { PRODUCER_SYSTEM_PROMPT } from '@shared/producer-prompt'
 import { AGENT_PREFIX, createProducerTools, type ProducerHost } from '@shared/producer-tools'
@@ -100,9 +100,22 @@ export const useChat = create<ChatState>((set, get) => ({
         llm: async (req, onText) => {
           const requestId = newId('llm')
           currentRequest = requestId
-          const off = window.vibe.llm.onDelta((id, delta) => id === requestId && onText(delta))
+          let streamed = ''
+          const off = window.vibe.llm.onDelta((id, delta) => {
+            if (id !== requestId) return
+            streamed += delta
+            onText(delta)
+          })
           try {
-            return await window.vibe.llm.chat(requestId, req)
+            const response = await window.vibe.llm.chat(requestId, req)
+            // El texto en vivo y la respuesta final viajan por canales distintos: la
+            // respuesta puede llegar antes que los últimos fragmentos. Se completa aquí
+            // con lo que falte para no perder el final del mensaje.
+            const full = textOf(response.content)
+            if (full.startsWith(streamed) && full.length > streamed.length) {
+              onText(full.slice(streamed.length))
+            }
+            return response
           } finally {
             off()
             currentRequest = null

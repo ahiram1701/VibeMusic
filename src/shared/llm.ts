@@ -1,7 +1,8 @@
 // Formato neutro de conversación con un LLM. Cada adaptador (Anthropic, OpenAI,
 // Ollama…) traduce desde/hacia este formato, así el agente no depende del proveedor.
 
-export type LlmProviderId = 'anthropic' | 'openai' | 'ollama' | 'fake'
+/** Id de un proveedor del catálogo (llm-providers.ts), 'custom' o 'fake' (pruebas). */
+export type LlmProviderId = string
 
 export type ContentBlock =
   | { type: 'text'; text: string }
@@ -50,17 +51,14 @@ export interface LlmResponse {
 
 export interface LlmSettings {
   provider: LlmProviderId
-  /** Modelo por proveedor (se recuerda al cambiar de uno a otro). */
-  models: Record<Exclude<LlmProviderId, 'fake'>, string>
-  ollamaUrl: string
-  hasAnthropicKey: boolean
-  hasOpenaiKey: boolean
-}
-
-export const LLM_PROVIDER_LABELS: Record<Exclude<LlmProviderId, 'fake'>, string> = {
-  anthropic: 'Anthropic · Claude',
-  openai: 'OpenAI',
-  ollama: 'Ollama (local)'
+  /** Modelo elegido por proveedor (se recuerda al cambiar de uno a otro). */
+  models: Record<string, string>
+  /** URL personalizada por proveedor (servidores locales y "Personalizado"). */
+  urls: Record<string, string>
+  /** Qué proveedores tienen clave guardada. Las claves nunca salen del proceso principal. */
+  keys: Record<string, boolean>
+  /** true en las pruebas e2e: responde un LLM de mentira, sin clave ni red. */
+  simulated?: boolean
 }
 
 export const textOf = (blocks: ContentBlock[]): string =>

@@ -36,6 +36,7 @@ const api: VibeApi = {
   llm: {
     chat: (requestId, req) => invoke('llm:chat', requestId, req),
     cancel: (requestId) => invoke('llm:cancel', requestId),
+    listModels: (provider) => invoke('llm:listModels', provider),
     onDelta: (listener) => {
       const handler = (_e: Electron.IpcRendererEvent, requestId: string, text: string): void =>
         listener(requestId, text)
@@ -51,7 +52,7 @@ const api: VibeApi = {
     setLlm: (patch) => invoke('settings:setLlm', patch),
     setLlmKey: (provider, key) => invoke('settings:setLlmKey', provider, key),
     clearLlmKey: (provider) => invoke('settings:clearLlmKey', provider),
-    testOllama: () => invoke('settings:testOllama')
+    testLlm: (provider) => invoke('settings:testLlm', provider)
   },
   export: {
     saveWav: (bytes, name) => invoke('export:saveWav', bytes, name)

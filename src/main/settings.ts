@@ -1,7 +1,8 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { AppSettings, ProviderId } from '@shared/generation'
-import type { LlmProviderId, LlmSettings } from '@shared/llm'
+import type { LlmProviderId } from '@shared/llm'
+import { findProvider, LLM_PROVIDERS } from '@shared/llm-providers'
 
 // Ajustes de la app en <userData>/settings.json.
 // Los secretos (API keys) se guardan cifrados con el cifrado del sistema operativo
@@ -13,55 +14,80 @@ export interface SecretCipher {
   decrypt(data: Buffer): string
 }
 
-export type SecretName = 'replicateToken' | 'anthropicKey' | 'openaiKey'
-type LlmModels = LlmSettings['models']
+/** 'replicateToken' o `llm:<id del proveedor>`. */
+export type SecretName = 'replicateToken' | `llm:${string}`
+
+export const llmSecret = (providerId: string): SecretName => `llm:${providerId}`
 
 interface SettingsFile {
   defaultProvider: ProviderId
   llmProvider: LlmProviderId
-  llmModels: LlmModels
-  ollamaUrl: string
-  secrets: Partial<Record<SecretName, string>>
+  llmModels: Record<string, string>
+  llmUrls: Record<string, string>
+  secrets: Record<string, string>
 }
 
-export interface LlmDefaults {
-  models: LlmModels
-  ollamaUrl: string
+/** Formato antiguo (antes de admitir cualquier proveedor), para migrarlo. */
+interface LegacyFields {
+  ollamaUrl?: string
+  secrets?: { anthropicKey?: string; openaiKey?: string }
+}
+
+export interface LlmConfig {
+  provider: LlmProviderId
+  model: string
+  /** URL base efectiva (la del usuario o la del catálogo). */
+  baseUrl: string
 }
 
 export class SettingsStore {
   private cache: SettingsFile | null = null
-  private readonly defaults: SettingsFile
 
   constructor(
     private readonly file: string,
-    private readonly cipher: SecretCipher,
-    llmDefaults: LlmDefaults = {
-      models: { anthropic: '', openai: '', ollama: '' },
-      ollamaUrl: 'http://localhost:11434'
-    }
-  ) {
-    this.defaults = {
+    private readonly cipher: SecretCipher
+  ) {}
+
+  private defaults(): SettingsFile {
+    return {
       defaultProvider: 'demo',
       llmProvider: 'anthropic',
-      llmModels: llmDefaults.models,
-      ollamaUrl: llmDefaults.ollamaUrl,
+      llmModels: Object.fromEntries(LLM_PROVIDERS.map((p) => [p.id, p.defaultModel])),
+      llmUrls: {},
       secrets: {}
     }
   }
 
   private async load(): Promise<SettingsFile> {
     if (this.cache) return this.cache
+    const d = this.defaults()
     try {
-      const raw = JSON.parse(await readFile(this.file, 'utf8')) as Partial<SettingsFile>
+      const raw = JSON.parse(await readFile(this.file, 'utf8')) as Partial<SettingsFile> &
+        LegacyFields
+      const secrets: Record<string, string> = { ...raw.secrets } as Record<string, string>
+      // Migración: claves y URL guardadas con el formato anterior.
+      const legacy = raw.secrets ?? {}
+      if (legacy.anthropicKey && !secrets['llm:anthropic'])
+        secrets['llm:anthropic'] = legacy.anthropicKey
+      if (legacy.openaiKey && !secrets['llm:openai']) secrets['llm:openai'] = legacy.openaiKey
+      delete secrets.anthropicKey
+      delete secrets.openaiKey
+      const urls = { ...raw.llmUrls }
+      if (raw.ollamaUrl && !urls.ollama) urls.ollama = `${raw.ollamaUrl.replace(/\/$/, '')}/v1`
+
       this.cache = {
-        ...this.defaults,
-        ...raw,
-        llmModels: { ...this.defaults.llmModels, ...raw.llmModels },
-        secrets: { ...raw.secrets }
+        defaultProvider: raw.defaultProvider ?? d.defaultProvider,
+        llmProvider: raw.llmProvider ?? d.llmProvider,
+        // Modelos vacíos se rellenan con los del catálogo.
+        llmModels: {
+          ...d.llmModels,
+          ...Object.fromEntries(Object.entries(raw.llmModels ?? {}).filter(([, m]) => m))
+        },
+        llmUrls: urls,
+        secrets
       }
     } catch {
-      this.cache = { ...this.defaults, secrets: {} }
+      this.cache = d
     }
     return this.cache
   }
@@ -80,9 +106,13 @@ export class SettingsStore {
       llm: {
         provider: s.llmProvider,
         models: s.llmModels,
-        ollamaUrl: s.ollamaUrl,
-        hasAnthropicKey: !!s.secrets.anthropicKey,
-        hasOpenaiKey: !!s.secrets.openaiKey
+        urls: Object.fromEntries(
+          LLM_PROVIDERS.filter((p) => p.urlEditable).map((p) => [
+            p.id,
+            s.llmUrls[p.id] ?? p.baseUrl
+          ])
+        ),
+        keys: Object.fromEntries(LLM_PROVIDERS.map((p) => [p.id, !!s.secrets[llmSecret(p.id)]]))
       }
     }
   }
@@ -94,23 +124,41 @@ export class SettingsStore {
 
   async setLlm(patch: {
     provider?: LlmProviderId
-    model?: { provider: keyof LlmModels; name: string }
-    ollamaUrl?: string
+    model?: { provider: LlmProviderId; name: string }
+    url?: { provider: LlmProviderId; url: string }
   }): Promise<void> {
     const s = await this.load()
+    if (patch.provider && !findProvider(patch.provider)) {
+      throw new Error(`Proveedor desconocido: ${patch.provider}`)
+    }
+    const llmUrls = { ...s.llmUrls }
+    if (patch.url) {
+      const url = patch.url.url.trim().replace(/\/+$/, '')
+      if (url && !/^https?:\/\//i.test(url))
+        throw new Error('La URL debe empezar por http:// o https://')
+      if (url) llmUrls[patch.url.provider] = url
+      else delete llmUrls[patch.url.provider]
+    }
     await this.save({
       ...s,
       llmProvider: patch.provider ?? s.llmProvider,
       llmModels: patch.model
         ? { ...s.llmModels, [patch.model.provider]: patch.model.name.trim() }
         : s.llmModels,
-      ollamaUrl: patch.ollamaUrl?.trim() || s.ollamaUrl
+      llmUrls
     })
   }
 
-  async llmConfig(): Promise<{ provider: LlmProviderId; models: LlmModels; ollamaUrl: string }> {
+  /** Configuración efectiva de un proveedor (por defecto, el activo). */
+  async llmConfig(providerId?: LlmProviderId): Promise<LlmConfig> {
     const s = await this.load()
-    return { provider: s.llmProvider, models: s.llmModels, ollamaUrl: s.ollamaUrl }
+    const provider = providerId ?? s.llmProvider
+    const preset = findProvider(provider)
+    return {
+      provider,
+      model: s.llmModels[provider] ?? preset?.defaultModel ?? '',
+      baseUrl: s.llmUrls[provider] ?? preset?.baseUrl ?? ''
+    }
   }
 
   async getSecret(name: SecretName): Promise<string | null> {

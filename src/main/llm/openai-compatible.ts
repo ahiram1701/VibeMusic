@@ -1,11 +1,9 @@
 import type { ContentBlock, LlmMessage, LlmRequest, LlmResponse, StopReason } from '@shared/llm'
 import { LlmError, type LlmAdapter } from './types'
 
-// Adaptador para APIs compatibles con OpenAI Chat Completions: la de OpenAI y la
-// que expone Ollama en /v1 (modelos locales). Sin streaming: el texto llega de una vez.
-
-export const DEFAULT_OPENAI_MODEL = 'gpt-5'
-export const DEFAULT_OLLAMA_MODEL = 'qwen3'
+// Adaptador para cualquier API compatible con OpenAI Chat Completions: OpenAI, Groq,
+// OpenRouter, Gemini, Mistral, DeepSeek, xAI, Ollama, LM Studio… Sin streaming: el
+// texto llega de una vez al final de cada paso.
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -93,23 +91,16 @@ export function createOpenAiCompatibleAdapter(opts: {
         if (signal.aborted) throw new LlmError('Cancelado', 'cancelled')
         throw new LlmError(`No se pudo conectar con ${opts.label} (${(err as Error).message}).`)
       }
-      if (!res.ok) {
-        const detail = await res.text().catch(() => '')
-        if (res.status === 401) throw new LlmError(`La API key de ${opts.label} no es válida.`)
-        if (res.status === 404)
-          throw new LlmError(`El modelo "${opts.model}" no existe en ${opts.label}.`)
-        if (res.status === 429) throw new LlmError(`Límite de uso de ${opts.label} alcanzado.`)
-        throw new LlmError(`${opts.label} respondió ${res.status}: ${detail.slice(0, 300)}`)
-      }
-
+      if (!res.ok) throw await httpError(res, opts.label, opts.model)
       const body = (await res.json()) as {
         choices: { message: ChatMessage; finish_reason: string }[]
       }
       const choice = body.choices[0]
       const content: ContentBlock[] = []
-      if (choice.message.content) {
-        content.push({ type: 'text', text: choice.message.content })
-        onText(choice.message.content)
+      const text = stripReasoning(choice.message.content ?? '')
+      if (text) {
+        content.push({ type: 'text', text })
+        onText(text)
       }
       for (const call of choice.message.tool_calls ?? []) {
         let input: Record<string, unknown> = {}
@@ -129,14 +120,66 @@ export function createOpenAiCompatibleAdapter(opts: {
   }
 }
 
-export async function verifyOpenAiCompatible(baseUrl: string, apiKey?: string): Promise<string> {
-  const res = await fetch(`${baseUrl}/models`, {
-    headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {}
-  }).catch((err: Error) => {
-    throw new LlmError(`No se pudo conectar (${err.message}).`)
-  })
-  if (res.status === 401) throw new LlmError('La API key no es válida.')
-  if (!res.ok) throw new LlmError(`El servidor respondió ${res.status}.`)
-  const body = (await res.json()) as { data?: unknown[] }
-  return `${body.data?.length ?? 0} modelos disponibles`
+/**
+ * Algunos modelos de razonamiento (Qwen, DeepSeek R1…) devuelven su razonamiento
+ * entre <think>…</think> dentro del texto: no es para el usuario.
+ */
+export function stripReasoning(text: string): string {
+  return text.replace(/<think>[\s\S]*?(<\/think>|$)/g, '').trim()
+}
+
+/** Convierte una respuesta HTTP de error en un mensaje útil. */
+async function httpError(res: Response, label: string, model?: string): Promise<LlmError> {
+  const raw = await res.text().catch(() => '')
+  let detail = raw
+  try {
+    const body = JSON.parse(raw) as { error?: { message?: string } | string; message?: string }
+    detail =
+      (typeof body.error === 'string' ? body.error : body.error?.message) ?? body.message ?? raw
+  } catch {
+    // no era JSON
+  }
+  detail = detail.slice(0, 300)
+  if (res.status === 401 || res.status === 403) {
+    return new LlmError(`La API key de ${label} no es válida o no tiene permisos.`)
+  }
+  if (res.status === 404 && model) {
+    return new LlmError(`El modelo "${model}" no existe en ${label}. Elige otro en Ajustes.`)
+  }
+  if (res.status === 429)
+    return new LlmError(`Límite de uso de ${label} alcanzado. Espera un momento.`)
+  if (res.status === 400 && /tool|function/i.test(detail)) {
+    return new LlmError(
+      `${label} rechazó las herramientas: el modelo "${model}" probablemente no soporta "tool calling". Prueba con otro modelo. (${detail})`
+    )
+  }
+  return new LlmError(`${label} respondió ${res.status}: ${detail}`)
+}
+
+/** Lista los modelos del servidor (sirve también para comprobar la clave y la URL). */
+export async function listOpenAiCompatibleModels(
+  baseUrl: string,
+  apiKey: string | undefined,
+  label: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<string[]> {
+  let res: Response
+  try {
+    res = await fetchImpl(`${baseUrl}/models`, {
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {}
+    })
+  } catch (err) {
+    throw new LlmError(
+      `No se pudo conectar con ${label} en ${baseUrl} (${(err as Error).message}).`
+    )
+  }
+  if (!res.ok) throw await httpError(res, label)
+  const body = (await res.json()) as {
+    data?: { id: string }[]
+    models?: { id?: string; name?: string }[]
+  }
+  const ids = (body.data ?? body.models ?? [])
+    .map((m) => ('id' in m && m.id) || ('name' in m && m.name) || '')
+    .filter(Boolean) as string[]
+  return [...new Set(ids)].sort()
 }

@@ -13,10 +13,8 @@ import { demoProvider } from './audio-providers/demo'
 import { createReplicateProvider, verifyReplicateToken } from './audio-providers/replicate'
 import type { AudioProvider } from './audio-providers/types'
 import { GenerationQueue } from './generation/queue'
-import { DEFAULT_ANTHROPIC_MODEL } from './llm/anthropic'
-import { DEFAULT_OLLAMA_MODEL, DEFAULT_OPENAI_MODEL } from './llm/openai-compatible'
 import { LlmService } from './llm/service'
-import { SettingsStore } from './settings'
+import { llmSecret, SettingsStore } from './settings'
 import {
   initProjectDir,
   listVersions,
@@ -31,22 +29,11 @@ function handle(channel: IpcChannel, fn: (...args: never[]) => unknown): void {
 }
 
 export function registerIpc(): void {
-  const settings = new SettingsStore(
-    join(app.getPath('userData'), 'settings.json'),
-    {
-      isAvailable: () => safeStorage.isEncryptionAvailable(),
-      encrypt: (plain) => safeStorage.encryptString(plain),
-      decrypt: (data) => safeStorage.decryptString(data)
-    },
-    {
-      models: {
-        anthropic: DEFAULT_ANTHROPIC_MODEL,
-        openai: DEFAULT_OPENAI_MODEL,
-        ollama: DEFAULT_OLLAMA_MODEL
-      },
-      ollamaUrl: 'http://localhost:11434'
-    }
-  )
+  const settings = new SettingsStore(join(app.getPath('userData'), 'settings.json'), {
+    isAvailable: () => safeStorage.isEncryptionAvailable(),
+    encrypt: (plain) => safeStorage.encryptString(plain),
+    decrypt: (data) => safeStorage.decryptString(data)
+  })
   // VIBE_FAKE_LLM=1 activa un LLM de mentira determinista (solo para pruebas e2e).
   const fakeLlm = process.env['VIBE_FAKE_LLM'] === '1'
   const llm = new LlmService(settings, fakeLlm)
@@ -110,7 +97,7 @@ export function registerIpc(): void {
 
   handle('settings:get', async () => {
     const pub = await settings.publicSettings()
-    return fakeLlm ? { ...pub, llm: { ...pub.llm, provider: 'fake' as const } } : pub
+    return fakeLlm ? { ...pub, llm: { ...pub.llm, simulated: true } } : pub
   })
   handle('settings:setReplicateToken', async (token: string) => {
     try {
@@ -127,13 +114,20 @@ export function registerIpc(): void {
   handle('settings:setLlm', (patch: Parameters<SettingsStore['setLlm']>[0]) =>
     settings.setLlm(patch)
   )
-  handle('settings:setLlmKey', (provider: 'anthropic' | 'openai', key: string) =>
+  handle('settings:setLlmKey', (provider: string, key: string) =>
     check(() => llm.setKey(provider, key))
   )
-  handle('settings:clearLlmKey', (provider: 'anthropic' | 'openai') =>
-    settings.setSecret(provider === 'anthropic' ? 'anthropicKey' : 'openaiKey', null)
+  handle('settings:clearLlmKey', (provider: string) =>
+    settings.setSecret(llmSecret(provider), null)
   )
-  handle('settings:testOllama', () => check(() => llm.testOllama()))
+  handle('settings:testLlm', (provider: string) => check(() => llm.test(provider)))
+  handle('llm:listModels', async (provider: string) => {
+    try {
+      return { ok: true, models: await llm.listModels(provider) }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
 
   ipcMain.handle('llm:chat', (event, requestId: string, req: LlmRequest) =>
     llm.chat(requestId, req, (text) => event.sender.send(LLM_DELTA_EVENT, requestId, text))

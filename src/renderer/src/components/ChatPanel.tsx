@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { TrackRole } from '@shared/project'
+import { findProvider } from '@shared/llm-providers'
 import { ROLE_LABELS } from '../labels'
 import { useChat, type ChatItem } from '../store/chat'
 import { useGeneration } from '../store/generation'
@@ -23,11 +24,18 @@ export function ChatPanel({ onOpenSettings }: { onOpenSettings(): void }): React
     if (el) el.scrollTop = el.scrollHeight
   }, [items])
 
+  // Qué falta para poder hablar con el productor (clave o modelo), si falta algo.
   const llm = settings?.llm
-  const missingKey =
-    !!llm &&
-    ((llm.provider === 'anthropic' && !llm.hasAnthropicKey) ||
-      (llm.provider === 'openai' && !llm.hasOpenaiKey))
+  const preset = llm ? findProvider(llm.provider) : undefined
+  const setupProblem =
+    !llm || llm.simulated || !preset
+      ? null
+      : preset.needsKey === true && !llm.keys[preset.id]
+        ? `Para usar el productor necesitas una API key de ${preset.label}.`
+        : !llm.models[preset.id]
+          ? `Elige un modelo de ${preset.label}.`
+          : null
+  const missingKey = !!setupProblem
 
   const submit = (value = text): void => {
     if (!value.trim() || running) return
@@ -67,7 +75,7 @@ export function ChatPanel({ onOpenSettings }: { onOpenSettings(): void }): React
 
       {missingKey && (
         <p className="border-t border-line px-3 py-2 text-xs text-amber-400">
-          Para usar el productor necesitas una API key del proveedor de IA.{' '}
+          {setupProblem}{' '}
           <button className="underline" onClick={onOpenSettings}>
             Abrir ajustes
           </button>
