@@ -1,5 +1,6 @@
 appId: com.vibemusic.app
 productName: VibeMusic
+copyright: Copyright © 2026 Alberto Hiram Saucedo Guajardo
 directories:
   buildResources: build
   output: release/${version}
