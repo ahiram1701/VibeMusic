@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, shell } from 'electron'
-import { autoUpdater } from 'electron-updater'
 import { registerIpc } from './ipc'
+import { startAutoUpdates } from './updater'
 
 // Las pruebas e2e usan su propia carpeta de datos para no tocar los ajustes reales.
 if (process.env['VIBE_USER_DATA']) app.setPath('userData', process.env['VIBE_USER_DATA'])
@@ -40,7 +40,7 @@ app.whenReady().then(() => {
   createWindow()
 
   // CD: las builds publicadas en GitHub Releases se auto-actualizan.
-  if (app.isPackaged) autoUpdater.checkForUpdatesAndNotify().catch(() => undefined)
+  startAutoUpdates()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

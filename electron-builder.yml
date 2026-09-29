@@ -19,12 +19,18 @@ extraResources:
       - '!*.egg-info/**'
       - '!.pytest_cache/**'
       - '!.ruff_cache/**'
+icon: build/icon.png
 win:
   target: nsis
   artifactName: ${productName}-Setup-${version}.${ext}
 nsis:
   oneClick: false
+  # Instalación por usuario (sin pedir administrador) en %LOCALAPPDATA%\Programs.
+  perMachine: false
   allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: VibeMusic
+  license: LICENSE
 mac:
   target: dmg
 linux:

@@ -4,6 +4,16 @@
 genera audio con proveedores locales o en la nube, lo coloca en un timeline multipista, y puedes seguir
 refinándolo por conversación con historial de versiones.
 
+## Instalar (Windows)
+
+1. Descarga `VibeMusic-Setup-X.Y.Z.exe` de la página **Releases** del repositorio.
+2. Ábrelo. Como el instalador no está firmado, Windows SmartScreen avisará: pulsa
+   **Más información → Ejecutar de todas formas**.
+3. Se instala para tu usuario (sin permisos de administrador) y crea un acceso directo.
+
+Para generar con IA puedes usar el motor **Demo** (sin instalar nada), **Replicate** (token en
+Ajustes) o el motor **Local**, que se instala desde ⚙ Ajustes y necesita Python 3.10–3.13.
+
 ## Desarrollo
 
 ```bash
@@ -37,8 +47,13 @@ Un proyecto es una carpeta: `project.json`, `versions/<n>.json` (snapshots) y `c
 
 ## CI/CD
 
-- **CI** (`.github/workflows/ci.yml`): lint, typecheck, tests y build en Windows y Linux, y ruff + pytest del sidecar.
-- **CD** (`.github/workflows/release.yml`): al publicar un tag `vX.Y.Z` construye el instalador y crea un borrador de GitHub Release; la app se auto-actualiza con `electron-updater`.
+- **CI** (`.github/workflows/ci.yml`): lint, typecheck, tests y build en Windows y Linux; e2e con
+  Playwright, y en Windows además se empaqueta la app y se prueba el ejecutable empaquetado
+  (`e2e/packaged.spec.ts`); ruff + pytest del sidecar.
+- **CD** (`.github/workflows/release.yml`): al subir un tag `vX.Y.Z` comprueba que coincide con
+  `package.json`, construye el instalador, lo prueba y lo sube a un **borrador** de GitHub Release,
+  que se publica a mano. La app instalada se auto-actualiza con `electron-updater` (solo si el
+  repositorio es público; si es privado, cada versión se instala a mano).
 
 ```bash
 npm version minor
