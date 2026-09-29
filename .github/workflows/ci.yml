@@ -35,6 +35,15 @@ jobs:
       - name: E2E (Playwright + Electron)
         if: runner.os == 'Windows'
         run: npx playwright test
+      # El instalador se construye y se prueba ya empaquetado en cada PR, para que
+      # el tag de una versión no descubra problemas de empaquetado.
+      - name: Empaquetar y probar la app instalable
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          npx electron-builder --publish never
+          export VIBE_PACKAGED_APP="release/$(node -p "require('./package.json').version")/win-unpacked/VibeMusic.exe"
+          npx playwright test packaged
       - uses: actions/upload-artifact@v4
         if: failure() && runner.os == 'Windows'
         with:

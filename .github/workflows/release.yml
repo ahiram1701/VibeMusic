@@ -1,7 +1,8 @@
 name: Release
 
-# CD: `npm version minor && git push --follow-tags` publica un tag vX.Y.Z
-# y este workflow construye los instaladores y los sube a un borrador de GitHub Release.
+# CD: `npm version patch|minor` + `git push --follow-tags` sube un tag vX.Y.Z y este
+# workflow construye el instalador, lo prueba ya empaquetado y lo sube a un BORRADOR
+# de GitHub Release. El borrador se revisa y se publica a mano desde GitHub.
 on:
   push:
     tags: ['v*.*.*']
@@ -10,25 +11,47 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest]
+  windows:
+    name: Instalador de Windows
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
+      - name: El tag coincide con la versión de package.json
+        shell: bash
+        run: |
+          version="v$(node -p "require('./package.json').version")"
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::El tag $GITHUB_REF_NAME no coincide con package.json ($version)"
+            exit 1
+          fi
       - run: npm ci
       - run: npm test
-      - name: Build & publish
-        run: npm run release
+      - name: Construir instalador
+        run: npm run dist
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Firma de código opcional: define estos secrets en el repo para evitar SmartScreen.
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      - name: Probar la app empaquetada
+        shell: bash
+        run: |
+          export VIBE_PACKAGED_APP="release/${GITHUB_REF_NAME#v}/win-unpacked/VibeMusic.exe"
+          npx playwright test packaged
+      - name: Subir a un borrador de GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          dir="release/${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" --draft --generate-notes \
+            --title "VibeMusic ${GITHUB_REF_NAME#v}" \
+            "$dir"/VibeMusic-Setup-*.exe "$dir"/VibeMusic-Setup-*.exe.blockmap "$dir"/latest.yml
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: release-debug
+          path: test-results/
