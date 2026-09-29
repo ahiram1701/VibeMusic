@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "description": "Vibecoding para música: describe la canción, un agente productor la genera y la arregla en un timeline multipista.",
   "main": "./out/main/index.js",
-  "author": "VibeMusic",
-  "license": "MIT",
+  "author": "Alberto Hiram Saucedo Guajardo",
+  "license": "FSL-1.1-MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/ahiram1701/VibeMusic.git"
