@@ -1,7 +1,7 @@
 {
   "name": "vibemusic",
   "productName": "VibeMusic",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Vibecoding para música: describe la canción, un agente productor la genera y la arregla en un timeline multipista.",
   "main": "./out/main/index.js",
   "author": "Alberto Hiram Saucedo Guajardo",
