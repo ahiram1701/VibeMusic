@@ -49,6 +49,8 @@ export interface ProducerHost {
     bars: number,
     instructions?: string
   ): Promise<{ trackId: string; regionId: string }>
+  /** Separa una región en pistas (voz, batería, bajo, otros) con el motor local. */
+  separate(regionId: string): Promise<{ trackIds: string[]; stems: string[]; skipped: string[] }>
   playheadSec(): number
   play(fromSec: number): void
 }
@@ -433,6 +435,30 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           starts_at_bar: round2(
             barOfBeat(p, region.startBeat + secondsToBeats(region.lengthSec, p.bpm))
           )
+        }
+      }
+    },
+    {
+      def: {
+        name: 'separate_stems',
+        description:
+          'Splits the audio of a region (typically an imported song) into separate tracks: vocals, drums, bass and other instruments, placed under the original, which gets muted. Runs on the local engine and can take several minutes on CPU. Use it when the user wants to isolate or remove the voice, drums, etc.',
+        inputSchema: {
+          type: 'object',
+          properties: { region_id: { type: 'string' } },
+          required: ['region_id'],
+          additionalProperties: false
+        }
+      },
+      run: async (input) => {
+        const p = host.getProject()
+        const { region } = findRegion(p, str(input, 'region_id'))
+        const r = await host.separate(region.id)
+        return {
+          ok: true,
+          new_track_ids: r.trackIds,
+          stems: r.stems,
+          empty_stems_skipped: r.skipped
         }
       }
     },

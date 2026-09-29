@@ -141,6 +141,24 @@ export function LocalEngineSection(): React.JSX.Element {
           <p className="text-xs text-muted">
             No hace falta arrancarlo a mano: se inicia solo al generar con el motor Local.
           </p>
+          {'stems' in status && (
+            <div className="rounded-md border border-line p-2 text-xs">
+              <span className="text-muted">Separación de pistas (voz, batería, bajo…): </span>
+              {status.stems ? (
+                <span className="text-emerald-400">instalada ✓</span>
+              ) : (
+                <>
+                  <span className="text-amber-400">no instalada</span>
+                  <button
+                    className={`${btn} ml-2 bg-accent`}
+                    onClick={() => run(() => window.vibe.localEngine.installStems())}
+                  >
+                    Añadir (~100 MB)
+                  </button>
+                </>
+              )}
+            </div>
+          )}
         </div>
       )}
 

@@ -5,7 +5,7 @@ import { newId } from '@shared/project'
 import { PRODUCER_SYSTEM_PROMPT } from '@shared/producer-prompt'
 import { AGENT_PREFIX, createProducerTools, type ProducerHost } from '@shared/producer-tools'
 import { engine } from '../audio/engine'
-import { continueRegion, varyRegion } from './clip-actions'
+import { continueRegion, separateRegion, varyRegion } from './clip-actions'
 import { useGeneration, waitForJob } from './generation'
 import { useProject } from './project'
 
@@ -71,6 +71,7 @@ const host: ProducerHost = {
     agentJob(varyRegion(regionId, { instructions, messagePrefix: AGENT_PREFIX })),
   extend: (regionId, bars, instructions) =>
     agentJob(continueRegion(regionId, bars, { instructions, messagePrefix: AGENT_PREFIX })),
+  separate: (regionId) => separateRegion(regionId, { messagePrefix: AGENT_PREFIX }),
   playheadSec: () => engine.positionSec,
   play: (sec) => void engine.play(host.getProject(), sec)
 }

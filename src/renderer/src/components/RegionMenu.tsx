@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { removeRegion } from '@shared/project'
 import { cleanError } from '../store/chat'
-import { continueRegion, duplicateRegionAfter, varyRegion } from '../store/clip-actions'
+import {
+  continueRegion,
+  duplicateRegionAfter,
+  separateRegion,
+  varyRegion
+} from '../store/clip-actions'
 import { useProject } from '../store/project'
 import { useUi } from '../store/ui'
 
@@ -33,13 +38,16 @@ export function RegionMenu(): React.JSX.Element | null {
   if (!regionMenu) return null
   const { regionId } = regionMenu
 
+  /**
+   * Cierra el menú, avisa de lo que empieza y lanza la acción. El aviso va ANTES:
+   * acciones largas (separar pistas) muestran su propio resultado al terminar y no
+   * deben quedar tapadas por el aviso de inicio.
+   */
   const run = (label: string, fn: () => Promise<unknown>): void => {
     closeRegionMenu()
     setInstructions('')
-    fn().then(
-      () => notify(label),
-      (err: unknown) => notify(cleanError(err), 'error')
-    )
+    notify(label)
+    fn().catch((err: unknown) => notify(cleanError(err), 'error'))
   }
   const extra = instructions.trim() || undefined
   const item = 'block w-full rounded px-3 py-1.5 text-left text-sm hover:bg-line'
@@ -93,6 +101,23 @@ export function RegionMenu(): React.JSX.Element | null {
       <button
         role="menuitem"
         className={item}
+        title="Voz, batería, bajo y otros instrumentos, con el motor local"
+        onClick={() =>
+          run('Separando en pistas (puede tardar varios minutos)…', async () => {
+            const r = await separateRegion(regionId)
+            useUi
+              .getState()
+              .notify(
+                `Separado en ${r.stems.join(', ')}${r.skipped.length ? ` (sin ${r.skipped.join(', ').toLowerCase()})` : ''}`
+              )
+          })
+        }
+      >
+        🎚 Separar en pistas (voz, batería…)
+      </button>
+      <button
+        role="menuitem"
+        className={item}
         onClick={() => run('Región duplicada', () => duplicateRegionAfter(regionId))}
       >
         ⧉ Duplicar a continuación
@@ -111,6 +136,45 @@ export function RegionMenu(): React.JSX.Element | null {
       >
         🗑 Eliminar
       </button>
+    </div>
+  )
+}
+
+/** Tareas largas en curso (abajo a la derecha), con progreso y botón de cancelar. */
+export function TaskList(): React.JSX.Element | null {
+  const tasks = useUi((s) => s.tasks)
+  if (tasks.length === 0) return null
+  return (
+    <div className="fixed right-4 bottom-4 z-40 w-72 space-y-2" aria-label="Tareas en curso">
+      {tasks.map((t) => {
+        const pct = t.progress === null ? null : Math.round(t.progress * 100)
+        return (
+          <div
+            key={t.id}
+            role="status"
+            className="rounded-md border border-line bg-panel p-3 text-xs shadow-xl"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <strong className="truncate text-white">{t.label}</strong>
+              {t.cancel && (
+                <button className="shrink-0 text-muted hover:text-red-400" onClick={t.cancel}>
+                  Cancelar
+                </button>
+              )}
+            </div>
+            <p className="mt-1 text-muted">
+              {t.stage}
+              {pct !== null && ` · ${pct} %`}
+            </p>
+            <div className="mt-1.5 h-1 overflow-hidden rounded bg-line">
+              <div
+                className={`h-full bg-accent ${pct === null ? 'w-1/3 animate-pulse' : ''}`}
+                style={pct === null ? undefined : { width: `${pct}%` }}
+              />
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }

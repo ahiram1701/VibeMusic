@@ -37,6 +37,8 @@ const LONG_PATHS_HELP =
 interface Marker {
   variant: TorchVariant
   installedAt: string
+  /** Separación de pistas (Demucs) instalada. Ausente en instalaciones antiguas. */
+  stems?: boolean
 }
 
 type Listener = (status: LocalEngineStatus) => void
@@ -89,11 +91,23 @@ export class SidecarManager {
   }
 
   async status(): Promise<LocalEngineStatus> {
-    if (this.state.state === 'checking') {
-      const marker = await this.readMarker()
-      this.set(marker ? { state: 'stopped', variant: marker.variant } : { state: 'not-installed' })
-    }
+    if (this.state.state === 'checking') this.set(await this.idleState())
     return this.state
+  }
+
+  /** Estado cuando no está en marcha: detenido (con sus funciones) o sin instalar. */
+  private async idleState(): Promise<LocalEngineStatus> {
+    const marker = await this.readMarker()
+    return marker
+      ? { state: 'stopped', variant: marker.variant, stems: this.hasStems(marker) }
+      : { state: 'not-installed' }
+  }
+
+  private hasStems(marker: Marker): boolean {
+    // Instalaciones anteriores no lo anotaban: se mira si el paquete está.
+    const sitePackages =
+      process.platform === 'win32' ? join(this.envDir, 'Lib', 'site-packages') : this.envDir
+    return marker.stems ?? existsSync(join(sitePackages, 'demucs'))
   }
 
   private async readMarker(): Promise<Marker | null> {
@@ -141,10 +155,13 @@ export class SidecarManager {
       this.set({ state: 'installing', variant, step: 'Instalando transformers…' })
       await pip(['install', '-r', join(this.paths.sidecarDir, 'requirements-models.txt')])
 
-      const marker: Marker = { variant, installedAt: new Date().toISOString() }
+      this.set({ state: 'installing', variant, step: 'Instalando la separación de pistas…' })
+      await pip(['install', '-r', join(this.paths.sidecarDir, 'requirements-stems.txt')])
+
+      const marker: Marker = { variant, installedAt: new Date().toISOString(), stems: true }
       await writeFile(this.markerFile, JSON.stringify(marker, null, 2))
       this.log('✓ Motor local instalado.')
-      this.set({ state: 'stopped', variant })
+      this.set({ state: 'stopped', variant, stems: true })
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err)
       const message = longPathError ? `${raw}. ${LONG_PATHS_HELP}` : raw
@@ -153,6 +170,33 @@ export class SidecarManager {
       throw new Error(message, { cause: err })
     } finally {
       offLog()
+    }
+  }
+
+  /** Añade la separación de pistas (Demucs) a una instalación existente. */
+  async installStems(): Promise<void> {
+    const marker = await this.readMarker()
+    if (!marker) throw new Error('Instala primero el motor local')
+    if (this.state.state === 'installing') throw new Error('Ya se está instalando')
+    await this.stop()
+    this.set({ state: 'installing', variant: marker.variant, step: 'Instalando la separación de pistas…' })
+    try {
+      await this.run(this.python, [
+        '-m',
+        'pip',
+        '--disable-pip-version-check',
+        'install',
+        '-r',
+        join(this.paths.sidecarDir, 'requirements-stems.txt')
+      ])
+      await writeFile(this.markerFile, JSON.stringify({ ...marker, stems: true }, null, 2))
+      this.log('✓ Separación de pistas instalada.')
+      this.set({ state: 'stopped', variant: marker.variant, stems: true })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      this.log(`✗ ${message}`)
+      this.set({ state: 'error', error: `No se pudo instalar la separación de pistas: ${message}` })
+      throw new Error(message, { cause: err })
     }
   }
 
@@ -177,7 +221,8 @@ export class SidecarManager {
       this.set({ state: 'not-installed' })
       throw new Error('El motor local no está instalado. Instálalo en Ajustes.')
     }
-    this.set({ state: 'starting', variant: marker.variant })
+    const stems = this.hasStems(marker)
+    this.set({ state: 'starting', variant: marker.variant, stems })
     this.port = await freePort()
     this.stderrTail = []
     const proc = spawn(this.python, [join(this.paths.sidecarDir, 'server.py')], {
@@ -199,7 +244,7 @@ export class SidecarManager {
       this.set(
         crashed
           ? { state: 'error', error: `El motor local se cerró (código ${code}). ${this.stderrTail.slice(-3).join(' ')}` }
-          : { state: 'stopped', variant: marker.variant }
+          : { state: 'stopped', variant: marker.variant, stems }
       )
     })
 
@@ -211,7 +256,7 @@ export class SidecarManager {
         const res = await fetch(`${this.baseUrl}/health`)
         if (res.ok) {
           const health = (await res.json()) as { device: LocalDevice }
-          this.set({ state: 'running', variant: marker.variant, device: health.device })
+          this.set({ state: 'running', variant: marker.variant, stems, device: health.device })
           return
         }
       } catch {
@@ -229,8 +274,7 @@ export class SidecarManager {
     const proc = this.proc
     if (!proc) return
     this.proc = null
-    const marker = await this.readMarker()
-    this.set(marker ? { state: 'stopped', variant: marker.variant } : { state: 'not-installed' })
+    this.set(await this.idleState())
     await new Promise<void>((resolve) => {
       proc.once('exit', () => resolve())
       proc.kill()

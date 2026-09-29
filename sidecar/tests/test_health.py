@@ -7,6 +7,7 @@ import numpy as np
 from fastapi.testclient import TestClient
 
 from engine import Audio, FakeEngine
+from separator import FakeSeparator
 from server import create_app, encode_wav
 
 
@@ -81,3 +82,36 @@ def test_continuation_limits() -> None:
     assert res.status_code == 400
     bad = client.post("/jobs", json={"prompt": "x", "seconds": 2, "audio_b64": "no-es-wav"})
     assert bad.status_code == 400
+
+
+def test_health_reports_separation_feature() -> None:
+    assert (
+        TestClient(create_app(FakeEngine())).get("/health").json()["features"]["separate"] is False
+    )
+    body = TestClient(create_app(FakeEngine(), FakeSeparator())).get("/health").json()
+    assert body["features"] == {"generate": True, "separate": True}
+
+
+def test_separates_into_four_stems(tmp_path) -> None:
+    src = tmp_path / "mezcla.wav"
+    audio = Audio(samples=np.full((2, 8000), 0.5, dtype=np.float32), sample_rate=16000)
+    src.write_bytes(encode_wav(audio))
+    client = TestClient(create_app(FakeEngine(), FakeSeparator()))
+    out = tmp_path / "stems"
+    job = client.post("/separations", json={"input_path": str(src), "output_dir": str(out)}).json()
+    done = wait_for(client, job["id"], "done")
+    names = [s["name"] for s in done["stems"]]
+    assert names == ["drums", "bass", "other", "vocals"]
+    assert all((out / f"{n}.wav").is_file() for n in names)
+    vocals = next(s for s in done["stems"] if s["name"] == "vocals")
+    assert vocals["rms"] == 0  # pista vacía: la app puede descartarla
+
+
+def test_separation_validation(tmp_path) -> None:
+    not_installed = TestClient(create_app(FakeEngine(), FakeSeparator(installed=False)))
+    body = {"input_path": str(tmp_path / "x.wav"), "output_dir": str(tmp_path)}
+    assert not_installed.post("/separations", json=body).status_code == 409
+    client = TestClient(create_app(FakeEngine(), FakeSeparator()))
+    assert client.post("/separations", json=body).status_code == 400  # no existe
+    rel = {"input_path": "x.wav", "output_dir": "out"}
+    assert client.post("/separations", json=rel).status_code == 400  # rutas relativas

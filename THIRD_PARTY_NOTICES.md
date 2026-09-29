@@ -21,6 +21,11 @@ Los pesos del modelo se publican bajo Creative Commons Atribución-NoComercial 4
 (https://creativecommons.org/licenses/by-nc/4.0/). **Revisa esta licencia y los términos de
 Replicate antes de usar comercialmente la música generada.**
 
+### Demucs (Meta) — código y modelo `htdemucs` bajo licencia MIT
+
+Separación de pistas (voz, batería, bajo, otros) en el motor local. Se instala en el entorno del
+motor y el modelo se descarga la primera vez que se usa. https://github.com/adefossez/demucs
+
 ## Servicios en la nube (opcionales)
 
 Replicate, Anthropic, Groq, OpenAI y demás proveedores configurables se rigen por sus propios

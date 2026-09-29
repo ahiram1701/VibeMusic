@@ -15,9 +15,9 @@ export type LocalEngineStatus =
   | { state: 'checking' }
   | { state: 'not-installed' }
   | { state: 'installing'; variant: TorchVariant; step: string }
-  | { state: 'stopped'; variant: TorchVariant }
-  | { state: 'starting'; variant: TorchVariant }
-  | { state: 'running'; variant: TorchVariant; device?: LocalDevice }
+  | { state: 'stopped'; variant: TorchVariant; stems: boolean }
+  | { state: 'starting'; variant: TorchVariant; stems: boolean }
+  | { state: 'running'; variant: TorchVariant; stems: boolean; device?: LocalDevice }
   | { state: 'error'; error: string }
 
 export interface LocalModel {

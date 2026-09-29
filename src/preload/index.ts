@@ -6,6 +6,7 @@ import {
   LLM_DELTA_EVENT,
   LOCAL_ENGINE_LOG_EVENT,
   LOCAL_ENGINE_STATUS_EVENT,
+  STEMS_PROGRESS_EVENT,
   type IpcChannel,
   type VibeApi
 } from '@shared/ipc-contract'
@@ -51,6 +52,7 @@ const api: VibeApi = {
     status: () => invoke('localEngine:status'),
     install: (variant) => invoke('localEngine:install', variant),
     uninstall: () => invoke('localEngine:uninstall'),
+    installStems: () => invoke('localEngine:installStems'),
     start: () => invoke('localEngine:start'),
     stop: () => invoke('localEngine:stop'),
     onStatus: (listener) => {
@@ -62,6 +64,20 @@ const api: VibeApi = {
       const handler = (_e: Electron.IpcRendererEvent, line: string): void => listener(line)
       ipcRenderer.on(LOCAL_ENGINE_LOG_EVENT, handler)
       return () => ipcRenderer.removeListener(LOCAL_ENGINE_LOG_EVENT, handler)
+    }
+  },
+  stems: {
+    separate: (requestId, dir, clipFile) => invoke('stems:separate', requestId, dir, clipFile),
+    cancel: (requestId) => invoke('stems:cancel', requestId),
+    onProgress: (listener) => {
+      const handler = (
+        _e: Electron.IpcRendererEvent,
+        requestId: string,
+        progress: number | null,
+        stage: string
+      ): void => listener(requestId, progress, stage)
+      ipcRenderer.on(STEMS_PROGRESS_EVENT, handler)
+      return () => ipcRenderer.removeListener(STEMS_PROGRESS_EVENT, handler)
     }
   },
   settings: {

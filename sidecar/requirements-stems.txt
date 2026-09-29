@@ -1,0 +1,2 @@
+# Separación de pistas (Demucs, MIT). No usa torchaudio: no cambia la versión de torch.
+demucs==4.1.0

@@ -7,7 +7,7 @@ dependencies = ["fastapi>=0.115", "uvicorn>=0.32", "numpy>=1.26"]
 
 [project.optional-dependencies]
 # Pesado (torch + modelos). CI no lo instala. La app lo instala con requirements-models.txt.
-models = ["torch>=2.6", "transformers>=4.45"]
+models = ["torch>=2.6", "transformers>=4.45", "demucs==4.1.0"]
 dev = ["pytest>=8", "httpx>=0.28", "ruff>=0.8"]
 
 [tool.ruff]
@@ -24,4 +24,4 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 # Módulos sueltos (sin paquete): el servidor y los motores de generación.
-py-modules = ["server", "engine"]
+py-modules = ["server", "engine", "separator"]
