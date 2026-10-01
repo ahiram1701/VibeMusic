@@ -97,12 +97,19 @@ export function createOpenAiCompatibleAdapter(opts: {
       }
       const choice = body.choices[0]
       const content: ContentBlock[] = []
-      const text = stripReasoning(choice.message.content ?? '')
+      const nativeCalls = choice.message.tool_calls ?? []
+      let text = stripReasoning(choice.message.content ?? '')
+      // Sin llamadas nativas, algunos modelos escriben las llamadas en el texto.
+      const textCalls =
+        nativeCalls.length === 0
+          ? extractTextToolCalls(text, new Set(req.tools.map((t) => t.name)))
+          : { calls: [], text }
+      text = textCalls.text
       if (text) {
         content.push({ type: 'text', text })
         onText(text)
       }
-      for (const call of choice.message.tool_calls ?? []) {
+      for (const call of nativeCalls) {
         let input: Record<string, unknown> = {}
         try {
           input = JSON.parse(call.function.arguments || '{}')
@@ -111,8 +118,11 @@ export function createOpenAiCompatibleAdapter(opts: {
         }
         content.push({ type: 'tool_use', id: call.id, name: call.function.name, input })
       }
+      textCalls.calls.forEach((c, i) =>
+        content.push({ type: 'tool_use', id: `text-call-${Date.now()}-${i}`, ...c })
+      )
       const stopReason =
-        (choice.message.tool_calls?.length ?? 0) > 0
+        nativeCalls.length + textCalls.calls.length > 0
           ? 'tool_use'
           : (STOP[choice.finish_reason] ?? 'other')
       return { content, stopReason }
@@ -126,6 +136,89 @@ export function createOpenAiCompatibleAdapter(opts: {
  */
 export function stripReasoning(text: string): string {
   return text.replace(/<think>[\s\S]*?(<\/think>|$)/g, '').trim()
+}
+
+type TextCall = { name: string; input: Record<string, unknown> }
+
+/**
+ * Llama 3.x y otros modelos a veces escriben las llamadas a herramientas en el texto
+ * en vez de usar `tool_calls`: `{"name": "x", "parameters": {...}}` o
+ * `<function=x>{...}</function>`. Las rescata (solo herramientas conocidas) y las
+ * quita del texto visible.
+ */
+export function extractTextToolCalls(
+  text: string,
+  toolNames: Set<string>
+): { calls: TextCall[]; text: string } {
+  const found: (TextCall & { at: number })[] = []
+  const cut: [number, number][] = []
+  const toInput = (v: unknown): Record<string, unknown> => {
+    if (typeof v === 'string') {
+      try {
+        v = JSON.parse(v)
+      } catch {
+        return {}
+      }
+    }
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
+  }
+
+  // <function=nombre>{...}</function>
+  for (const m of text.matchAll(/<function=([\w-]+)>([\s\S]*?)<\/function>/g)) {
+    if (!toolNames.has(m[1])) continue
+    found.push({ at: m.index!, name: m[1], input: toInput(m[2].trim() || '{}') })
+    cut.push([m.index!, m.index! + m[0].length])
+  }
+
+  // Objetos JSON de primer nivel con llaves balanceadas.
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '{' || cut.some(([a, b]) => i >= a && i < b)) continue
+    const end = matchingBrace(text, i)
+    if (end < 0) continue
+    let obj: unknown
+    try {
+      obj = JSON.parse(text.slice(i, end + 1))
+    } catch {
+      continue
+    }
+    const o = obj as { name?: unknown; parameters?: unknown; arguments?: unknown }
+    if (typeof o?.name === 'string' && toolNames.has(o.name)) {
+      found.push({ at: i, name: o.name, input: toInput(o.parameters ?? o.arguments ?? {}) })
+      cut.push([i, end + 1])
+    }
+    i = end
+  }
+
+  if (found.length === 0) return { calls: [], text }
+  const calls = found.sort((a, b) => a.at - b.at).map(({ name, input }) => ({ name, input }))
+  let clean = ''
+  let pos = 0
+  for (const [a, b] of cut.sort((x, y) => x[0] - y[0])) {
+    clean += text.slice(pos, a)
+    pos = b
+  }
+  clean += text.slice(pos)
+  clean = clean
+    .replace(/```(?:json)?\s*```/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  return { calls, text: clean }
+}
+
+/** Índice de la llave que cierra la abierta en `start` (respeta strings), o -1. */
+function matchingBrace(text: string, start: number): number {
+  let depth = 0
+  let inString = false
+  for (let i = start; i < text.length; i++) {
+    const c = text[i]
+    if (inString) {
+      if (c === '\\') i++
+      else if (c === '"') inString = false
+    } else if (c === '"') inString = true
+    else if (c === '{') depth++
+    else if (c === '}' && --depth === 0) return i
+  }
+  return -1
 }
 
 /** Convierte una respuesta HTTP de error en un mensaje útil. */

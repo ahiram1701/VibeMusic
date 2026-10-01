@@ -3,6 +3,7 @@ import type { LlmMessage } from '@shared/llm'
 import { toAnthropicMessages } from './anthropic'
 import {
   createOpenAiCompatibleAdapter,
+  extractTextToolCalls,
   listOpenAiCompatibleModels,
   stripReasoning,
   toChatMessages
@@ -106,6 +107,76 @@ describe('OpenAI/Ollama: conversión y respuesta', () => {
     expect(res.content).toEqual([
       { type: 'tool_use', id: 'a', name: 'x', input: { bpm: 80 } },
       { type: 'tool_use', id: 'b', name: 'y', input: {} }
+    ])
+  })
+})
+
+describe('llamadas escritas como texto (Llama y similares)', () => {
+  const tools = new Set(['generate_clip', 'set_sections'])
+
+  it('rescata el formato {"name", "parameters"} y <function=…> y limpia el texto', () => {
+    const text =
+      'Vamos a generar la melodía.\n\n{"name": "generate_clip", "parameters": {"bars": "8", "prompt": "rap {old school}"}}\n\n' +
+      '<function=set_sections>{"sections": []}</function>\nListo.'
+    const out = extractTextToolCalls(text, tools)
+    expect(out.calls).toEqual([
+      { name: 'generate_clip', input: { bars: '8', prompt: 'rap {old school}' } },
+      { name: 'set_sections', input: { sections: [] } }
+    ])
+    expect(out.text).toBe('Vamos a generar la melodía.\n\nListo.')
+  })
+
+  it('ignora herramientas desconocidas y JSON que no son llamadas', () => {
+    const text = 'Ejemplo {"name": "New track", "parameters": {}} y {"bpm": 90}'
+    expect(extractTextToolCalls(text, tools)).toEqual({ calls: [], text })
+  })
+
+  it('el adaptador las convierte en tool_use solo si no hay tool_calls nativos', async () => {
+    const reply = (message: Record<string, unknown>) =>
+      createOpenAiCompatibleAdapter({
+        baseUrl: 'http://x/v1',
+        model: 'llama',
+        label: 'Groq',
+        tokensParam: 'max_tokens',
+        fetchImpl: (async () =>
+          Response.json({ choices: [{ finish_reason: 'stop', message }] })) as typeof fetch
+      }).chat(
+        {
+          system: 's',
+          messages: [],
+          tools: [
+            {
+              name: 'generate_clip',
+              description: '',
+              inputSchema: { type: 'object', properties: {} }
+            }
+          ],
+          maxTokens: 10
+        },
+        () => undefined,
+        new AbortController().signal
+      )
+    const call = '{"name": "generate_clip", "parameters": {"bars": 4}}'
+
+    const fromText = await reply({ role: 'assistant', content: `Voy.\n${call}` })
+    expect(fromText.stopReason).toBe('tool_use')
+    expect(fromText.content[0]).toEqual({ type: 'text', text: 'Voy.' })
+    expect(fromText.content[1]).toMatchObject({
+      type: 'tool_use',
+      name: 'generate_clip',
+      input: { bars: 4 }
+    })
+
+    const native = await reply({
+      role: 'assistant',
+      content: call,
+      tool_calls: [
+        { id: 'n', type: 'function', function: { name: 'generate_clip', arguments: '{}' } }
+      ]
+    })
+    expect(native.content).toEqual([
+      { type: 'text', text: call },
+      { type: 'tool_use', id: 'n', name: 'generate_clip', input: {} }
     ])
   })
 })

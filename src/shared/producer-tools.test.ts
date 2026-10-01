@@ -265,6 +265,43 @@ describe('herramientas del productor', () => {
     ).rejects.toThrow(/se solapa/)
   })
 
+  it('tolera números como texto y secciones mal formateadas (modelos tipo Llama)', async () => {
+    const { state, run } = fakeHost(createProject('X'))
+    const clip = (await run('generate_clip', {
+      prompt: 'boom bap drums',
+      role: 'drums',
+      bars: '8',
+      start_bar: ' 1 '
+    })) as { bars: number; start_bar: number }
+    expect(clip).toMatchObject({ bars: 8, start_bar: 1 })
+    await run('set_track', { track_id: state.project.tracks[0].id, mute: 'true' })
+    expect(state.project.tracks[0].mute).toBe(true)
+    await expect(
+      run('generate_clip', { prompt: 'x', role: 'drums', bars: 'ocho', start_bar: 1 })
+    ).rejects.toThrow(/"bars" debe ser un número/)
+
+    const fromStrings = (await run('set_sections', {
+      sections: '["Intro 4", "Verse 8", "Chorus 8"]'
+    })) as { sections: { name: string; start_bar: number; bars: number }[] }
+    expect(fromStrings.sections.map((s) => [s.name, s.start_bar, s.bars])).toEqual([
+      ['Intro', 1, 4],
+      ['Verse', 5, 8],
+      ['Chorus', 13, 8]
+    ])
+    const chained = (await run('set_sections', {
+      sections: [
+        { name: 'A', bars: '4' },
+        { name: 'B', bars: 2 }
+      ]
+    })) as { sections: { start_bar: number }[] }
+    expect(chained.sections.map((s) => s.start_bar)).toEqual([1, 5])
+
+    await expect(run('set_sections', { sections: ['Intro'] })).rejects.toThrow(/indica su duración/)
+    await expect(run('set_sections', { sections: 'Intro, Verso' })).rejects.toThrow(
+      /lista de objetos/
+    )
+  })
+
   it('separa una región en pistas a través del host', async () => {
     const { state, run } = fakeHost(createProject('X'))
     const a = (await run('generate_clip', {
