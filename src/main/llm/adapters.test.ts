@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { LlmMessage } from '@shared/llm'
 import { toAnthropicMessages } from './anthropic'
+import { OLLAMA_NUM_CTX, createOllamaAdapter } from './ollama'
 import {
   createOpenAiCompatibleAdapter,
   extractTextToolCalls,
@@ -224,5 +225,78 @@ describe('proveedores compatibles con OpenAI', () => {
         new AbortController().signal
       )
     ).rejects.toThrow(/no soporta "tool calling"/)
+  })
+})
+
+describe('Ollama nativo', () => {
+  it('usa /api/chat con más contexto, sin razonamiento y con argumentos como objeto', async () => {
+    let url = ''
+    let body: Record<string, unknown> = {}
+    const adapter = createOllamaAdapter({
+      baseUrl: 'http://10.0.0.184:11434/v1/',
+      model: 'qwen3:4b',
+      fetchImpl: (async (u: string, init: RequestInit) => {
+        url = u
+        body = JSON.parse(init.body as string)
+        return Response.json({
+          done_reason: 'stop',
+          message: {
+            role: 'assistant',
+            content: '<think>…</think>Voy.',
+            tool_calls: [{ function: { name: 'set_tempo_key', arguments: { bpm: 90 } } }]
+          }
+        })
+      }) as typeof fetch
+    })
+    const res = await adapter.chat(
+      { system: 's', messages: conversation, tools: [], maxTokens: 50 },
+      () => undefined,
+      new AbortController().signal
+    )
+    expect(url).toBe('http://10.0.0.184:11434/api/chat')
+    expect(body).toMatchObject({
+      model: 'qwen3:4b',
+      stream: false,
+      think: false,
+      options: { num_ctx: OLLAMA_NUM_CTX, num_predict: 50 }
+    })
+    expect(body.messages).toEqual([
+      { role: 'system', content: 's' },
+      { role: 'user', content: 'pon 90 bpm' },
+      {
+        role: 'assistant',
+        content: 'Hecho.',
+        tool_calls: [{ function: { name: 'set_tempo_key', arguments: { bpm: 90 } } }]
+      },
+      { role: 'tool', content: '{"ok":true}', tool_name: 'set_tempo_key' }
+    ])
+    expect(res.stopReason).toBe('tool_use')
+    expect(res.content[0]).toEqual({ type: 'text', text: 'Voy.' })
+    expect(res.content[1]).toMatchObject({ name: 'set_tempo_key', input: { bpm: 90 } })
+  })
+
+  it('rescata llamadas escritas como texto y detecta respuestas cortadas', async () => {
+    const reply = (message: Record<string, unknown>, done_reason = 'stop') =>
+      createOllamaAdapter({
+        baseUrl: 'http://x:11434/v1',
+        model: 'llama3.2',
+        fetchImpl: (async () => Response.json({ done_reason, message })) as typeof fetch
+      }).chat(
+        {
+          system: 's',
+          messages: [],
+          tools: [
+            { name: 'play', description: '', inputSchema: { type: 'object', properties: {} } }
+          ],
+          maxTokens: 10
+        },
+        () => undefined,
+        new AbortController().signal
+      )
+    const fromText = await reply({ role: 'assistant', content: '{"name":"play","parameters":{}}' })
+    expect(fromText.content).toMatchObject([{ type: 'tool_use', name: 'play', input: {} }])
+    expect((await reply({ role: 'assistant', content: 'Hola, est' }, 'length')).stopReason).toBe(
+      'max_tokens'
+    )
   })
 })

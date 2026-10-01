@@ -1,4 +1,5 @@
 import type { ContentBlock, LlmMessage, LlmRequest, LlmResponse, StopReason } from '@shared/llm'
+import { llmFetch } from './http'
 import { LlmError, type LlmAdapter } from './types'
 
 // Adaptador para cualquier API compatible con OpenAI Chat Completions: OpenAI, Groq,
@@ -65,7 +66,7 @@ export function createOpenAiCompatibleAdapter(opts: {
   tokensParam: 'max_completion_tokens' | 'max_tokens'
   fetchImpl?: typeof fetch
 }): LlmAdapter {
-  const fetchImpl = opts.fetchImpl ?? fetch
+  const fetchImpl = opts.fetchImpl ?? llmFetch
   return {
     async chat(req: LlmRequest, onText, signal): Promise<LlmResponse> {
       let res: Response
@@ -222,7 +223,7 @@ function matchingBrace(text: string, start: number): number {
 }
 
 /** Convierte una respuesta HTTP de error en un mensaje útil. */
-async function httpError(res: Response, label: string, model?: string): Promise<LlmError> {
+export async function httpError(res: Response, label: string, model?: string): Promise<LlmError> {
   const raw = await res.text().catch(() => '')
   let detail = raw
   try {

@@ -3,6 +3,7 @@ import { findProvider, type LlmProviderPreset } from '@shared/llm-providers'
 import { llmSecret, type SettingsStore } from '../settings'
 import { createAnthropicAdapter, listAnthropicModels } from './anthropic'
 import { createFakeAdapter } from './fake'
+import { createOllamaAdapter } from './ollama'
 import { createOpenAiCompatibleAdapter, listOpenAiCompatibleModels } from './openai-compatible'
 import { LlmError, type LlmAdapter } from './types'
 
@@ -43,6 +44,8 @@ export class LlmService {
     if (this.allowFake) return createFakeAdapter()
     const { preset, model, baseUrl, key } = await this.resolve()
     if (preset.kind === 'anthropic') return createAnthropicAdapter(key!, model)
+    // Ollama por su API nativa: es la única que permite pedir más contexto.
+    if (preset.id === 'ollama') return createOllamaAdapter({ baseUrl, model })
     return createOpenAiCompatibleAdapter({
       baseUrl,
       apiKey: key ?? undefined,
