@@ -229,7 +229,7 @@ describe('proveedores compatibles con OpenAI', () => {
 })
 
 describe('Ollama nativo', () => {
-  it('usa /api/chat con más contexto, sin razonamiento y con argumentos como objeto', async () => {
+  it('usa /api/chat con más contexto, oculta el razonamiento y manda argumentos como objeto', async () => {
     let url = ''
     let body: Record<string, unknown> = {}
     const adapter = createOllamaAdapter({
@@ -242,6 +242,7 @@ describe('Ollama nativo', () => {
           done_reason: 'stop',
           message: {
             role: 'assistant',
+            thinking: 'El usuario quiere 90 BPM…',
             content: '<think>…</think>Voy.',
             tool_calls: [{ function: { name: 'set_tempo_key', arguments: { bpm: 90 } } }]
           }
@@ -257,9 +258,9 @@ describe('Ollama nativo', () => {
     expect(body).toMatchObject({
       model: 'qwen3:4b',
       stream: false,
-      think: false,
       options: { num_ctx: OLLAMA_NUM_CTX, num_predict: 50 }
     })
+    expect(body).not.toHaveProperty('think')
     expect(body.messages).toEqual([
       { role: 'system', content: 's' },
       { role: 'user', content: 'pon 90 bpm' },

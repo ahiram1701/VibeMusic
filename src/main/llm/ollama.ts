@@ -69,8 +69,8 @@ export function createOllamaAdapter(opts: {
               function: { name: t.name, description: t.description, parameters: t.inputSchema }
             })),
             stream: false,
-            // Sin razonamiento previo: en CPU puede añadir minutos a cada paso.
-            think: false,
+            // Sin "think": los modelos que razonan lo devuelven aparte (message.thinking)
+            // y no llega al chat. Con think:false, qwen3 razona igual pero dentro del texto.
             options: { num_ctx: OLLAMA_NUM_CTX, num_predict: req.maxTokens }
           })
         })
