@@ -78,11 +78,13 @@ function num(
   max: number,
   optional = false
 ): number | undefined {
-  const v = input[key]
-  if (v === undefined || v === null) {
+  const raw = input[key]
+  if (raw === undefined || raw === null) {
     if (optional) return undefined
     throw new Error(`Falta el parámetro "${key}"`)
   }
+  // Algunos modelos (Llama, modelos locales…) mandan los números como texto: "8".
+  const v = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : raw
   if (typeof v !== 'number' || !Number.isFinite(v)) throw new Error(`"${key}" debe ser un número`)
   if (v < min || v > max)
     throw new Error(`"${key}" debe estar entre ${min} y ${max} (recibido ${v})`)
@@ -104,8 +106,53 @@ function str(input: Input, key: string, optional = false): string | undefined {
 function bool(input: Input, key: string): boolean | undefined {
   const v = input[key]
   if (v === undefined || v === null) return undefined
+  if (v === 'true' || v === 'false') return v === 'true'
   if (typeof v !== 'boolean') throw new Error(`"${key}" debe ser true o false`)
   return v
+}
+
+const SECTIONS_EXAMPLE =
+  '[{"name":"Intro","start_bar":1,"bars":4},{"name":"Verso","start_bar":5,"bars":8}]'
+
+/**
+ * Normaliza la lista de secciones que manda el LLM. Además del formato correcto,
+ * acepta la lista serializada como texto y elementos como "Verse 8"; si falta
+ * start_bar, la sección empieza donde acaba la anterior.
+ */
+export function parseSections(raw: unknown): { name: string; startBar: number; bars: number }[] {
+  let value = raw
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value)
+    } catch {
+      // se queda como texto y da el error de abajo
+    }
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`"sections" debe ser una lista de objetos, p. ej. ${SECTIONS_EXAMPLE}`)
+  }
+  let nextBar = 1
+  return value.map((item, i) => {
+    let it: Record<string, unknown>
+    if (typeof item === 'string') {
+      const m = /^(.*?)\s*(\d+)\s*$/.exec(item.trim())
+      if (!m || !m[1]) {
+        throw new Error(
+          `Sección ${i + 1} ("${item}"): indica su duración. Usa objetos, p. ej. ${SECTIONS_EXAMPLE}`
+        )
+      }
+      it = { name: m[1], bars: Number(m[2]) }
+    } else {
+      it = (item ?? {}) as Record<string, unknown>
+    }
+    if (typeof it.name !== 'string' || !it.name.trim()) {
+      throw new Error(`Sección ${i + 1}: falta "name". Formato: ${SECTIONS_EXAMPLE}`)
+    }
+    const startBar = Math.round(num(it, 'start_bar', 1, 1000, true) ?? nextBar)
+    const bars = Math.round(num(it, 'bars', 1, 256))
+    nextBar = startBar + bars
+    return { name: it.name.trim(), startBar, bars }
+  })
 }
 
 // --- Utilidades de compases --------------------------------------------------
@@ -258,19 +305,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         }
       },
       run: async (input) => {
-        const raw = input.sections
-        if (!Array.isArray(raw)) throw new Error('"sections" debe ser una lista')
-        const list = raw.map((item, i) => {
-          const it = (item ?? {}) as Record<string, unknown>
-          if (typeof it.name !== 'string' || !it.name.trim()) {
-            throw new Error(`Sección ${i + 1}: falta "name"`)
-          }
-          return {
-            name: it.name,
-            startBar: Math.round(num(it, 'start_bar', 1, 1000)),
-            bars: Math.round(num(it, 'bars', 1, 256))
-          }
-        })
+        const list = parseSections(input.sections)
         const next = setSections(host.getProject(), list)
         await commit(next, `estructura: ${list.map((s) => `${s.name} ${s.bars}`).join(' · ')}`)
         return {
