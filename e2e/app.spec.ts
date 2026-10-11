@@ -5,6 +5,7 @@ import {
   _electron as electron,
   expect,
   test,
+  type Dialog,
   type ElectronApplication,
   type Page
 } from '@playwright/test'
@@ -479,4 +480,30 @@ test('separar en pistas sin motor local: explica qué instalar', async () => {
   await expect(page.getByRole('status').filter({ hasText: /instala el motor local/ })).toBeVisible({
     timeout: 10_000
   })
+})
+
+test('aviso de actualización: se puede posponer y avisa si no hay nada que instalar', async () => {
+  const announce = (version: string): Promise<void> =>
+    app.evaluate(({ BrowserWindow }, v) => {
+      for (const w of BrowserWindow.getAllWindows()) w.webContents.send('app:update-ready', v)
+    }, version)
+  const banner = page.getByRole('status').filter({ hasText: 'está lista para instalarse' })
+
+  // Se reintenta por si la ventana aún no se había suscrito al evento.
+  await expect(async () => {
+    await announce('9.9.9')
+    await expect(banner).toContainText('VibeMusic 9.9.9', { timeout: 500 })
+  }).toPass()
+  await page.getByRole('button', { name: 'Más tarde' }).click()
+  await expect(banner).toBeHidden()
+
+  // En desarrollo no hay nada descargado: reiniciar explica el problema y no cierra la app.
+  await announce('9.9.10')
+  // Si otra prueba dejó trabajo en curso, se pide confirmación: se acepta.
+  const accept = (d: Dialog): void => void d.accept()
+  page.on('dialog', accept)
+  await page.getByRole('button', { name: 'Reiniciar ahora' }).click()
+  await expect(banner).toContainText('No se pudo instalar: No hay ninguna actualización descargada')
+  page.off('dialog', accept)
+  await expect(page.getByRole('button', { name: 'Reiniciar ahora' })).toBeEnabled()
 })

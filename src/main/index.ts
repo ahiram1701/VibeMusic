@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, shell } from 'electron'
+import { UPDATE_READY_EVENT } from '@shared/ipc-contract'
 import { registerIpc } from './ipc'
 import { startAutoUpdates } from './updater'
 
@@ -39,8 +40,12 @@ app.whenReady().then(() => {
   app.on('before-quit', () => services.shutdown())
   createWindow()
 
-  // CD: las builds publicadas en GitHub Releases se auto-actualizan.
-  startAutoUpdates()
+  // CD: las builds publicadas en GitHub Releases se auto-actualizan. Cuando hay una
+  // versión descargada, la interfaz ofrece reiniciar para instalarla.
+  startAutoUpdates((version) => {
+    for (const win of BrowserWindow.getAllWindows())
+      win.webContents.send(UPDATE_READY_EVENT, version)
+  })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

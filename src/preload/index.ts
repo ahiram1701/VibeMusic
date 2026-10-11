@@ -7,6 +7,7 @@ import {
   LOCAL_ENGINE_LOG_EVENT,
   LOCAL_ENGINE_STATUS_EVENT,
   STEMS_PROGRESS_EVENT,
+  UPDATE_READY_EVENT,
   type IpcChannel,
   type VibeApi
 } from '@shared/ipc-contract'
@@ -98,7 +99,14 @@ const api: VibeApi = {
       invoke('export:writeInFolder', token, fileName, bytes)
   },
   app: {
-    version: () => invoke('app:version')
+    version: () => invoke('app:version'),
+    pendingUpdate: () => invoke('app:pendingUpdate'),
+    installUpdate: () => invoke('app:installUpdate'),
+    onUpdateReady: (listener) => {
+      const handler = (_e: Electron.IpcRendererEvent, version: string): void => listener(version)
+      ipcRenderer.on(UPDATE_READY_EVENT, handler)
+      return () => ipcRenderer.removeListener(UPDATE_READY_EVENT, handler)
+    }
   }
 }
 

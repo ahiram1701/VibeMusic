@@ -96,6 +96,11 @@ export interface VibeApi {
   }
   app: {
     version(): Promise<string>
+    /** Versión nueva ya descargada y lista para instalar, o null. */
+    pendingUpdate(): Promise<string | null>
+    /** Cierra la app, instala la versión descargada y la vuelve a abrir. */
+    installUpdate(): Promise<void>
+    onUpdateReady(listener: (version: string) => void): () => void
   }
 }
 
@@ -136,6 +141,8 @@ export type IpcChannel =
   | 'export:chooseFolder'
   | 'export:writeInFolder'
   | 'app:version'
+  | 'app:pendingUpdate'
+  | 'app:installUpdate'
 
 /** Eventos main → renderer. */
 export const GENERATION_UPDATE_EVENT = 'generation:update'
@@ -143,3 +150,4 @@ export const LLM_DELTA_EVENT = 'llm:delta'
 export const LOCAL_ENGINE_STATUS_EVENT = 'localEngine:status'
 export const LOCAL_ENGINE_LOG_EVENT = 'localEngine:log'
 export const STEMS_PROGRESS_EVENT = 'stems:progress'
+export const UPDATE_READY_EVENT = 'app:update-ready'

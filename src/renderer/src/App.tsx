@@ -8,6 +8,7 @@ import { RegionMenu, TaskList, Toast } from './components/RegionMenu'
 import { SettingsDialog } from './components/SettingsDialog'
 import { Timeline } from './components/Timeline'
 import { Transport } from './components/Transport'
+import { UpdateBanner } from './components/UpdateBanner'
 import { useGeneration } from './store/generation'
 import { useProject } from './store/project'
 
@@ -58,6 +59,7 @@ export default function App(): React.JSX.Element {
           </button>
         </div>
         <span className="text-xs text-muted">v{version}</span>
+        <UpdateBanner />
       </main>
     )
   }
@@ -121,6 +123,7 @@ export default function App(): React.JSX.Element {
       <RegionMenu />
       <TaskList />
       <Toast />
+      <UpdateBanner />
     </div>
   )
 }
