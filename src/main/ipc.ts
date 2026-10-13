@@ -23,6 +23,7 @@ import { LlmService } from './llm/service'
 import { llmSecret, SettingsStore } from './settings'
 import { SidecarManager } from './sidecar/manager'
 import { StemsService } from './stems'
+import { installUpdate, pendingUpdate } from './updater'
 import {
   initProjectDir,
   listVersions,
@@ -207,6 +208,8 @@ export function registerIpc(): { shutdown(): void } {
     exportFolders.write(token, fileName, bytes)
   )
   handle('app:version', () => app.getVersion())
+  handle('app:pendingUpdate', () => pendingUpdate())
+  handle('app:installUpdate', () => installUpdate())
 
   return { shutdown: () => sidecar.killNow() }
 }
