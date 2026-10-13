@@ -27,6 +27,10 @@ interface SettingsFile {
   llmModels: Record<string, string>
   llmUrls: Record<string, string>
   secrets: Record<string, string>
+  /** Última versión de la app que se abrió (para enseñar las novedades una vez). */
+  lastRunVersion?: string
+  /** Notas de la versión descargada, para enseñarlas tras instalarla. */
+  pendingReleaseNotes?: { version: string; notes: string }
 }
 
 /** Formato antiguo (antes de admitir cualquier proveedor), para migrarlo. */
@@ -88,7 +92,9 @@ export class SettingsStore {
           ...Object.fromEntries(Object.entries(raw.llmModels ?? {}).filter(([, m]) => m))
         },
         llmUrls: urls,
-        secrets
+        secrets,
+        lastRunVersion: raw.lastRunVersion,
+        pendingReleaseNotes: raw.pendingReleaseNotes
       }
     } catch {
       this.cache = d
@@ -196,6 +202,20 @@ export class SettingsStore {
       delete secrets[name]
     }
     await this.save({ ...s, secrets })
+  }
+
+  async getUpdateMemory(): Promise<Pick<SettingsFile, 'lastRunVersion' | 'pendingReleaseNotes'>> {
+    const s = await this.load()
+    return { lastRunVersion: s.lastRunVersion, pendingReleaseNotes: s.pendingReleaseNotes }
+  }
+
+  async setLastRunVersion(version: string): Promise<void> {
+    const s = await this.load()
+    if (s.lastRunVersion !== version) await this.save({ ...s, lastRunVersion: version })
+  }
+
+  async setPendingReleaseNotes(version: string, notes: string): Promise<void> {
+    await this.save({ ...(await this.load()), pendingReleaseNotes: { version, notes } })
   }
 
   getReplicateToken(): Promise<string | null> {

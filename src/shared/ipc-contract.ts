@@ -3,6 +3,7 @@ import type { LlmProviderId, LlmRequest, LlmResponse } from './llm'
 import type { LocalEngineStatus, TorchVariant } from './local-engine'
 import type { StemResult } from './stems'
 import type { GenerationSpec, Project, VersionMeta } from './project'
+import type { UpdateStatus, WhatsNew } from './update'
 
 export type KeyCheck = { ok: true; info: string } | { ok: false; error: string }
 
@@ -96,11 +97,15 @@ export interface VibeApi {
   }
   app: {
     version(): Promise<string>
-    /** Versión nueva ya descargada y lista para instalar, o null. */
-    pendingUpdate(): Promise<string | null>
+    /** Estado de la actualización automática (buscando, descargando, lista…). */
+    updateStatus(): Promise<UpdateStatus>
+    /** Busca una versión nueva ahora (desde Ajustes). */
+    checkForUpdates(): Promise<UpdateStatus>
     /** Cierra la app, instala la versión descargada y la vuelve a abrir. */
     installUpdate(): Promise<void>
-    onUpdateReady(listener: (version: string) => void): () => void
+    onUpdateStatus(listener: (status: UpdateStatus) => void): () => void
+    /** Novedades de esta versión si se acaba de actualizar (solo la primera vez), o null. */
+    whatsNew(): Promise<WhatsNew | null>
   }
 }
 
@@ -141,8 +146,10 @@ export type IpcChannel =
   | 'export:chooseFolder'
   | 'export:writeInFolder'
   | 'app:version'
-  | 'app:pendingUpdate'
+  | 'app:updateStatus'
+  | 'app:checkForUpdates'
   | 'app:installUpdate'
+  | 'app:whatsNew'
 
 /** Eventos main → renderer. */
 export const GENERATION_UPDATE_EVENT = 'generation:update'
@@ -150,4 +157,4 @@ export const LLM_DELTA_EVENT = 'llm:delta'
 export const LOCAL_ENGINE_STATUS_EVENT = 'localEngine:status'
 export const LOCAL_ENGINE_LOG_EVENT = 'localEngine:log'
 export const STEMS_PROGRESS_EVENT = 'stems:progress'
-export const UPDATE_READY_EVENT = 'app:update-ready'
+export const UPDATE_STATUS_EVENT = 'app:update-status'

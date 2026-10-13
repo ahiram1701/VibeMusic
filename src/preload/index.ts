@@ -1,13 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { GenerationJob } from '@shared/generation'
 import type { LocalEngineStatus } from '@shared/local-engine'
+import type { UpdateStatus } from '@shared/update'
 import {
   GENERATION_UPDATE_EVENT,
   LLM_DELTA_EVENT,
   LOCAL_ENGINE_LOG_EVENT,
   LOCAL_ENGINE_STATUS_EVENT,
   STEMS_PROGRESS_EVENT,
-  UPDATE_READY_EVENT,
+  UPDATE_STATUS_EVENT,
   type IpcChannel,
   type VibeApi
 } from '@shared/ipc-contract'
@@ -100,13 +101,16 @@ const api: VibeApi = {
   },
   app: {
     version: () => invoke('app:version'),
-    pendingUpdate: () => invoke('app:pendingUpdate'),
+    updateStatus: () => invoke('app:updateStatus'),
+    checkForUpdates: () => invoke('app:checkForUpdates'),
     installUpdate: () => invoke('app:installUpdate'),
-    onUpdateReady: (listener) => {
-      const handler = (_e: Electron.IpcRendererEvent, version: string): void => listener(version)
-      ipcRenderer.on(UPDATE_READY_EVENT, handler)
-      return () => ipcRenderer.removeListener(UPDATE_READY_EVENT, handler)
-    }
+    onUpdateStatus: (listener) => {
+      const handler = (_e: Electron.IpcRendererEvent, status: UpdateStatus): void =>
+        listener(status)
+      ipcRenderer.on(UPDATE_STATUS_EVENT, handler)
+      return () => ipcRenderer.removeListener(UPDATE_STATUS_EVENT, handler)
+    },
+    whatsNew: () => invoke('app:whatsNew')
   }
 }
 

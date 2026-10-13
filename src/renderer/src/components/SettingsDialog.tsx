@@ -3,6 +3,7 @@ import type { ProviderId } from '@shared/generation'
 import { useGeneration } from '../store/generation'
 import { LlmSettingsSection } from './LlmSettingsSection'
 import { LocalEngineSection } from './LocalEngineSection'
+import { UpdatesSection } from './UpdatesSection'
 
 export function SettingsDialog({ onClose }: { onClose(): void }): React.JSX.Element {
   const { settings, providers, refresh } = useGeneration()
@@ -148,6 +149,10 @@ export function SettingsDialog({ onClose }: { onClose(): void }): React.JSX.Elem
             {providers.find((p) => p.id === settings?.defaultProvider)?.description}
           </p>
         </section>
+
+        <hr className="my-5 border-line" />
+
+        <UpdatesSection />
       </div>
     </div>
   )
