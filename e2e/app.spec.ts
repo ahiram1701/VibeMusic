@@ -485,7 +485,8 @@ test('separar en pistas sin motor local: explica qué instalar', async () => {
 test('aviso de actualización: se puede posponer y avisa si no hay nada que instalar', async () => {
   const announce = (version: string): Promise<void> =>
     app.evaluate(({ BrowserWindow }, v) => {
-      for (const w of BrowserWindow.getAllWindows()) w.webContents.send('app:update-ready', v)
+      for (const w of BrowserWindow.getAllWindows())
+        w.webContents.send('app:update-status', { state: 'ready', version: v })
     }, version)
   const banner = page.getByRole('status').filter({ hasText: 'está lista para instalarse' })
 

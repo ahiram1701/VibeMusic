@@ -1,8 +1,6 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, shell } from 'electron'
-import { UPDATE_READY_EVENT } from '@shared/ipc-contract'
 import { registerIpc } from './ipc'
-import { startAutoUpdates } from './updater'
 
 // Las pruebas e2e usan su propia carpeta de datos para no tocar los ajustes reales.
 if (process.env['VIBE_USER_DATA']) app.setPath('userData', process.env['VIBE_USER_DATA'])
@@ -39,13 +37,6 @@ app.whenReady().then(() => {
   // El motor local es un proceso aparte: se cierra con la app.
   app.on('before-quit', () => services.shutdown())
   createWindow()
-
-  // CD: las builds publicadas en GitHub Releases se auto-actualizan. Cuando hay una
-  // versión descargada, la interfaz ofrece reiniciar para instalarla.
-  startAutoUpdates((version) => {
-    for (const win of BrowserWindow.getAllWindows())
-      win.webContents.send(UPDATE_READY_EVENT, version)
-  })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

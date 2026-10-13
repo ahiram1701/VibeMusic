@@ -8,6 +8,7 @@ import {
   LOCAL_ENGINE_LOG_EVENT,
   LOCAL_ENGINE_STATUS_EVENT,
   STEMS_PROGRESS_EVENT,
+  UPDATE_STATUS_EVENT,
   type IpcChannel,
   type KeyCheck
 } from '@shared/ipc-contract'
@@ -23,7 +24,8 @@ import { LlmService } from './llm/service'
 import { llmSecret, SettingsStore } from './settings'
 import { SidecarManager } from './sidecar/manager'
 import { StemsService } from './stems'
-import { installUpdate, pendingUpdate } from './updater'
+import { checkForUpdates, getUpdateStatus, installUpdate, startAutoUpdates } from './updater'
+import { computeWhatsNew } from './whats-new'
 import {
   initProjectDir,
   listVersions,
@@ -208,8 +210,31 @@ export function registerIpc(): { shutdown(): void } {
     exportFolders.write(token, fileName, bytes)
   )
   handle('app:version', () => app.getVersion())
-  handle('app:pendingUpdate', () => pendingUpdate())
+
+  // Actualizaciones: las builds publicadas en GitHub Releases se auto-actualizan y la
+  // interfaz muestra la descarga, el aviso de reiniciar y las novedades.
+  startAutoUpdates({
+    onStatus: (status) => broadcast(UPDATE_STATUS_EVENT, status),
+    saveNotes: (version, notes) => settings.setPendingReleaseNotes(version, notes)
+  })
+  handle('app:updateStatus', () => getUpdateStatus())
+  handle('app:checkForUpdates', () => checkForUpdates())
   handle('app:installUpdate', () => installUpdate())
+  // Se calcula una sola vez al arrancar y se recuerda esta versión como vista.
+  const whatsNew = settings
+    .getUpdateMemory()
+    .then(async (memory) => {
+      const current = app.getVersion()
+      const result = computeWhatsNew({
+        current,
+        lastRun: memory.lastRunVersion,
+        pending: memory.pendingReleaseNotes
+      })
+      await settings.setLastRunVersion(current)
+      return result
+    })
+    .catch(() => null)
+  handle('app:whatsNew', () => whatsNew)
 
   return { shutdown: () => sidecar.killNow() }
 }

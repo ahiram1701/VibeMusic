@@ -9,6 +9,7 @@ import { SettingsDialog } from './components/SettingsDialog'
 import { Timeline } from './components/Timeline'
 import { Transport } from './components/Transport'
 import { UpdateBanner } from './components/UpdateBanner'
+import { WhatsNewDialog } from './components/WhatsNewDialog'
 import { useGeneration } from './store/generation'
 import { useProject } from './store/project'
 
@@ -60,6 +61,7 @@ export default function App(): React.JSX.Element {
         </div>
         <span className="text-xs text-muted">v{version}</span>
         <UpdateBanner />
+        <WhatsNewDialog />
       </main>
     )
   }
@@ -124,6 +126,7 @@ export default function App(): React.JSX.Element {
       <TaskList />
       <Toast />
       <UpdateBanner />
+      <WhatsNewDialog />
     </div>
   )
 }
