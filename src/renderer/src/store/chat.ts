@@ -9,7 +9,8 @@ import { continueRegion, separateRegion, varyRegion } from './clip-actions'
 import { useGeneration, waitForJob } from './generation'
 import { useProject } from './project'
 
-export type ChatItem =
+/** `at`: cuándo apareció (ms). En herramientas, `endedAt`: cuándo terminaron. */
+export type ChatItem = { at: number } & (
   | { id: string; kind: 'user'; text: string }
   | { id: string; kind: 'assistant'; text: string }
   | {
@@ -19,8 +20,10 @@ export type ChatItem =
       input: Record<string, unknown>
       status: 'running' | 'ok' | 'error'
       result?: string
+      endedAt?: number
     }
   | { id: string; kind: 'notice'; text: string; tone: 'error' | 'info' }
+)
 
 interface ChatState {
   items: ChatItem[]
@@ -32,6 +35,8 @@ interface ChatState {
    * guarda lo hecho hasta entonces: `resume()` sigue donde iba.
    */
   resumable: boolean
+  /** Desde cuándo espera la respuesta del LLM en el paso actual (para el cronómetro). */
+  thinkingSince: number | null
   /** El LLM falló por la red y se reintentará solo (`until`: cuándo, en ms). */
   retry: (LlmRetry & { until: number }) | null
   send(text: string): Promise<void>
@@ -107,12 +112,15 @@ export const useChat = create<ChatState>((set, get) => ({
   history: [],
   running: false,
   resumable: false,
+  thinkingSince: null,
   retry: null,
 
   async send(text) {
     const trimmed = text.trim()
     if (!trimmed || get().running) return
-    set((s) => ({ items: [...s.items, { id: newId('msg'), kind: 'user', text: trimmed }] }))
+    set((s) => ({
+      items: [...s.items, { id: newId('msg'), at: Date.now(), kind: 'user', text: trimmed }]
+    }))
     const { resumable, history } = get()
     if (resumable && RESUME_WORDS.test(trimmed)) return run(history)
     const last = history.at(-1)
@@ -130,7 +138,10 @@ export const useChat = create<ChatState>((set, get) => ({
   async resume() {
     if (get().running || !get().resumable) return
     set((s) => ({
-      items: [...s.items, { id: newId('msg'), kind: 'notice', tone: 'info', text: 'Reanudando…' }]
+      items: [
+        ...s.items,
+        { id: newId('msg'), at: Date.now(), kind: 'notice', tone: 'info', text: 'Reanudando…' }
+      ]
     }))
     return run(get().history)
   },
@@ -170,6 +181,7 @@ async function run(history: LlmMessage[], userText?: string): Promise<void> {
       llm: async (req, onText) => {
         const requestId = newId('llm')
         currentRequest = requestId
+        set({ thinkingSince: Date.now() })
         let streamed = ''
         const offDelta = window.vibe.llm.onDelta((id, delta) => {
           if (id !== requestId) return
@@ -192,7 +204,7 @@ async function run(history: LlmMessage[], userText?: string): Promise<void> {
         } finally {
           offDelta()
           offRetry()
-          set({ retry: null })
+          set({ retry: null, thinkingSince: null })
           currentRequest = null
         }
       }
@@ -214,15 +226,21 @@ async function run(history: LlmMessage[], userText?: string): Promise<void> {
       items: [
         ...s.items.map((i) =>
           i.kind === 'tool' && i.status === 'running'
-            ? { ...i, status: 'error' as const, result: 'Interrumpido' }
+            ? { ...i, status: 'error' as const, result: 'Interrumpido', endedAt: Date.now() }
             : i
         ),
-        { id: newId('msg'), kind: 'notice', text: message, tone: cancelled ? 'info' : 'error' }
+        {
+          id: newId('msg'),
+          at: Date.now(),
+          kind: 'notice',
+          text: message,
+          tone: cancelled ? 'info' : 'error'
+        }
       ]
     }))
   } finally {
     controller = null
-    set({ running: false, retry: null })
+    set({ running: false, retry: null, thinkingSince: null })
     void window.vibe.app.setBusy(false)
   }
 }
@@ -234,14 +252,17 @@ function applyEvent(items: ChatItem[], e: AgentEvent): ChatItem[] {
       if (last?.kind === 'assistant') {
         return [...items.slice(0, -1), { ...last, text: last.text + e.text }]
       }
-      return [...items, { id: newId('msg'), kind: 'assistant', text: e.text }]
+      return [...items, { id: newId('msg'), at: Date.now(), kind: 'assistant', text: e.text }]
     }
     case 'tool_start':
-      return [...items, { id: e.id, kind: 'tool', name: e.name, input: e.input, status: 'running' }]
+      return [
+        ...items,
+        { id: e.id, at: Date.now(), kind: 'tool', name: e.name, input: e.input, status: 'running' }
+      ]
     case 'tool_end':
       return items.map((i) =>
         i.kind === 'tool' && i.id === e.id
-          ? { ...i, status: e.isError ? 'error' : 'ok', result: e.result }
+          ? { ...i, status: e.isError ? 'error' : 'ok', result: e.result, endedAt: Date.now() }
           : i
       )
     case 'limit':
@@ -249,6 +270,7 @@ function applyEvent(items: ChatItem[], e: AgentEvent): ChatItem[] {
         ...items,
         {
           id: newId('msg'),
+          at: Date.now(),
           kind: 'notice',
           tone: 'info',
           text: 'El productor ha hecho muchos pasos seguidos y se ha detenido. Dile "sigue" si quieres que continúe.'
@@ -259,6 +281,7 @@ function applyEvent(items: ChatItem[], e: AgentEvent): ChatItem[] {
         ...items,
         {
           id: newId('msg'),
+          at: Date.now(),
           kind: 'notice',
           tone: 'error',
           text:
