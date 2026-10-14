@@ -2,6 +2,16 @@ import { useEffect, useRef, useState } from 'react'
 import type { TrackRole } from '@shared/project'
 import type { LlmRetry } from '@shared/llm'
 import { findProvider } from '@shared/llm-providers'
+import {
+  dayLabel,
+  differentDay,
+  duration,
+  fullDate,
+  relative,
+  shortTime,
+  stopwatch
+} from '@shared/time'
+import { useNow } from '../hooks/useNow'
 import { ROLE_LABELS } from '../labels'
 import { useChat, type ChatItem } from '../store/chat'
 import { useGeneration } from '../store/generation'
@@ -14,7 +24,9 @@ const IDEAS = [
 ]
 
 export function ChatPanel({ onOpenSettings }: { onOpenSettings(): void }): React.JSX.Element {
-  const { items, running, resumable, retry, send, resume, stop, reset } = useChat()
+  const { items, running, resumable, retry, thinkingSince, send, resume, stop, reset } = useChat()
+  // Cada segundo mientras trabaja (cronómetros); si no, cada minuto ("hace N min").
+  const now = useNow(running ? 1000 : 60_000)
   const { settings } = useGeneration()
   const [text, setText] = useState('')
   const listRef = useRef<HTMLDivElement>(null)
@@ -67,14 +79,38 @@ export function ChatPanel({ onOpenSettings }: { onOpenSettings(): void }): React
             </div>
           </div>
         ) : (
-          items.map((item) => <ChatRow key={item.id} item={item} />)
+          items.map((item, i) => {
+            const prev = items[i - 1]
+            // Separador si la conversación cruza la medianoche o viene de otro día.
+            const newDay = prev ? differentDay(prev.at, item.at) : differentDay(item.at, now)
+            return (
+              <div key={item.id} className="space-y-2">
+                {newDay && (
+                  <p className="pt-1 text-center text-[10px] uppercase tracking-wide text-muted">
+                    — {dayLabel(item.at, now)} —
+                  </p>
+                )}
+                <ChatRow item={item} now={now} />
+              </div>
+            )
+          })
         )}
         {retry ? (
           <RetryNotice retry={retry} />
         ) : (
           running &&
           items.at(-1)?.kind !== 'assistant' && (
-            <p className="animate-pulse text-xs text-muted">El productor está pensando…</p>
+            <p className="text-xs text-muted">
+              <span className="animate-pulse">El productor está pensando…</span>
+              {thinkingSince && (
+                <span
+                  className="ml-1 tabular-nums"
+                  title="Tiempo esperando la respuesta del modelo"
+                >
+                  {stopwatch(now - thinkingSince)}
+                </span>
+              )}
+            </p>
           )
         )}
       </div>
@@ -163,20 +199,62 @@ function RetryNotice({ retry }: { retry: LlmRetry & { until: number } }): React.
   )
 }
 
-function ChatRow({ item }: { item: ChatItem }): React.JSX.Element {
+/** Hora discreta; al pasar el cursor, la fecha completa y hace cuánto. */
+function Stamp({
+  at,
+  now,
+  className = ''
+}: {
+  at: number
+  now: number
+  className?: string
+}): React.JSX.Element {
+  return (
+    <time
+      dateTime={new Date(at).toISOString()}
+      title={`${fullDate(at)} · ${relative(at, now)}`}
+      className={`text-[10px] tabular-nums text-muted ${className}`}
+    >
+      {shortTime(at, now)}
+    </time>
+  )
+}
+
+/** Detalle de una herramienta al pasar el cursor: inicio, fin, duración y resultado. */
+function toolTooltip(item: Extract<ChatItem, { kind: 'tool' }>, now: number): string {
+  const lines = [`Empezó: ${fullDate(item.at)}`]
+  if (item.endedAt) {
+    lines.push(
+      `Terminó: ${fullDate(item.endedAt)}`,
+      `Duración: ${duration(item.endedAt - item.at)}`
+    )
+  } else {
+    lines.push(`En marcha desde hace ${stopwatch(now - item.at)}`)
+  }
+  if (item.result) lines.push('', item.result)
+  return lines.join('\n')
+}
+
+function ChatRow({ item, now }: { item: ChatItem; now: number }): React.JSX.Element {
   switch (item.kind) {
     case 'user':
       return (
-        <div className="ml-6 whitespace-pre-wrap rounded-lg bg-accent/25 px-3 py-2 text-white">
-          {item.text}
+        <div className="ml-6 rounded-lg bg-accent/25 px-3 py-2 text-white">
+          <p className="whitespace-pre-wrap">{item.text}</p>
+          <Stamp at={item.at} now={now} className="mt-0.5 block text-right text-white/50" />
         </div>
       )
     case 'assistant':
-      return <div className="whitespace-pre-wrap text-white">{item.text}</div>
+      return (
+        <div className="text-white">
+          <p className="whitespace-pre-wrap">{item.text}</p>
+          <Stamp at={item.at} now={now} className="mt-0.5 block" />
+        </div>
+      )
     case 'notice':
       return (
         <p className={`text-xs ${item.tone === 'error' ? 'text-red-400' : 'text-muted'}`}>
-          {item.text}
+          {item.text} <Stamp at={item.at} now={now} />
         </p>
       )
     case 'tool':
@@ -185,7 +263,7 @@ function ChatRow({ item }: { item: ChatItem }): React.JSX.Element {
           className={`rounded-md border px-2 py-1.5 text-xs ${
             item.status === 'error' ? 'border-red-500/40' : 'border-line'
           } bg-bg`}
-          title={item.result}
+          title={toolTooltip(item, now)}
         >
           <div className="flex items-center gap-2">
             <span className="shrink-0">
@@ -197,7 +275,12 @@ function ChatRow({ item }: { item: ChatItem }): React.JSX.Element {
                 <span className="text-red-400">✕</span>
               )}
             </span>
-            <span className="text-white">{describeTool(item.name, item.input, item.status)}</span>
+            <span className="min-w-0 flex-1 text-white">
+              {describeTool(item.name, item.input, item.status)}
+            </span>
+            <span className="shrink-0 self-start tabular-nums text-muted">
+              {item.endedAt ? duration(item.endedAt - item.at) : stopwatch(now - item.at)}
+            </span>
           </div>
           {item.status === 'error' && item.result && (
             <p className="mt-1 text-red-400">{item.result}</p>
