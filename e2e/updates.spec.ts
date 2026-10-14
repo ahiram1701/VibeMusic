@@ -119,5 +119,5 @@ test('tras actualizar muestra las novedades una sola vez, sin código ni la list
   // En desarrollo, el proceso principal informa de que no hay actualizaciones.
   await section.getByRole('button', { name: 'Buscar actualizaciones' }).click()
   await expect(section).toContainText('solo funcionan en la app instalada')
-  await expect(section.getByRole('button')).toHaveCount(0)
+  await expect(section.getByRole('button', { name: /actualizaciones|instalar/i })).toHaveCount(0)
 })

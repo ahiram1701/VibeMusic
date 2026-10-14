@@ -1,6 +1,6 @@
 import { create } from 'zustand'
-import { AgentCancelled, runAgent, type AgentEvent } from '@shared/agent'
-import { textOf, type LlmMessage } from '@shared/llm'
+import { AgentCancelled, AgentInterrupted, runAgent, type AgentEvent } from '@shared/agent'
+import { textOf, type LlmMessage, type LlmRetry } from '@shared/llm'
 import { newId } from '@shared/project'
 import { PRODUCER_SYSTEM_PROMPT } from '@shared/producer-prompt'
 import { AGENT_PREFIX, createProducerTools, type ProducerHost } from '@shared/producer-tools'
@@ -27,10 +27,22 @@ interface ChatState {
   /** Conversación en el formato del LLM (se envía entera en cada paso). */
   history: LlmMessage[]
   running: boolean
+  /**
+   * El último turno se cortó a medias (p. ej. Ollama dejó de responder) y `history`
+   * guarda lo hecho hasta entonces: `resume()` sigue donde iba.
+   */
+  resumable: boolean
+  /** El LLM falló por la red y se reintentará solo (`until`: cuándo, en ms). */
+  retry: (LlmRetry & { until: number }) | null
   send(text: string): Promise<void>
+  /** Reanuda el turno interrumpido. */
+  resume(): Promise<void>
   stop(): void
   reset(): void
 }
+
+/** "sigue", "continúa", "reintenta"… tras un corte equivalen a pulsar Reintentar. */
+const RESUME_WORDS = /^\s*(sigue|seguir|contin[uú]a|continuar|reintenta|reintentar|otra vez)\W*$/i
 
 let controller: AbortController | null = null
 let currentRequest: string | null = null
@@ -94,74 +106,33 @@ export const useChat = create<ChatState>((set, get) => ({
   items: [],
   history: [],
   running: false,
+  resumable: false,
+  retry: null,
 
   async send(text) {
     const trimmed = text.trim()
     if (!trimmed || get().running) return
-    controller = new AbortController()
-    set((s) => ({
-      running: true,
-      items: [...s.items, { id: newId('msg'), kind: 'user', text: trimmed }]
-    }))
-    // Asegura que la lista de motores/ajustes está al día (p. ej. si se acaba de poner una clave).
-    await useGeneration.getState().refresh()
-
-    const onEvent = (e: AgentEvent): void => set((s) => ({ items: applyEvent(s.items, e) }))
-
-    try {
-      const history = await runAgent({
-        system: PRODUCER_SYSTEM_PROMPT,
-        tools,
-        history: get().history,
-        userText: trimmed,
-        signal: controller.signal,
-        onEvent,
-        maxTokens: 16000,
-        llm: async (req, onText) => {
-          const requestId = newId('llm')
-          currentRequest = requestId
-          let streamed = ''
-          const off = window.vibe.llm.onDelta((id, delta) => {
-            if (id !== requestId) return
-            streamed += delta
-            onText(delta)
-          })
-          try {
-            const response = await window.vibe.llm.chat(requestId, req)
-            // El texto en vivo y la respuesta final viajan por canales distintos: la
-            // respuesta puede llegar antes que los últimos fragmentos. Se completa aquí
-            // con lo que falte para no perder el final del mensaje.
-            const full = textOf(response.content)
-            if (full.startsWith(streamed) && full.length > streamed.length) {
-              onText(full.slice(streamed.length))
-            }
-            return response
-          } finally {
-            off()
-            currentRequest = null
-          }
-        }
-      })
-      set({ history })
-    } catch (err) {
-      const cancelled = err instanceof AgentCancelled || controller.signal.aborted
-      const message = cancelled ? 'Detenido.' : cleanError(err)
-      // La conversación vuelve al estado anterior a este turno (el turno falló a medias),
-      // pero los cambios ya hechos en la canción se quedan (y se pueden deshacer).
-      set((s) => ({
-        items: [
-          ...s.items.map((i) =>
-            i.kind === 'tool' && i.status === 'running'
-              ? { ...i, status: 'error' as const, result: 'Interrumpido' }
-              : i
-          ),
-          { id: newId('msg'), kind: 'notice', text: message, tone: cancelled ? 'info' : 'error' }
-        ]
-      }))
-    } finally {
-      controller = null
-      set({ running: false })
+    set((s) => ({ items: [...s.items, { id: newId('msg'), kind: 'user', text: trimmed }] }))
+    const { resumable, history } = get()
+    if (resumable && RESUME_WORDS.test(trimmed)) return run(history)
+    const last = history.at(-1)
+    if (resumable && last?.role === 'user') {
+      // El turno cortado espera respuesta: la indicación nueva se suma a ese mensaje
+      // (dos mensajes de usuario seguidos confunden a algunos proveedores).
+      return run([
+        ...history.slice(0, -1),
+        { ...last, content: [...last.content, { type: 'text', text: trimmed }] }
+      ])
     }
+    return run(history, trimmed)
+  },
+
+  async resume() {
+    if (get().running || !get().resumable) return
+    set((s) => ({
+      items: [...s.items, { id: newId('msg'), kind: 'notice', tone: 'info', text: 'Reanudando…' }]
+    }))
+    return run(get().history)
   },
 
   stop() {
@@ -171,9 +142,90 @@ export const useChat = create<ChatState>((set, get) => ({
 
   reset() {
     get().stop()
-    set({ items: [], history: [] })
+    set({ items: [], history: [], resumable: false, retry: null })
   }
 }))
+
+/** Ejecuta un turno del productor (o reanuda uno cortado si no hay `userText`). */
+async function run(history: LlmMessage[], userText?: string): Promise<void> {
+  const set = useChat.setState
+  const ctrl = new AbortController()
+  controller = ctrl
+  set({ running: true, resumable: false, retry: null })
+  void window.vibe.app.setBusy(true)
+  // Asegura que la lista de motores/ajustes está al día (p. ej. si se acaba de poner una clave).
+  await useGeneration.getState().refresh()
+
+  const onEvent = (e: AgentEvent): void => set((s) => ({ items: applyEvent(s.items, e) }))
+
+  try {
+    const next = await runAgent({
+      system: PRODUCER_SYSTEM_PROMPT,
+      tools,
+      history,
+      userText,
+      signal: ctrl.signal,
+      onEvent,
+      maxTokens: 16000,
+      llm: async (req, onText) => {
+        const requestId = newId('llm')
+        currentRequest = requestId
+        let streamed = ''
+        const offDelta = window.vibe.llm.onDelta((id, delta) => {
+          if (id !== requestId) return
+          streamed += delta
+          onText(delta)
+        })
+        const offRetry = window.vibe.llm.onRetry((id, info) => {
+          if (id === requestId) set({ retry: { ...info, until: Date.now() + info.waitMs } })
+        })
+        try {
+          const response = await window.vibe.llm.chat(requestId, req)
+          // El texto en vivo y la respuesta final viajan por canales distintos: la
+          // respuesta puede llegar antes que los últimos fragmentos. Se completa aquí
+          // con lo que falte para no perder el final del mensaje.
+          const full = textOf(response.content)
+          if (full.startsWith(streamed) && full.length > streamed.length) {
+            onText(full.slice(streamed.length))
+          }
+          return response
+        } finally {
+          offDelta()
+          offRetry()
+          set({ retry: null })
+          currentRequest = null
+        }
+      }
+    })
+    set({ history: next })
+  } catch (err) {
+    const cancelled = err instanceof AgentCancelled || ctrl.signal.aborted
+    const interrupted = !cancelled && err instanceof AgentInterrupted
+    const message = cancelled
+      ? 'Detenido.'
+      : interrupted
+        ? `${cleanError(err)} Lo hecho hasta ahora se conserva: pulsa "Reintentar" o dile "sigue".`
+        : cleanError(err)
+    // Si el turno se cortó esperando al LLM, se guarda la conversación hasta el último
+    // paso completo para poder reanudarlo. Si no, vuelve al estado anterior al turno.
+    // Los cambios ya hechos en la canción se quedan siempre (y se pueden deshacer).
+    set((s) => ({
+      ...(interrupted && { history: err.messages, resumable: true }),
+      items: [
+        ...s.items.map((i) =>
+          i.kind === 'tool' && i.status === 'running'
+            ? { ...i, status: 'error' as const, result: 'Interrumpido' }
+            : i
+        ),
+        { id: newId('msg'), kind: 'notice', text: message, tone: cancelled ? 'info' : 'error' }
+      ]
+    }))
+  } finally {
+    controller = null
+    set({ running: false, retry: null })
+    void window.vibe.app.setBusy(false)
+  }
+}
 
 function applyEvent(items: ChatItem[], e: AgentEvent): ChatItem[] {
   switch (e.type) {

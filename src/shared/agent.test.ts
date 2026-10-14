@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { AgentCancelled, runAgent, type AgentEvent, type AgentTool } from './agent'
+import {
+  AgentCancelled,
+  AgentInterrupted,
+  runAgent,
+  type AgentEvent,
+  type AgentTool
+} from './agent'
 import type { LlmRequest, LlmResponse } from './llm'
 
 /** LLM falso que devuelve respuestas predefinidas y guarda lo que recibe. */
@@ -164,5 +170,85 @@ describe('runAgent · respuestas cortadas', () => {
       expect(ran).toBe(false)
       expect(events.at(-1)).toEqual({ type: 'stopped', reason: stopReason })
     }
+  })
+})
+
+describe('runAgent · reanudar tras un fallo', () => {
+  it('conserva los pasos completos y continúa sin repetirlos', async () => {
+    let calls = 0
+    const tempo = tool('set_tempo', async () => {
+      calls++
+      return 'ok'
+    })
+    const step1: LlmResponse = {
+      stopReason: 'tool_use',
+      content: [{ type: 'tool_use', id: 't1', name: 'set_tempo', input: {} }]
+    }
+    let fail = true
+    const llm = async (req: LlmRequest): Promise<LlmResponse> => {
+      if (req.messages.length === 1) return step1
+      if (fail) throw new Error('No se pudo conectar con Ollama (la conexión se cortó)')
+      return { stopReason: 'end_turn', content: [{ type: 'text', text: 'Listo.' }] }
+    }
+
+    const err = await runAgent({
+      ...base,
+      tools: [tempo],
+      userText: 'hazla',
+      llm,
+      onEvent: () => undefined
+    })
+      .then(() => null)
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(AgentInterrupted)
+    const partial = (err as AgentInterrupted).messages
+    // petición, llamada a herramienta y su resultado
+    expect(partial.map((m) => m.role)).toEqual(['user', 'assistant', 'user'])
+    expect((err as AgentInterrupted).message).toMatch(/Ollama/)
+
+    fail = false
+    const done = await runAgent({
+      ...base,
+      history: partial,
+      tools: [tempo],
+      llm,
+      onEvent: () => undefined
+    })
+    expect(done.at(-1)).toEqual({
+      role: 'assistant',
+      content: [{ type: 'text', text: 'Listo.' }],
+      raw: undefined
+    })
+    expect(calls).toBe(1)
+  })
+
+  it('no reanuda si la conversación no espera respuesta', async () => {
+    await expect(
+      runAgent({
+        ...base,
+        history: [{ role: 'assistant', content: [{ type: 'text', text: 'hola' }] }],
+        tools: [],
+        llm: async () => ({ stopReason: 'end_turn', content: [] }),
+        onEvent: () => undefined
+      })
+    ).rejects.toThrow(/reanudar/)
+  })
+
+  it('cancelar durante la llamada al LLM sigue siendo AgentCancelled', async () => {
+    const controller = new AbortController()
+    const llm = async (): Promise<LlmResponse> => {
+      controller.abort()
+      throw new Error('aborted')
+    }
+    await expect(
+      runAgent({
+        ...base,
+        signal: controller.signal,
+        tools: [],
+        userText: 'x',
+        llm,
+        onEvent: () => undefined
+      })
+    ).rejects.toBeInstanceOf(AgentCancelled)
   })
 })

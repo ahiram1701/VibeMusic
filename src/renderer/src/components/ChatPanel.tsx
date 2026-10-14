@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { TrackRole } from '@shared/project'
+import type { LlmRetry } from '@shared/llm'
 import { findProvider } from '@shared/llm-providers'
 import { ROLE_LABELS } from '../labels'
 import { useChat, type ChatItem } from '../store/chat'
@@ -13,7 +14,7 @@ const IDEAS = [
 ]
 
 export function ChatPanel({ onOpenSettings }: { onOpenSettings(): void }): React.JSX.Element {
-  const { items, running, send, stop, reset } = useChat()
+  const { items, running, resumable, retry, send, resume, stop, reset } = useChat()
   const { settings } = useGeneration()
   const [text, setText] = useState('')
   const listRef = useRef<HTMLDivElement>(null)
@@ -68,10 +69,27 @@ export function ChatPanel({ onOpenSettings }: { onOpenSettings(): void }): React
         ) : (
           items.map((item) => <ChatRow key={item.id} item={item} />)
         )}
-        {running && items.at(-1)?.kind !== 'assistant' && (
-          <p className="animate-pulse text-xs text-muted">El productor está pensando…</p>
+        {retry ? (
+          <RetryNotice retry={retry} />
+        ) : (
+          running &&
+          items.at(-1)?.kind !== 'assistant' && (
+            <p className="animate-pulse text-xs text-muted">El productor está pensando…</p>
+          )
         )}
       </div>
+
+      {resumable && !running && (
+        <div className="flex items-center justify-between gap-2 border-t border-line px-3 py-2 text-xs">
+          <span className="text-amber-400">El productor se quedó a medias.</span>
+          <button
+            className="rounded bg-accent px-3 py-1 font-medium hover:brightness-110"
+            onClick={() => void resume()}
+          >
+            ↻ Reintentar
+          </button>
+        </div>
+      )}
 
       {missingKey && (
         <p className="border-t border-line px-3 py-2 text-xs text-amber-400">
@@ -124,6 +142,24 @@ export function ChatPanel({ onOpenSettings }: { onOpenSettings(): void }): React
         </div>
       </div>
     </div>
+  )
+}
+
+/** "Ollama no responde (…). Reintento 2/6 en 25 s…", con cuenta atrás. */
+function RetryNotice({ retry }: { retry: LlmRetry & { until: number } }): React.JSX.Element {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [])
+  const secs = Math.max(0, Math.ceil((retry.until - now) / 1000))
+  return (
+    <p className="text-xs text-amber-400">
+      {retry.reason}{' '}
+      {secs > 0
+        ? `Reintento ${retry.attempt}/${retry.maxAttempts} en ${secs < 60 ? `${secs} s` : `${Math.ceil(secs / 60)} min`}…`
+        : `Reintentando (${retry.attempt}/${retry.maxAttempts})…`}
+    </p>
   )
 }
 

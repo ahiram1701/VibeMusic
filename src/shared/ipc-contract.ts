@@ -1,5 +1,5 @@
 import type { AppSettings, GenerationJob, ProviderId, ProviderInfo } from './generation'
-import type { LlmProviderId, LlmRequest, LlmResponse } from './llm'
+import type { LlmProviderId, LlmRequest, LlmResponse, LlmRetry } from './llm'
 import type { LocalEngineStatus, TorchVariant } from './local-engine'
 import type { StemResult } from './stems'
 import type { GenerationSpec, Project, VersionMeta } from './project'
@@ -47,6 +47,8 @@ export interface VibeApi {
       provider: LlmProviderId
     ): Promise<{ ok: true; models: string[] } | { ok: false; error: string }>
     onDelta(listener: (requestId: string, text: string) => void): () => void
+    /** La petición falló por la red y se reintentará sola tras `waitMs`. */
+    onRetry(listener: (requestId: string, info: LlmRetry) => void): () => void
   }
   localEngine: {
     status(): Promise<LocalEngineStatus>
@@ -106,6 +108,10 @@ export interface VibeApi {
     onUpdateStatus(listener: (status: UpdateStatus) => void): () => void
     /** Novedades de esta versión si se acaba de actualizar (solo la primera vez), o null. */
     whatsNew(): Promise<WhatsNew | null>
+    /** Hay trabajo largo en marcha (productor): el equipo no debe suspenderse. */
+    setBusy(busy: boolean): Promise<void>
+    /** Abre la carpeta con el registro de la app (para diagnosticar fallos). */
+    openLogs(): Promise<void>
   }
 }
 
@@ -150,10 +156,13 @@ export type IpcChannel =
   | 'app:checkForUpdates'
   | 'app:installUpdate'
   | 'app:whatsNew'
+  | 'app:setBusy'
+  | 'app:openLogs'
 
 /** Eventos main → renderer. */
 export const GENERATION_UPDATE_EVENT = 'generation:update'
 export const LLM_DELTA_EVENT = 'llm:delta'
+export const LLM_RETRY_EVENT = 'llm:retry'
 export const LOCAL_ENGINE_STATUS_EVENT = 'localEngine:status'
 export const LOCAL_ENGINE_LOG_EVENT = 'localEngine:log'
 export const STEMS_PROGRESS_EVENT = 'stems:progress'

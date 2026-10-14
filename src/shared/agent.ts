@@ -25,7 +25,11 @@ export interface RunAgentOptions {
   tools: AgentTool[]
   /** Conversación previa (se amplía y se devuelve). */
   history: LlmMessage[]
-  userText: string
+  /**
+   * Mensaje nuevo del usuario. Sin él se reanuda un turno interrumpido: `history`
+   * termina en un mensaje del usuario (su petición o resultados de herramientas).
+   */
+  userText?: string
   signal: AbortSignal
   onEvent(event: AgentEvent): void
   maxSteps?: number
@@ -39,21 +43,44 @@ export class AgentCancelled extends Error {
   }
 }
 
+/**
+ * El turno falló a medias (p. ej. el LLM dejó de responder). `messages` es la
+ * conversación hasta el último paso completo: se puede reanudar con `runAgent`
+ * sin `userText` y el productor sigue donde iba, sin repetir lo ya hecho.
+ */
+export class AgentInterrupted extends Error {
+  constructor(
+    readonly messages: LlmMessage[],
+    readonly cause: unknown
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause))
+    this.name = 'AgentInterrupted'
+  }
+}
+
 /** Ejecuta un turno completo del agente y devuelve la conversación actualizada. */
 export async function runAgent(opts: RunAgentOptions): Promise<LlmMessage[]> {
   const { tools, signal, onEvent, maxSteps = 16, maxTokens = 4096 } = opts
   const byName = new Map(tools.map((t) => [t.def.name, t]))
-  const messages: LlmMessage[] = [
-    ...opts.history,
-    { role: 'user', content: [{ type: 'text', text: opts.userText }] }
-  ]
+  const messages: LlmMessage[] = [...opts.history]
+  if (opts.userText !== undefined) {
+    messages.push({ role: 'user', content: [{ type: 'text', text: opts.userText }] })
+  } else if (messages.at(-1)?.role !== 'user') {
+    throw new Error('No hay nada que reanudar')
+  }
 
   for (let step = 0; step < maxSteps; step++) {
     if (signal.aborted) throw new AgentCancelled()
-    const response = await opts.llm(
-      { system: opts.system, messages, tools: tools.map((t) => t.def), maxTokens },
-      (delta) => onEvent({ type: 'text', text: delta })
-    )
+    let response: LlmResponse
+    try {
+      response = await opts.llm(
+        { system: opts.system, messages, tools: tools.map((t) => t.def), maxTokens },
+        (delta) => onEvent({ type: 'text', text: delta })
+      )
+    } catch (err) {
+      if (err instanceof AgentCancelled || signal.aborted) throw new AgentCancelled()
+      throw new AgentInterrupted([...messages], err)
+    }
     // Si la respuesta se cortó (límite de tokens) o el modelo la rechazó, una
     // llamada a herramienta podría venir incompleta: no se ejecuta nada y se guarda
     // solo el texto (una llamada sin su resultado haría fallar el turno siguiente).

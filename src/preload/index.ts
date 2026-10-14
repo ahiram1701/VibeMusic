@@ -1,10 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { GenerationJob } from '@shared/generation'
+import type { LlmRetry } from '@shared/llm'
 import type { LocalEngineStatus } from '@shared/local-engine'
 import type { UpdateStatus } from '@shared/update'
 import {
   GENERATION_UPDATE_EVENT,
   LLM_DELTA_EVENT,
+  LLM_RETRY_EVENT,
   LOCAL_ENGINE_LOG_EVENT,
   LOCAL_ENGINE_STATUS_EVENT,
   STEMS_PROGRESS_EVENT,
@@ -48,6 +50,12 @@ const api: VibeApi = {
         listener(requestId, text)
       ipcRenderer.on(LLM_DELTA_EVENT, handler)
       return () => ipcRenderer.removeListener(LLM_DELTA_EVENT, handler)
+    },
+    onRetry: (listener) => {
+      const handler = (_e: Electron.IpcRendererEvent, requestId: string, info: LlmRetry): void =>
+        listener(requestId, info)
+      ipcRenderer.on(LLM_RETRY_EVENT, handler)
+      return () => ipcRenderer.removeListener(LLM_RETRY_EVENT, handler)
     }
   },
   localEngine: {
@@ -110,7 +118,9 @@ const api: VibeApi = {
       ipcRenderer.on(UPDATE_STATUS_EVENT, handler)
       return () => ipcRenderer.removeListener(UPDATE_STATUS_EVENT, handler)
     },
-    whatsNew: () => invoke('app:whatsNew')
+    whatsNew: () => invoke('app:whatsNew'),
+    setBusy: (busy) => invoke('app:setBusy', busy),
+    openLogs: () => invoke('app:openLogs')
   }
 }
 

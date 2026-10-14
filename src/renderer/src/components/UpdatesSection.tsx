@@ -30,7 +30,14 @@ export function UpdatesSection(): React.JSX.Element {
           >
             Novedades de esta versión
           </a>
-        )}
+        )}{' '}
+        <button
+          className="text-xs text-muted underline hover:text-white"
+          title="Registro de lo que hace la app (llamadas al LLM, reintentos, generaciones)"
+          onClick={() => void window.vibe.app.openLogs()}
+        >
+          Abrir registro
+        </button>
       </p>
       <p className={`text-xs ${status.state === 'error' ? 'text-red-400' : 'text-muted'}`}>
         {describeUpdateStatus(status)}
