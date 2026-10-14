@@ -1,7 +1,7 @@
 import { join, relative } from 'node:path'
 import type { StemResult } from '@shared/stems'
 import { newId } from '@shared/project'
-import { sleep, CancelledError } from './audio-providers/types'
+import { sleep, CancelledError, StallWatch } from './audio-providers/types'
 import type { LocalEngineHost } from './audio-providers/local'
 import { projectPath } from './project/clips'
 
@@ -73,7 +73,14 @@ export class StemsService {
       }
       signal.addEventListener('abort', cancelRemote, { once: true })
       try {
+        const watch = new StallWatch()
         while (job.status === 'queued' || job.status === 'running') {
+          try {
+            watch.check(job.status, job.progress, job.stage)
+          } catch (err) {
+            cancelRemote() // que el motor no siga ocupado con un trabajo abandonado
+            throw err
+          }
           onProgress(
             job.progress,
             job.status === 'queued' ? 'En cola en el motor local' : job.stage

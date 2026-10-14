@@ -1,5 +1,5 @@
 import type { ContentBlock, LlmMessage, LlmRequest, LlmResponse, StopReason } from '@shared/llm'
-import { llmFetch } from './http'
+import { describeFetchError, llmFetch, readJson } from './http'
 import { LlmError, type LlmAdapter } from './types'
 
 // Adaptador para cualquier API compatible con OpenAI Chat Completions: OpenAI, Groq,
@@ -90,12 +90,15 @@ export function createOpenAiCompatibleAdapter(opts: {
         })
       } catch (err) {
         if (signal.aborted) throw new LlmError('Cancelado', 'cancelled')
-        throw new LlmError(`No se pudo conectar con ${opts.label} (${(err as Error).message}).`)
+        throw new LlmError(
+          `No se pudo conectar con ${opts.label} (${describeFetchError(err)}).`,
+          'network'
+        )
       }
       if (!res.ok) throw await httpError(res, opts.label, opts.model)
-      const body = (await res.json()) as {
+      const body = await readJson<{
         choices: { message: ChatMessage; finish_reason: string }[]
-      }
+      }>(res, opts.label, signal)
       const choice = body.choices[0]
       const content: ContentBlock[] = []
       const nativeCalls = choice.message.tool_calls ?? []
@@ -246,6 +249,10 @@ export async function httpError(res: Response, label: string, model?: string): P
     return new LlmError(
       `${label} rechazó las herramientas: el modelo "${model}" probablemente no soporta "tool calling". Prueba con otro modelo. (${detail})`
     )
+  }
+  // Pasarela caída o servidor reiniciando: suele arreglarse solo.
+  if (res.status === 502 || res.status === 503 || res.status === 504) {
+    return new LlmError(`${label} no está disponible ahora (${res.status}).`, 'network')
   }
   return new LlmError(`${label} respondió ${res.status}: ${detail}`)
 }

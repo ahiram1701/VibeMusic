@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { LlmMessage } from '@shared/llm'
 import { toAnthropicMessages } from './anthropic'
-import { OLLAMA_NUM_CTX, createOllamaAdapter } from './ollama'
+import { OLLAMA_KEEP_ALIVE, OLLAMA_NUM_CTX, createOllamaAdapter } from './ollama'
+import { withRetry } from './retry'
+import { LlmError } from './types'
 import {
   createOpenAiCompatibleAdapter,
   extractTextToolCalls,
@@ -258,6 +260,7 @@ describe('Ollama nativo', () => {
     expect(body).toMatchObject({
       model: 'qwen3:4b',
       stream: false,
+      keep_alive: OLLAMA_KEEP_ALIVE,
       options: { num_ctx: OLLAMA_NUM_CTX, num_predict: 50 }
     })
     expect(body).not.toHaveProperty('think')
@@ -299,5 +302,96 @@ describe('Ollama nativo', () => {
     expect((await reply({ role: 'assistant', content: 'Hola, est' }, 'length')).stopReason).toBe(
       'max_tokens'
     )
+  })
+})
+
+describe('Fallos de red', () => {
+  const request = { system: 's', messages: [], tools: [], maxTokens: 10 }
+
+  it('explica la causa real de "fetch failed" y lo marca como reintentable', async () => {
+    const adapter = createOllamaAdapter({
+      baseUrl: 'http://10.0.0.184:11434/v1',
+      model: 'qwen3:4b',
+      fetchImpl: (async () => {
+        throw new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } })
+      }) as typeof fetch
+    })
+    const err = await adapter
+      .chat(request, () => undefined, new AbortController().signal)
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(LlmError)
+    expect((err as LlmError).code).toBe('network')
+    expect((err as LlmError).message).toMatch(/la conexión se cortó · ECONNRESET/)
+  })
+
+  it('un 503 es reintentable; un 401 no', async () => {
+    const withStatus = (status: number) =>
+      createOpenAiCompatibleAdapter({
+        baseUrl: 'http://x/v1',
+        model: 'm',
+        label: 'Groq',
+        tokensParam: 'max_tokens',
+        fetchImpl: (async () => new Response('{}', { status })) as typeof fetch
+      })
+        .chat(request, () => undefined, new AbortController().signal)
+        .catch((e: LlmError) => e.code)
+    expect(await withStatus(503)).toBe('network')
+    expect(await withStatus(401)).toBe('api')
+  })
+})
+
+describe('withRetry', () => {
+  const network = new LlmError('No se pudo conectar con Ollama (ECONNRESET).', 'network')
+
+  it('reintenta los fallos de red y avisa de cada reintento', async () => {
+    let calls = 0
+    const retries: number[] = []
+    const res = await withRetry(
+      async () => {
+        if (++calls < 3) throw network
+        return 'ok'
+      },
+      new AbortController().signal,
+      (info) => retries.push(info.attempt),
+      [1, 1, 1]
+    )
+    expect(res).toBe('ok')
+    expect(retries).toEqual([1, 2])
+  })
+
+  it('no reintenta errores de configuración ni de la API', async () => {
+    const fn = vi.fn(async () => {
+      throw new LlmError('Falta la API key', 'config')
+    })
+    await expect(withRetry(fn, new AbortController().signal, () => undefined, [1])).rejects.toThrow(
+      /API key/
+    )
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('se rinde tras el último intento y lo dice', async () => {
+    await expect(
+      withRetry(
+        async () => {
+          throw network
+        },
+        new AbortController().signal,
+        () => undefined,
+        [1, 1]
+      )
+    ).rejects.toThrow(/Se reintentó 2 veces/)
+  })
+
+  it('cancelar durante la espera corta los reintentos', async () => {
+    const controller = new AbortController()
+    const err = await withRetry(
+      async () => {
+        throw network
+      },
+      controller.signal,
+      () => controller.abort(),
+      [60_000]
+    ).catch((e: LlmError) => e)
+    expect(err.code).toBe('cancelled')
   })
 })

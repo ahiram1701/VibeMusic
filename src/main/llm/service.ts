@@ -1,10 +1,12 @@
-import type { LlmProviderId, LlmRequest, LlmResponse } from '@shared/llm'
+import type { LlmProviderId, LlmRequest, LlmResponse, LlmRetry } from '@shared/llm'
 import { findProvider, type LlmProviderPreset } from '@shared/llm-providers'
+import { log } from '../log'
 import { llmSecret, type SettingsStore } from '../settings'
 import { createAnthropicAdapter, listAnthropicModels } from './anthropic'
 import { createFakeAdapter } from './fake'
 import { createOllamaAdapter } from './ollama'
 import { createOpenAiCompatibleAdapter, listOpenAiCompatibleModels } from './openai-compatible'
+import { withRetry } from './retry'
 import { LlmError, type LlmAdapter } from './types'
 
 /**
@@ -55,15 +57,39 @@ export class LlmService {
     })
   }
 
+  /** Si falla por la red, reintenta solo (avisando con `onRetry`) antes de rendirse. */
   async chat(
     requestId: string,
     req: LlmRequest,
-    onText: (delta: string) => void
+    onText: (delta: string) => void,
+    onRetry: (info: LlmRetry) => void = () => undefined
   ): Promise<LlmResponse> {
     const controller = new AbortController()
     this.controllers.set(requestId, controller)
+    const started = Date.now()
+    const secs = (): string => `${Math.round((Date.now() - started) / 1000)} s`
+    log('llm', `${requestId} → ${req.messages.length} mensajes`)
     try {
-      return await (await this.adapter()).chat(req, onText, controller.signal)
+      const adapter = await this.adapter()
+      const res = await withRetry(
+        () => adapter.chat(req, onText, controller.signal),
+        controller.signal,
+        (info) => {
+          log(
+            'llm',
+            `${requestId} reintento ${info.attempt}/${info.maxAttempts} en ${info.waitMs / 1000} s: ${info.reason}`
+          )
+          onRetry(info)
+        }
+      )
+      log('llm', `${requestId} ← ${res.stopReason} en ${secs()}`)
+      return res
+    } catch (err) {
+      log(
+        'llm',
+        `${requestId} ✗ tras ${secs()}: ${err instanceof Error ? err.message : String(err)}`
+      )
+      throw err
     } finally {
       this.controllers.delete(requestId)
     }

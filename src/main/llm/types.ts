@@ -8,7 +8,8 @@ export interface LlmAdapter {
 export class LlmError extends Error {
   constructor(
     message: string,
-    readonly code: 'cancelled' | 'config' | 'api' = 'api'
+    /** `network`: fallo pasajero (conexión caída, servidor reiniciando); vale la pena reintentar. */
+    readonly code: 'cancelled' | 'config' | 'api' | 'network' = 'api'
   ) {
     super(message)
     this.name = 'LlmError'

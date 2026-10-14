@@ -49,6 +49,17 @@ export interface LlmResponse {
   raw?: LlmMessage['raw']
 }
 
+/** Aviso de que una petición al LLM falló por la red y se va a reintentar. */
+export interface LlmRetry {
+  /** Número de reintento (1…maxAttempts). */
+  attempt: number
+  maxAttempts: number
+  /** Espera antes de reintentar. */
+  waitMs: number
+  /** Por qué falló (mensaje para el usuario). */
+  reason: string
+}
+
 export interface LlmSettings {
   provider: LlmProviderId
   /** Modelo elegido por proveedor (se recuerda al cambiar de uno a otro). */

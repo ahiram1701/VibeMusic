@@ -1,7 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import type { LocalEngineStatus } from '@shared/local-engine'
 import { buildMusicPrompt } from '@shared/prompt'
-import { CancelledError, sleep, throwIfAborted, type AudioProvider } from './types'
+import { CancelledError, sleep, StallWatch, throwIfAborted, type AudioProvider } from './types'
 
 // Proveedor "Local": genera en este equipo a través del sidecar Python (MusicGen).
 // Arranca el servidor la primera vez que se usa y le envía trabajos por HTTP.
@@ -90,7 +90,14 @@ export function createLocalProvider(
       }
       ctx.signal.addEventListener('abort', cancelRemote, { once: true })
       try {
+        const watch = new StallWatch()
         while (job.status === 'queued' || job.status === 'running') {
+          try {
+            watch.check(job.status, job.progress, job.stage)
+          } catch (err) {
+            cancelRemote() // que el motor no siga ocupado con un trabajo abandonado
+            throw err
+          }
           ctx.onProgress(
             job.progress,
             job.status === 'queued' ? 'En cola en el motor local' : job.stage

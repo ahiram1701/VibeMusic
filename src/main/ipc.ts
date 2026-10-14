@@ -1,10 +1,11 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain, safeStorage } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron'
 import type { ProviderId } from '@shared/generation'
 import {
   GENERATION_UPDATE_EVENT,
   LLM_DELTA_EVENT,
+  LLM_RETRY_EVENT,
   LOCAL_ENGINE_LOG_EVENT,
   LOCAL_ENGINE_STATUS_EVENT,
   STEMS_PROGRESS_EVENT,
@@ -21,6 +22,8 @@ import { createReplicateProvider, verifyReplicateToken } from './audio-providers
 import type { AudioProvider } from './audio-providers/types'
 import { GenerationQueue } from './generation/queue'
 import { LlmService } from './llm/service'
+import { log, logDir } from './log'
+import { KeepAwake } from './power'
 import { llmSecret, SettingsStore } from './settings'
 import { SidecarManager } from './sidecar/manager'
 import { StemsService } from './stems'
@@ -76,10 +79,21 @@ export function registerIpc(): { shutdown(): void } {
     ['local', createLocalProvider(sidecar, () => settings.getLocalModel())]
   ])
   const queue = new GenerationQueue(providers)
+  const keepAwake = new KeepAwake()
+  const lastStatus = new Map<string, string>()
   queue.on('update', (job) => {
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(GENERATION_UPDATE_EVENT, job)
     }
+    // Al registro solo van los cambios de estado, no cada tic de progreso.
+    if (lastStatus.get(job.id) !== job.status) {
+      lastStatus.set(job.id, job.status)
+      log('audio', `${job.id} ${job.status}${job.error ? `: ${job.error}` : ''}`)
+    }
+    keepAwake.set(
+      'audio',
+      queue.list().some((j) => j.status === 'queued' || j.status === 'running')
+    )
   })
 
   handle('project:create', async (name: string) => {
@@ -197,7 +211,12 @@ export function registerIpc(): { shutdown(): void } {
   })
 
   ipcMain.handle('llm:chat', (event, requestId: string, req: LlmRequest) =>
-    llm.chat(requestId, req, (text) => event.sender.send(LLM_DELTA_EVENT, requestId, text))
+    llm.chat(
+      requestId,
+      req,
+      (text) => event.sender.send(LLM_DELTA_EVENT, requestId, text),
+      (info) => event.sender.send(LLM_RETRY_EVENT, requestId, info)
+    )
   )
   handle('llm:cancel', (requestId: string) => llm.cancel(requestId))
 
@@ -235,6 +254,11 @@ export function registerIpc(): { shutdown(): void } {
     })
     .catch(() => null)
   handle('app:whatsNew', () => whatsNew)
+  handle('app:setBusy', (busy: boolean) => keepAwake.set('productor', busy))
+  handle('app:openLogs', async () => {
+    log('app', 'carpeta de registro abierta')
+    await shell.openPath(logDir())
+  })
 
   return { shutdown: () => sidecar.killNow() }
 }

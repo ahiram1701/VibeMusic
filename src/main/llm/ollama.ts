@@ -1,5 +1,5 @@
 import type { ContentBlock, LlmRequest, LlmResponse } from '@shared/llm'
-import { llmFetch } from './http'
+import { describeFetchError, llmFetch, readJson } from './http'
 import {
   extractTextToolCalls,
   httpError,
@@ -15,6 +15,13 @@ import { LlmError, type LlmAdapter } from './types'
 
 /** Contexto pedido a Ollama: cabe holgado en 16 GB de RAM con modelos de hasta 8B. */
 export const OLLAMA_NUM_CTX = 16384
+
+/**
+ * Cuánto tiempo mantiene Ollama el modelo en memoria tras cada paso. Por defecto son
+ * 5 min, y entre dos pasos del productor suele haber una generación de audio más larga:
+ * en CPU, recargar el modelo cada vez cuesta minutos.
+ */
+export const OLLAMA_KEEP_ALIVE = '60m'
 
 interface OllamaMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -69,6 +76,7 @@ export function createOllamaAdapter(opts: {
               function: { name: t.name, description: t.description, parameters: t.inputSchema }
             })),
             stream: false,
+            keep_alive: OLLAMA_KEEP_ALIVE,
             // Sin "think": los modelos que razonan lo devuelven aparte (message.thinking)
             // y no llega al chat. Con think:false, qwen3 razona igual pero dentro del texto.
             options: { num_ctx: OLLAMA_NUM_CTX, num_predict: req.maxTokens }
@@ -76,10 +84,17 @@ export function createOllamaAdapter(opts: {
         })
       } catch (err) {
         if (signal.aborted) throw new LlmError('Cancelado', 'cancelled')
-        throw new LlmError(`No se pudo conectar con Ollama (${(err as Error).message}).`)
+        throw new LlmError(
+          `No se pudo conectar con Ollama (${describeFetchError(err)}).`,
+          'network'
+        )
       }
       if (!res.ok) throw await httpError(res, 'Ollama', opts.model)
-      const body = (await res.json()) as { message: OllamaMessage; done_reason?: string }
+      const body = await readJson<{ message: OllamaMessage; done_reason?: string }>(
+        res,
+        'Ollama',
+        signal
+      )
       const nativeCalls = body.message.tool_calls ?? []
       let text = stripReasoning(body.message.content ?? '')
       const textCalls =

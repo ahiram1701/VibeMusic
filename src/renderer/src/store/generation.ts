@@ -99,6 +99,12 @@ function settle(jobId: string, outcome: GenerationResult | Error): void {
 }
 
 /** Espera a que el trabajo termine y su audio esté en el timeline. */
+function settleIfFinished(job: GenerationJob): void {
+  if (job.status === 'done') void finalize(job.id)
+  if (job.status === 'error') settle(job.id, new Error(job.error ?? 'Error al generar'))
+  if (job.status === 'cancelled') settle(job.id, new Error('Generación cancelada'))
+}
+
 export function waitForJob(jobId: string): Promise<GenerationResult> {
   const done = settled.get(jobId)
   if (done) {
@@ -122,9 +128,7 @@ export const useGeneration = create<GenerationState>((set, get) => ({
           return
         }
         set((s) => ({ jobs: { ...s.jobs, [job.id]: { ...view, job } } }))
-        if (job.status === 'done') void finalize(job.id)
-        if (job.status === 'error') settle(job.id, new Error(job.error ?? 'Error al generar'))
-        if (job.status === 'cancelled') settle(job.id, new Error('Generación cancelada'))
+        settleIfFinished(job)
       })
     }
     await get().refresh()
@@ -174,7 +178,9 @@ export const useGeneration = create<GenerationState>((set, get) => ({
         }
       }
     }))
-    if (job.status === 'done') void finalize(job.id)
+    // Si ya terminó antes de registrarse (p. ej. falló al instante), se resuelve aquí:
+    // si no, quien espera el resultado (el productor) se quedaría esperando para siempre.
+    settleIfFinished(job)
     return job.id
   },
 
