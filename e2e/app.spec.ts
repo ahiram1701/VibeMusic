@@ -129,11 +129,13 @@ test('restaurar recupera exactamente cada versión', async () => {
 
   const items = page.locator('ol li')
   await expect(items.filter({ hasText: /^v5 / })).toBeVisible()
-  const ids = await items.locator('span.text-muted').allTextContents()
+  const ids = await items.locator('> span:first-child > span.text-muted').allTextContents()
   expect(new Set(ids).size).toBe(ids.length) // sin números repetidos
 
   const messages = await items.allTextContents()
-  expect(messages.slice(0, 3).map((m) => m.replace(/volver aquí|actual/, ''))).toEqual([
+  // Sin "volver aquí"/"actual" ni la hora del cambio ("02:31").
+  const clean = (m: string): string => m.replace(/volver aquí|actual|\d{2}:\d{2}/g, '')
+  expect(messages.slice(0, 3).map(clean)).toEqual([
     'v5 drums: mute',
     'v4 drums: unmute',
     'v3 drums: mute'
