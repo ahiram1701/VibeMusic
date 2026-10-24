@@ -27,7 +27,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.135.0",
     "electron-updater": "^6.8.9",
-    "undici": "^8.11.2"
+    "undici": "^8.12.2"
   },
   "devDependencies": {
     "@breezystack/lamejs": "^1.2.7",

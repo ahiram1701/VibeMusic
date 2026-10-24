@@ -17,7 +17,7 @@ const demo: ProviderInfo = {
   capabilities: {
     maxDurationSec: 30,
     supportsSeed: true,
-    supportsContinue: false,
+    supportsContinue: true,
     supportsMelody: false
   }
 }
@@ -82,8 +82,8 @@ function fakeHost(initial: Project, provider: ProviderInfo | undefined = demo) {
       state.messages.push(`vary ${regionId}`)
       return { trackId: 't', regionId: 'variada' }
     },
-    extend: async (regionId, bars, instructions) => {
-      state.messages.push(`extend ${regionId} ${bars} ${instructions ?? ''}`.trim())
+    extend: async (regionId, bars, opts) => {
+      state.messages.push(`extend ${regionId} ${bars} ${opts?.instructions ?? ''}`.trim())
       return { trackId: 't', regionId: 'continuada' }
     },
     separate: async (regionId) => {
@@ -98,7 +98,7 @@ function fakeHost(initial: Project, provider: ProviderInfo | undefined = demo) {
   const tools = Object.fromEntries(createProducerTools(host).map((t) => [t.def.name, t]))
   const run = (name: string, input: Record<string, unknown> = {}) =>
     tools[name].run(input, new AbortController().signal)
-  return { state, run }
+  return { state, run, host }
 }
 
 describe('herramientas del productor', () => {
@@ -317,5 +317,251 @@ describe('herramientas del productor', () => {
       empty_stems_skipped: ['Bajo']
     })
     expect(state.messages.at(-1)).toBe(`separate ${a.region_id}`)
+  })
+})
+
+describe('productor · canciones completas', () => {
+  const songInput = {
+    style: 'dark techno',
+    bpm: 124,
+    key: 'E minor',
+    sections: [
+      { name: 'Intro', bars: 8, energy: 2, arrangement: 'kick and pad' },
+      { name: 'Verso', bars: 16, energy: 3, arrangement: 'bass and hats enter' },
+      { name: 'Coro', bars: 12, energy: 5, arrangement: 'everything, acid lead' },
+      { name: 'Coro', bars: 12, reuse: true }
+    ]
+  }
+
+  type Composed = {
+    ok: boolean
+    bars_per_part: number
+    parts_generated: number
+    failed?: { section: string; start_bar: number; error: string }[]
+    sections: { name: string; start_bar: number; has_music: boolean }[]
+    check: string
+  }
+
+  /** Continuación en memoria, como en la app: región nueva en la misma pista. */
+  function chainable(h: ReturnType<typeof fakeHost>) {
+    const calls: { from: string; bars: number; prompt?: string; atBeat?: number }[] = []
+    h.host.extend = async (regionId, bars, opts) => {
+      calls.push({ from: regionId, bars, prompt: opts?.prompt, atBeat: opts?.atBeat })
+      const p = h.state.project
+      const track = p.tracks.find((t) => t.regions.some((r) => r.id === regionId))!
+      const src = track.regions.find((r) => r.id === regionId)!
+      const clipId = newId('clp')
+      const lengthSec = barsToSeconds(bars, p)
+      const region = {
+        ...src,
+        id: newId('rgn'),
+        clipId,
+        offsetSec: 0,
+        lengthSec,
+        startBeat: opts?.atBeat ?? src.startBeat + secondsToBeats(src.lengthSec, p.bpm)
+      }
+      h.state.project = {
+        ...p,
+        tracks: p.tracks.map((t) =>
+          t.id === track.id ? { ...t, regions: [...t.regions, region] } : t
+        ),
+        clips: {
+          ...p.clips,
+          [clipId]: {
+            id: clipId,
+            file: '',
+            durationSec: lengthSec,
+            spec: {
+              prompt: opts?.prompt ?? '',
+              role: track.role,
+              bpm: p.bpm,
+              key: p.key,
+              durationSec: lengthSec,
+              mode: 'continue'
+            },
+            provider: 'demo'
+          }
+        }
+      }
+      return { trackId: track.id, regionId: region.id }
+    }
+    return calls
+  }
+
+  it('compose_song graba la canción como una sola pieza: tramos encadenados de principio a fin', async () => {
+    const imported = {
+      ...createTrack('Mi audio', 'full'),
+      regions: [
+        {
+          id: 'imp',
+          clipId: 'imp',
+          startBeat: 0,
+          offsetSec: 0,
+          lengthSec: 4,
+          fadeInSec: 0,
+          fadeOutSec: 0
+        }
+      ]
+    }
+    const h = fakeHost({
+      ...createProject('X'),
+      tracks: [imported],
+      clips: { imp: { id: 'imp', file: '', durationSec: 4, spec: null, provider: 'import' } }
+    })
+    const calls = chainable(h)
+    await h.run('generate_clip', { prompt: 'old', role: 'melody', bars: 4, start_bar: 1 })
+
+    const res = (await h.run('compose_song', songInput)) as Composed
+    const p = h.state.project
+    expect(res.ok).toBe(true)
+    expect(res.bars_per_part).toBe(8)
+    expect(res.parts_generated).toBe(5) // Intro 8 · Verso 8+8 · Coro 8+4 (el segundo se repite)
+    expect(res.check).toBe('Every section has music.')
+    expect(res.sections.every((s) => s.has_music)).toBe(true)
+    expect(p.bpm).toBe(124)
+    expect(p.key).toBe('E minor')
+    expect(p.style).toBe('dark techno')
+    // Lo generado antes desaparece; lo importado se queda. Una sola pista para la canción.
+    expect(p.tracks.map((t) => [t.name, t.role])).toEqual([
+      ['Mi audio', 'full'],
+      ['Canción', 'full']
+    ])
+
+    // El primer tramo se genera; cada siguiente continúa al anterior en su compás.
+    const songTrack = p.tracks[1]
+    const byStart = [...songTrack.regions].sort((a, b) => a.startBeat - b.startBeat)
+    expect(calls.map((c) => [c.atBeat, c.bars])).toEqual([
+      [32, 8],
+      [64, 8],
+      [96, 8],
+      [128, 4]
+    ])
+    calls.forEach((c, i) => expect(c.from).toBe(byStart[i].id))
+    expect(calls[2].prompt).toMatch(/^everything, acid lead, dark techno, powerful entrance/)
+    expect(calls[1].prompt).toMatch(/riser building up into the next section$/)
+
+    // El último coro repite el primero; la canción llega al final sin huecos.
+    expect(byStart.map((r) => r.startBeat)).toEqual([0, 32, 64, 96, 128, 144, 176])
+    expect(byStart[5].clipId).toBe(byStart[3].clipId)
+    // Pulido: entrada en fundido de un compás y salida de dos.
+    const bar = barsToSeconds(1, p)
+    expect(byStart[0].fadeInSec).toBeCloseTo(bar)
+    expect(byStart.at(-1)!.fadeOutSec).toBeCloseTo(2 * bar)
+    expect(byStart[2].fadeOutSec).toBe(0.01)
+    expect(h.state.messages.some((m) => m.startsWith(`${AGENT_PREFIX}nueva canción`))).toBe(true)
+  })
+
+  it('compose_song valida antes de tocar nada y exige un motor que sepa continuar', async () => {
+    const h = fakeHost(createProject('X'))
+    await expect(
+      h.run('compose_song', { ...songInput, sections: [{ name: 'A', bars: 8 }] })
+    ).rejects.toThrow(/falta "arrangement"/)
+    expect(h.state.messages).toEqual([])
+
+    const noContinue = {
+      ...demo,
+      capabilities: { ...demo.capabilities, supportsContinue: false }
+    }
+    await expect(
+      fakeHost(createProject('X'), noContinue).run('compose_song', songInput)
+    ).rejects.toThrow(/no sabe continuar audio/)
+  })
+
+  it('compose_song reintenta un tramo que falla y sigue desde el último bueno', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    const extend = h.host.extend
+    h.host.extend = async (regionId, bars, opts) => {
+      if (opts?.atBeat === 64) {
+        calls.push({ from: regionId, bars, atBeat: 64 })
+        throw new Error('sin memoria')
+      }
+      return extend(regionId, bars, opts)
+    }
+    const res = (await h.run('compose_song', songInput)) as Composed
+    expect(res.ok).toBe(false)
+    expect(res.failed).toEqual([{ section: 'Verso', start_bar: 17, error: 'sin memoria' }])
+    expect(calls.filter((c) => c.atBeat === 64)).toHaveLength(2) // reintento
+    // El coro continúa desde el primer tramo del verso, el último que salió bien.
+    const verse1 = calls.find((c) => c.atBeat === 32)!
+    const chorus = calls.find((c) => c.atBeat === 96)!
+    const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
+    expect(chorus.from).toBe(song.regions.find((r) => r.startBeat === verse1.atBeat)!.id)
+    expect(res.check).toMatch(/"Verso".*stop\(s\) before the section ends/)
+  })
+
+  it('fill_section rellena por nombre todas las secciones iguales en la pista del instrumento', async () => {
+    const { state, run } = fakeHost(createProject('X'))
+    await run('set_sections', {
+      sections: [
+        { name: 'Intro', start_bar: 1, bars: 4 },
+        { name: 'Coro', start_bar: 5, bars: 16 },
+        { name: 'Coro', start_bar: 21, bars: 12 }
+      ]
+    })
+    const melodyTracks = () => state.project.tracks.filter((t) => t.role === 'melody')
+    const res = (await run('fill_section', {
+      section: 'coro',
+      role: 'melody',
+      prompt: 'new lead'
+    })) as { filled: { name: string; bars: number }[]; loop_bars: number }
+    expect(res.filled.map((s) => s.bars)).toEqual([16, 12])
+    expect(res.loop_bars).toBe(8)
+    expect(melodyTracks()).toHaveLength(1)
+    const prompts = new Set(
+      melodyTracks()[0].regions.map((r) => state.project.clips[r.clipId].spec!.prompt)
+    )
+    expect(prompts).toEqual(new Set(['new lead']))
+
+    await expect(
+      run('fill_section', { section: 'Puente', role: 'bass', prompt: 'x' })
+    ).rejects.toThrow(/No existe la sección "Puente". Secciones: Intro/)
+  })
+
+  it('generate_clip reutiliza la pista del mismo instrumento si está libre', async () => {
+    const { state, run } = fakeHost(createProject('X'))
+    const clip = (startBar: number) =>
+      run('generate_clip', {
+        prompt: 'k',
+        role: 'drums',
+        bars: 4,
+        start_bar: startBar
+      }) as Promise<{
+        track_id: string
+      }>
+    const a = await clip(1)
+    const b = await clip(5)
+    const c = await clip(3)
+    expect(b.track_id).toBe(a.track_id)
+    expect(c.track_id).not.toBe(a.track_id) // ahí ya suena algo: pista nueva
+    expect(state.project.tracks).toHaveLength(2)
+  })
+
+  it('copy_section copia dentro de una sección ya planificada en vez de fallar', async () => {
+    const { state, run } = fakeHost({ ...createProject('X'), bpm: 120 })
+    const planned = (await run('set_sections', {
+      sections: [
+        { name: 'Coro', start_bar: 1, bars: 4 },
+        { name: 'Coro', start_bar: 5, bars: 4 },
+        { name: 'Coro', start_bar: 9, bars: 4 }
+      ]
+    })) as { sections: { id: string }[] }
+    const [first, second, third] = planned.sections
+    await run('generate_clip', { prompt: 'hook', role: 'melody', bars: 4, start_bar: 1 })
+
+    // Lo que hizo el productor en la canción real: to_bar donde ya hay una sección.
+    expect(await run('copy_section', { section_id: first.id, to_bar: 5 })).toMatchObject({
+      section_id: second.id
+    })
+    await run('copy_section', { section_id: first.id, to_section_id: third.id })
+    expect(state.project.sections).toHaveLength(3)
+    expect(state.project.tracks[0].regions.map((r) => r.startBeat)).toEqual([0, 16, 32])
+
+    const described = (await run('get_project_state')) as { sections: { status: string }[] }
+    expect(described.sections.map((s) => s.status)).toEqual([
+      'only one layer',
+      'only one layer',
+      'only one layer'
+    ])
   })
 })
