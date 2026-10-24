@@ -1,0 +1,140 @@
+diff --git a/OpenUtau.Cli/OpenUtau.Cli.csproj b/OpenUtau.Cli/OpenUtau.Cli.csproj
+index a823a6e..b109b9a 100644
+--- a/OpenUtau.Cli/OpenUtau.Cli.csproj
++++ b/OpenUtau.Cli/OpenUtau.Cli.csproj
+@@ -8,6 +8,7 @@
+   </PropertyGroup>
+   <ItemGroup>
+     <ProjectReference Include="..\OpenUtau.Core\OpenUtau.Core.csproj" />
++    <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
+     <ProjectReference Include="..\OpenUtau.Plugin.Builtin\OpenUtau.Plugin.Builtin.csproj" />
+   </ItemGroup>
+   <ItemGroup>
+diff --git a/OpenUtau.Cli/Program.cs b/OpenUtau.Cli/Program.cs
+index 36eb60e..d489e58 100644
+--- a/OpenUtau.Cli/Program.cs
++++ b/OpenUtau.Cli/Program.cs
+@@ -11,6 +11,7 @@
+ using OpenUtau.Core.Format;
+ using OpenUtau.Core.Render;
+ using OpenUtau.Core.Ustx;
++using Serilog;
+ 
+ namespace OpenUtau.Cli;
+ 
+@@ -20,9 +21,16 @@ internal static class Program {
+     private const int InvalidProject = 3;
+     private const int MissingSinger = 4;
+     private const int RenderFailure = 5;
++    private const int PhonemizationFailure = 6;
+ 
+     public static int Main(string[] args) {
+         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
++        if (Environment.GetEnvironmentVariable("OPENUTAU_CLI_LOG") is string logLevel && logLevel.Length > 0) {
++            Serilog.Log.Logger = new Serilog.LoggerConfiguration()
++                .MinimumLevel.Is(Enum.Parse<Serilog.Events.LogEventLevel>(logLevel, ignoreCase: true))
++                .WriteTo.Console(standardErrorFromLevel: Serilog.Events.LogEventLevel.Verbose)
++                .CreateLogger();
++        }
+         try {
+             if (args.Length == 0 || args[0] is "-h" or "--help") {
+                 PrintUsage();
+@@ -65,6 +73,14 @@ private static int Render(IReadOnlyDictionary<string, string?> options) {
+                 outputPath,
+                 TaskScheduler.Default,
+                 applyMixFx: !options.ContainsKey("--no-mix-fx"));
++        } catch (PhonemizationException exception) {
++            Console.Error.WriteLine(JsonSerializer.Serialize(new {
++                status = "failed",
++                code = PhonemizationFailure,
++                error = exception.Message,
++                failures = exception.Failures,
++            }));
++            return PhonemizationFailure;
+         } catch (Exception exception) {
+             return Fail(RenderFailure, exception.ToString());
+         }
+diff --git a/OpenUtau.Core/DiffSinger/Phonemizers/DiffSingerG2pPhonemizer.cs b/OpenUtau.Core/DiffSinger/Phonemizers/DiffSingerG2pPhonemizer.cs
+index 93e11de..6d312ad 100644
+--- a/OpenUtau.Core/DiffSinger/Phonemizers/DiffSingerG2pPhonemizer.cs
++++ b/OpenUtau.Core/DiffSinger/Phonemizers/DiffSingerG2pPhonemizer.cs
+@@ -101,7 +101,9 @@ protected override IG2p LoadG2p(string rootPath, bool useLangId = false) {
+             if(!string.IsNullOrEmpty(langCode)){
+                 //For diffsinger multi dict voicebanks, the replacements of g2p phonemes default to the <langcode>/<phoneme>
+                 foreach(var ph in GetBaseG2pVowels().Concat(GetBaseG2pConsonants())){
+-                    if(!replacements.ContainsKey(ph)){
++                    // Only prefix when the voicebank actually defines the prefixed symbol;
++                    // single-language voicebanks list bare symbols such as "aa".
++                    if(!replacements.ContainsKey(ph) && g2ps[^1].IsValidSymbol(langCode + "/" + ph)){
+                         replacements[ph]=langCode + "/" + ph;
+                     }
+                 }
+diff --git a/OpenUtau.Core/Render/HeadlessRenderer.cs b/OpenUtau.Core/Render/HeadlessRenderer.cs
+index 89fb775..4a6232c 100644
+--- a/OpenUtau.Core/Render/HeadlessRenderer.cs
++++ b/OpenUtau.Core/Render/HeadlessRenderer.cs
+@@ -51,6 +51,14 @@ private static void PrepareProject(UProject project) {
+                         if (parts.All(part => part.PhonemesUpToDate && part.renderPhrases.Count > 0)) {
+                             break;
+                         }
++                        // Phonemization finished but produced errors: fail fast with the cause
++                        // instead of waiting for render phrases that will never appear.
++                        if (parts.All(part => part.PhonemesUpToDate)) {
++                            var failures = CollectPhonemeErrors(parts);
++                            if (failures.Length > 0) {
++                                throw new PhonemizationException(failures);
++                            }
++                        }
+                         if (remainingMs == 0) {
+                             throw new TimeoutException("Timed out waiting for phonemization and render phrases.");
+                         }
+@@ -58,6 +66,11 @@ private static void PrepareProject(UProject project) {
+                 } while (true);
+                 // Debounce duplicate requests queued while loading the USTX.
+                 while (waiter.Wait(100)) { }
++                // A note whose phonemes failed renders as silence; never let that pass quietly.
++                var phonemeErrors = CollectPhonemeErrors(parts);
++                if (phonemeErrors.Length > 0) {
++                    throw new PhonemizationException(phonemeErrors);
++                }
+             } finally {
+                 DocManager.Inst.RemoveSubscriber(waiter);
+             }
+@@ -76,6 +89,20 @@ private static void PrepareProject(UProject project) {
+             }
+         }
+ 
++        private static PhonemeFailure[] CollectPhonemeErrors(UVoicePart[] parts) {
++            return parts
++                .SelectMany(part => part.phonemes.Select(phoneme => (part, phoneme)))
++                .Where(item => item.phoneme.Error)
++                .Select(item => new PhonemeFailure(
++                    item.part.position + (item.phoneme.Parent?.position ?? item.phoneme.position),
++                    item.phoneme.Parent?.lyric ?? string.Empty,
++                    item.phoneme.ErrorException?.InnerException?.Message
++                        ?? item.phoneme.ErrorException?.Message
++                        ?? item.phoneme.phoneme))
++                .Distinct()
++                .ToArray();
++        }
++
+         private sealed class PhonemizedWaiter : ICmdSubscriber, IDisposable {
+             private readonly AutoResetEvent signal = new(false);
+ 
+@@ -90,4 +117,16 @@ public void OnNext(UCommand command, bool isUndo) {
+             public void Dispose() => signal.Dispose();
+         }
+     }
++
++    public sealed record PhonemeFailure(int tick, string lyric, string error);
++
++    public sealed class PhonemizationException : Exception {
++        public PhonemeFailure[] Failures { get; }
++
++        public PhonemizationException(PhonemeFailure[] failures)
++            : base($"Phonemization failed for {failures.Length} phoneme(s): "
++                + string.Join("; ", failures.Take(10).Select(f => $"\"{f.lyric}\" at tick {f.tick}: {f.error}"))) {
++            Failures = failures;
++        }
++    }
+ }

@@ -1,4 +1,11 @@
-import type { AppSettings, GenerationJob, ProviderId, ProviderInfo } from './generation'
+import type {
+  AppSettings,
+  GenerationJob,
+  ProviderId,
+  ProviderInfo,
+  SingingEngine
+} from './generation'
+import type { SingerEngineStatus } from './singer'
 import type { LlmProviderId, LlmRequest, LlmResponse, LlmRetry } from './llm'
 import type { LocalEngineStatus, TorchVariant } from './local-engine'
 import type { StemResult } from './stems'
@@ -63,6 +70,21 @@ export interface VibeApi {
     onStatus(listener: (status: LocalEngineStatus) => void): () => void
     onLog(listener: (line: string) => void): () => void
   }
+  singer: {
+    status(): Promise<SingerEngineStatus>
+    /** Instala el cantante local (motor OpenUtau ~60 MB + voz ~550 MB). */
+    install(): Promise<{ ok: true } | { ok: false; error: string }>
+    uninstall(): Promise<void>
+    /**
+     * Canta un proyecto de OpenUtau (.ustx, como texto) y guarda la voz en el proyecto.
+     * Devuelve el WAV (ruta relativa). El paso actual llega por `onProgress`.
+     */
+    render(requestId: string, dir: string, ustx: string): Promise<{ file: string }>
+    cancel(requestId: string): Promise<void>
+    onStatus(listener: (status: SingerEngineStatus) => void): () => void
+    onLog(listener: (line: string) => void): () => void
+    onProgress(listener: (requestId: string, stage: string) => void): () => void
+  }
   voice: {
     status(): Promise<VoiceEngineStatus>
     /** Instala "Mi voz" (Applio + PyTorch CPU + modelos base, ~2 GB). Tarda varios minutos. */
@@ -107,6 +129,7 @@ export interface VibeApi {
     setHfToken(token: string): Promise<KeyCheck>
     clearHfToken(): Promise<void>
     setDefaultProvider(id: ProviderId): Promise<void>
+    setSingingEngine(engine: SingingEngine): Promise<void>
     setLocalModel(id: string): Promise<void>
     setLlm(patch: {
       provider?: LlmProviderId
@@ -169,6 +192,12 @@ export type IpcChannel =
   | 'localEngine:uninstall'
   | 'localEngine:installStems'
   | 'stems:separate'
+  | 'singer:status'
+  | 'singer:install'
+  | 'singer:uninstall'
+  | 'singer:render'
+  | 'singer:cancel'
+  | 'settings:setSingingEngine'
   | 'voice:status'
   | 'voice:install'
   | 'voice:uninstall'
@@ -206,6 +235,9 @@ export const LOCAL_ENGINE_STATUS_EVENT = 'localEngine:status'
 export const LOCAL_ENGINE_LOG_EVENT = 'localEngine:log'
 export const STEMS_PROGRESS_EVENT = 'stems:progress'
 export const VOICE_STATUS_EVENT = 'voice:status'
+export const SINGER_STATUS_EVENT = 'singer:status'
+export const SINGER_LOG_EVENT = 'singer:log'
+export const SINGER_PROGRESS_EVENT = 'singer:progress'
 export const VOICE_LOG_EVENT = 'voice:log'
 export const VOICE_PROGRESS_EVENT = 'voice:progress'
 export const UPDATE_STATUS_EVENT = 'app:update-status'

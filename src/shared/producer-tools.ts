@@ -5,6 +5,7 @@ import {
   fillSections,
   hasLyrics,
   lastRegionIn,
+  parseMelodyLines,
   layerPrompt,
   loopBars,
   parseSongSpec,
@@ -15,7 +16,9 @@ import {
   trackBusy,
   vocalSongRequest
 } from './arrange'
-import type { ProviderInfo } from './generation'
+import type { ProviderInfo, SingingEngine } from './generation'
+import { buildUstx, melodyForLyrics, placeMelody } from './melody'
+import { SINGER_PROVIDER, SINGER_VOICE } from './singer'
 import {
   beatsToSeconds,
   createTrack,
@@ -52,8 +55,17 @@ export interface ProducerHost {
   ): Promise<{ adjusted: number; skipped: number }>
   /** Motor de audio que se usará para generar (el predeterminado). */
   audioProvider(): ProviderInfo | undefined
-  /** Motor que canta letra (canciones con voz), si hay alguno. */
+  /** Motor que canta letra en la nube (canciones completas con voz), si hay alguno. */
   vocalProvider(): ProviderInfo | undefined
+  /** ¿Está instalado el cantante local (DiffSinger en este equipo)? */
+  localSingerReady(): boolean
+  /** Quién prefiere el usuario que cante (Ajustes). */
+  singingPreference(): SingingEngine
+  /**
+   * Canta un proyecto de OpenUtau (.ustx) con el cantante local y lo pone en su pista de
+   * voz, desde el compás 1, sustituyendo la toma anterior.
+   */
+  singMelody(ustx: string, message: string): Promise<{ trackId: string; regionId: string }>
   /** Con `lyrics`, la genera el motor que canta (`vocalProvider`). */
   generate(input: {
     prompt: string
@@ -211,6 +223,56 @@ function findRegion(p: Project, id: string): { track: Track; region: Region } {
   throw new Error(`No existe la región "${id}". Usa get_project_state para ver los ids.`)
 }
 
+/**
+ * Quién canta las canciones con letra: el cantante local (melodía nota a nota, en este
+ * equipo) o la nube (ACE-Step canta la canción entera). null si no hay ninguno.
+ */
+export function whoSings(host: ProducerHost): 'local' | 'cloud' | null {
+  const pref = host.singingPreference()
+  const cloud = host.vocalProvider()
+  if (pref === 'local') return 'local'
+  if (pref === 'cloud') return cloud ? 'cloud' : null
+  return host.localSingerReady() ? 'local' : cloud ? 'cloud' : null
+}
+
+/**
+ * Canta con el cantante local la melodía de todas las secciones. `strict` (el productor)
+ * exige una nota por sílaba; desde el editor de letra se adapta la melodía a la letra.
+ */
+export async function singLocally(
+  host: ProducerHost,
+  opts: { strict: boolean; message: string }
+): Promise<{ trackId: string; regionId: string; notes: number }> {
+  if (!host.localSingerReady()) {
+    throw new Error(
+      'El cantante local no está instalado. Pide al usuario que lo instale en Ajustes → Cantante local.'
+    )
+  }
+  const p = host.getProject()
+  const sections = sectionsOf(p).map((s) => ({
+    ...s,
+    melody: (opts.strict ? s.melody : melodyForLyrics(s.lyrics, s.melody)) ?? undefined
+  }))
+  const notes = placeMelody(sections, perBar(p), {
+    strict: opts.strict,
+    range: SINGER_VOICE.range
+  })
+  if (notes.length === 0) {
+    throw new Error(
+      'Ninguna sección tiene melodía. El productor la escribe al componer la canción con letra (o con sing_melody).'
+    )
+  }
+  const ustx = buildUstx({
+    singer: SINGER_VOICE.singerId,
+    language: p.lyricsLanguage ?? 'es',
+    bpm: p.bpm,
+    beatsPerBar: perBar(p),
+    notes
+  })
+  const r = await host.singMelody(ustx, opts.message)
+  return { ...r, notes: notes.length }
+}
+
 export function maxBarsPerClip(p: Project, provider: ProviderInfo | undefined): number {
   if (!provider) return 0
   return Math.max(1, Math.floor(provider.capabilities.maxDurationSec / barsToSeconds(1, p)))
@@ -236,6 +298,19 @@ export function describeProject(p: Project, host: ProducerHost): unknown {
           max_bars_per_clip: maxBarsPerClip(p, provider)
         }
       : null,
+    // Quién canta las canciones con letra ('local': hay que escribir la melodía).
+    singing: (() => {
+      const who = whoSings(host)
+      if (who === 'local') {
+        return {
+          engine: 'local',
+          ready: host.localSingerReady(),
+          voice: `${SINGER_VOICE.name}: ${SINGER_VOICE.description}`,
+          comfortable_range: SINGER_VOICE.comfortable
+        }
+      }
+      return who === 'cloud' ? { engine: 'cloud' } : null
+    })(),
     // Sin motor que cante, las canciones son instrumentales.
     vocal_engine: vocal
       ? {
@@ -260,6 +335,7 @@ export function describeProject(p: Project, host: ProducerHost): unknown {
       start_bar: s.startBar,
       bars: s.bars,
       ...(s.lyrics && { lyrics: s.lyrics }),
+      ...(s.melody && { melody: s.melody }),
       playing: layers.map((l) => l.track),
       status:
         layers.length === 0
@@ -453,7 +529,21 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
                   lyrics: {
                     type: 'string',
                     description:
-                      "Lyrics sung in this section, in the user's language, one line per sung phrase (\\n between lines). Omit for instrumental sections. If any section has lyrics, the whole song is sung in one take by the vocal engine."
+                      "Lyrics sung in this section, in the user's language, one line per sung phrase (\\n between lines). Omit for instrumental sections. With singing.engine 'cloud' the whole song is sung in one take by the vocal engine."
+                  },
+                  melody: {
+                    type: 'array',
+                    description:
+                      'Required when singing.engine is \'local\' (replaces lyrics): each sung phrase with its notes, in order from the start of the section. notes: space-separated NOTE:BEATS (e.g. "A4:0.5 C5:1.5"), R:BEATS for rests, exactly one note per syllable.',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        text: { type: 'string' },
+                        notes: { type: 'string' }
+                      },
+                      required: ['text', 'notes'],
+                      additionalProperties: false
+                    }
                   }
                 },
                 required: ['name', 'bars', 'arrangement'],
@@ -471,11 +561,37 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         const bpm = num(input, 'bpm', 40, 240, true)
         const key = str(input, 'key', true)
         const p = host.getProject()
-        // Con letra la canta entera, de una vez, el motor de voz; sin letra se graba
-        // por tramos encadenados con el motor de siempre.
+        // Con letra, o la canta entera el motor de la nube (de una vez), o se graba el
+        // instrumental por tramos y el cantante local canta la melodía encima.
         const sung = hasLyrics(spec.sections)
-        const provider = sung ? readyVocalProvider() : readyProvider()
-        if (sung) {
+        const singer = sung ? whoSings(host) : null
+        const local = singer === 'local'
+        const cloud = sung && !local
+        const provider = cloud ? readyVocalProvider() : readyProvider()
+        if (local) {
+          if (!host.localSingerReady()) {
+            throw new Error(
+              'El cantante local no está instalado. Pide al usuario que lo instale (Ajustes → Cantante local) o haz la canción instrumental.'
+            )
+          }
+          const missing = spec.sections.filter((s) => s.lyrics && !s.melody).map((s) => s.name)
+          if (missing.length > 0) {
+            throw new Error(
+              `El cantante local necesita la melodía ("melody") de cada sección cantada; falta en: ${missing.join(', ')}`
+            )
+          }
+          let bar = 1
+          placeMelody(
+            spec.sections.map((s) => {
+              const placed = { name: s.name, startBar: bar, bars: s.bars, melody: s.melody ?? [] }
+              bar += s.bars
+              return placed
+            }),
+            perBar(p),
+            { strict: true, range: SINGER_VOICE.range }
+          )
+        }
+        if (cloud) {
           const totalBars = spec.sections.reduce((n, s) => n + s.bars, 0)
           checkVocalLength(provider, totalBars, { ...p, bpm: Math.round(bpm ?? p.bpm) })
         } else if (!provider.capabilities.supportsContinue) {
@@ -506,7 +622,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           spec.sections.map((s) => {
             const startBar = nextBar
             nextBar += s.bars
-            return { name: s.name, startBar, bars: s.bars, lyrics: s.lyrics }
+            return { name: s.name, startBar, bars: s.bars, lyrics: s.lyrics, melody: s.melody }
           })
         )
         await commit(
@@ -516,7 +632,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         if (!sameTempo) await host.setTempo(Math.round(bpm), key, AGENT_PREFIX)
         const sections = sectionsOf(planned)
 
-        if (sung) {
+        if (cloud) {
           let error: string | null = null
           try {
             await singSong(song.id)
@@ -552,7 +668,9 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         const failed: { section: string; start_bar: number; error: string }[] = []
         let generated = 0
         let last: string | null = null
-        for (const step of planChunks(spec, bars)) {
+        // Con cantante local, el instrumental no debe traer voces propias.
+        const backing = local ? { ...spec, style: `${spec.style}, instrumental, no vocals` } : spec
+        for (const step of planChunks(backing, bars)) {
           if (signal.aborted) throw new Error('Cancelado')
           const section = sections[step.section]
           if (step.kind === 'reuse') {
@@ -605,10 +723,26 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           )
         }
 
+        // La voz va al final, encima del instrumental: si falla, la canción se queda.
+        let vocalError: string | null = null
+        if (local && generated > 0) {
+          try {
+            await singLocally(host, { strict: true, message: AGENT_PREFIX + 'voz cantada' })
+          } catch (err) {
+            if (signal.aborted) throw err
+            vocalError = err instanceof Error ? err.message : String(err)
+          }
+        }
+
         const final = host.getProject()
         const ids = new Set(sections.map((s) => s.id))
         return {
-          ok: failed.length === 0,
+          ok: failed.length === 0 && vocalError === null,
+          ...(local && { sung_by: SINGER_VOICE.name }),
+          ...(vocalError && {
+            vocal_error: vocalError,
+            vocal_hint: 'The instrumental is saved; fix the melody and call sing_melody.'
+          }),
           bpm: final.bpm,
           key: final.key,
           bars_per_part: bars,
@@ -625,6 +759,62 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             })),
           check: reviewProject(final) ?? 'Every section has music.'
         }
+      }
+    },
+    {
+      def: {
+        name: 'sing_melody',
+        description:
+          "Sings the song again with the LOCAL singer (singing.engine 'local'): optionally replaces the melody (and so the lyrics) of some sections first. Use it to change lyrics, fix a melody or add singing to sections. Renders the whole vocal track from bar 1 over the existing instrumental and replaces the previous take. Takes a few minutes.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            sections: {
+              type: 'array',
+              description:
+                'Only the sections whose melody changes. An empty melody makes the section instrumental.',
+              items: {
+                type: 'object',
+                properties: {
+                  section_id: { type: 'string' },
+                  melody: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: { text: { type: 'string' }, notes: { type: 'string' } },
+                      required: ['text', 'notes'],
+                      additionalProperties: false
+                    }
+                  }
+                },
+                required: ['section_id', 'melody'],
+                additionalProperties: false
+              }
+            }
+          },
+          additionalProperties: false
+        }
+      },
+      run: async (input) => {
+        let p = host.getProject()
+        const raw = typeof input.sections === 'string' ? JSON.parse(input.sections) : input.sections
+        for (const c of (raw ?? []) as { section_id?: unknown; melody?: unknown }[]) {
+          const id = typeof c?.section_id === 'string' ? c.section_id : ''
+          const section = sectionsOf(p).find((s) => s.id === id)
+          if (!section) {
+            throw new Error(`No existe la sección "${id}". Usa get_project_state para ver los ids.`)
+          }
+          const melody = parseMelodyLines(c.melody, section.name) ?? []
+          p = updateSection(p, id, {
+            melody: melody.length ? melody : undefined,
+            lyrics: melody.map((l) => l.text).join('\n')
+          })
+        }
+        // Se valida antes de guardar: si falla, el LLM corrige la melodía.
+        placeMelody(sectionsOf(p), perBar(p), { strict: true, range: SINGER_VOICE.range })
+        if (p !== host.getProject()) await commit(p, 'melodía actualizada')
+        const r = await singLocally(host, { strict: true, message: AGENT_PREFIX + 'voz cantada' })
+        return { ok: true, track_id: r.trackId, region_id: r.regionId, notes: r.notes }
       }
     },
     {
@@ -737,7 +927,13 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           )
         }
         const regionId = str(input, 'region_id')
-        const { track } = findRegion(host.getProject(), regionId)
+        const now = host.getProject()
+        const { track, region } = findRegion(now, regionId)
+        if (now.clips[region.clipId]?.provider === SINGER_PROVIDER) {
+          throw new Error(
+            `Esa voz es la del cantante local (${SINGER_VOICE.name}) y sus condiciones de uso no permiten convertirla a otra voz. Para cantar con la voz del usuario, haz la canción con el motor de la nube y separa su voz.`
+          )
+        }
         if (track.role !== 'vocal') {
           throw new Error(
             `La región está en "${track.name}", que no es una pista de voz. Separa antes la canción con separate_stems y usa la región de su pista de voz.`

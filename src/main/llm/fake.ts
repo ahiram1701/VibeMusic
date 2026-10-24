@@ -4,6 +4,8 @@ import type { LlmAdapter } from './types'
 
 // LLM de mentira, determinista, para las pruebas e2e (se activa con VIBE_FAKE_LLM=1).
 // Simula a un productor: mira el proyecto, pone el tempo, genera dos capas y resume.
+// Si el mensaje pide que "cante", compone una canción corta con melodía para el
+// cantante local.
 
 export function createFakeAdapter(): LlmAdapter {
   return {
@@ -26,6 +28,38 @@ export function createFakeAdapter(): LlmAdapter {
         input
       })
 
+      const userText = req.messages[lastUserText]?.content
+        .map((b) => (b.type === 'text' ? b.text : ''))
+        .join(' ')
+      if (/canta/i.test(userText ?? '')) {
+        if (step === 0) {
+          return {
+            stopReason: 'tool_use',
+            content: [
+              await say('Compongo una canción corta con melodía. '),
+              use('c', 'compose_song', {
+                style: 'soft latin pop',
+                bpm: 100,
+                key: 'A minor',
+                vocals: 'female pop vocal',
+                language: 'es',
+                sections: [
+                  { name: 'Intro', bars: 1, arrangement: 'soft guitar' },
+                  {
+                    name: 'Coro',
+                    bars: 2,
+                    arrangement: 'full band',
+                    melody: [
+                      { text: 'Ay amor, ven a bailar', notes: 'E5 D5:0.5 C5:1.5 B4 C5 D5 C5:2' }
+                    ]
+                  }
+                ]
+              })
+            ]
+          }
+        }
+        return { stopReason: 'end_turn', content: [await say('Listo: canción cantada.')] }
+      }
       if (step === 0) {
         return {
           stopReason: 'tool_use',

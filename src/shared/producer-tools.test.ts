@@ -45,6 +45,11 @@ function fakeHost(
 ) {
   const generated: Parameters<ProducerHost['generate']>[0][] = []
   const myVoices: ReturnType<ProducerHost['myVoices']> = { ready: false, voices: [] }
+  const singer = {
+    ready: false,
+    preference: 'auto' as ReturnType<ProducerHost['singingPreference']>,
+    sung: [] as string[]
+  }
   const state = { project: initial, messages: [] as string[], playedFrom: -1 }
   const host: ProducerHost = {
     getProject: () => state.project,
@@ -59,6 +64,13 @@ function fakeHost(
     },
     audioProvider: () => provider,
     vocalProvider: () => vocal,
+    localSingerReady: () => singer.ready,
+    singingPreference: () => singer.preference,
+    singMelody: async (ustx, message) => {
+      singer.sung.push(ustx)
+      state.messages.push(message)
+      return { trackId: 'tvoz', regionId: 'rvoz' }
+    },
     myVoices: () => myVoices,
     convertVoice: async (regionId, opts) => {
       state.messages.push(`voice ${regionId} ${opts.voiceName} ${opts.pitch}`)
@@ -127,7 +139,7 @@ function fakeHost(
   const tools = Object.fromEntries(createProducerTools(host).map((t) => [t.def.name, t]))
   const run = (name: string, input: Record<string, unknown> = {}) =>
     tools[name].run(input, new AbortController().signal)
-  return { state, run, host, generated, myVoices }
+  return { state, run, host, generated, myVoices, singer }
 }
 
 describe('herramientas del productor', () => {
@@ -749,5 +761,134 @@ describe('cantar con la voz del usuario', () => {
     await expect(h.run('sing_with_my_voice', { region_id: 'rv1', voice: 'Pedro' })).rejects.toThrow(
       /No existe la voz "Pedro"/
     )
+    // La voz del cantante local no se convierte (condiciones de uso del voicebank).
+    h.state.project = {
+      ...h.state.project,
+      clips: { c: { id: 'c', file: '', durationSec: 8, spec: null, provider: 'diffsinger' } }
+    }
+    await expect(h.run('sing_with_my_voice', { region_id: 'rv1' })).rejects.toThrow(
+      /condiciones de uso no permiten/
+    )
+  })
+})
+
+describe('cantante local (melodía nota a nota)', () => {
+  const localSong = {
+    style: 'romantic latin pop',
+    bpm: 100,
+    key: 'A minor',
+    vocals: 'female pop vocal',
+    language: 'es',
+    sections: [
+      { name: 'Intro', bars: 2, arrangement: 'guitar intro' },
+      {
+        name: 'Coro',
+        bars: 4,
+        arrangement: 'full band',
+        melody: [
+          { text: 'Ay amor, ven a bailar', notes: 'E5:1 D5:0.5 C5:1.5 B4 C5 D5 C5:2' },
+          { text: 'que la noche va a empezar', notes: 'C5:0.5 B4:0.5 A4 G4 A4 B4 C5 B4 A4' }
+        ]
+      }
+    ]
+  }
+
+  function localHost() {
+    const h = fakeHost(createProject('X'), demo, singer)
+    h.singer.ready = true
+    chainableExtend(h)
+    return h
+  }
+
+  /** Continuación en memoria (como chainable, pero sin registrar llamadas). */
+  function chainableExtend(h: ReturnType<typeof fakeHost>) {
+    h.host.extend = async (regionId, bars, opts) => {
+      const p = h.state.project
+      const track = p.tracks.find((t) => t.regions.some((r) => r.id === regionId))!
+      const src = track.regions.find((r) => r.id === regionId)!
+      const region = {
+        ...src,
+        id: newId('rgn'),
+        lengthSec: barsToSeconds(bars, p),
+        startBeat: opts?.atBeat ?? src.startBeat + secondsToBeats(src.lengthSec, p.bpm)
+      }
+      h.state.project = {
+        ...p,
+        tracks: p.tracks.map((t) =>
+          t.id === track.id ? { ...t, regions: [...t.regions, region] } : t
+        )
+      }
+      return { trackId: track.id, regionId: region.id }
+    }
+  }
+
+  it('con el cantante local, compose_song graba el instrumental sin voces y canta la melodía encima', async () => {
+    const h = localHost()
+    const res = (await h.run('compose_song', localSong)) as { ok: boolean; sung_by: string }
+    expect(res).toMatchObject({ ok: true, sung_by: 'Hanami' })
+    // El instrumental se pide sin voces y nunca al motor de la nube.
+    expect(h.generated).toHaveLength(1)
+    expect(h.generated[0].lyrics).toBeUndefined()
+    expect(h.generated[0].prompt).toContain('instrumental, no vocals')
+    // La melodía se canta una vez, con el fonemizador de español y desde el compás 3.
+    expect(h.singer.sung).toHaveLength(1)
+    const ustx = h.singer.sung[0]
+    expect(ustx).toContain('DiffSingerSpanishPhonemizer')
+    expect(ustx).toContain("lyric: 'ay'")
+    expect(ustx).toMatch(/- position: 3840\n {4}duration: 480\n {4}tone: 76/) // E5 en el pulso 8
+    const coro = h.state.project.sections!.find((s) => s.name === 'Coro')!
+    expect(coro.lyrics).toBe('Ay amor, ven a bailar\nque la noche va a empezar')
+    expect(coro.melody).toHaveLength(2)
+  })
+
+  it('exige la melodía y una nota por sílaba antes de tocar nada', async () => {
+    const h = localHost()
+    await expect(
+      h.run('compose_song', {
+        ...localSong,
+        sections: [{ name: 'Coro', bars: 4, arrangement: 'x', lyrics: 'Ay amor' }]
+      })
+    ).rejects.toThrow(/necesita la melodía \("melody"\).*Coro/)
+    await expect(
+      h.run('compose_song', {
+        ...localSong,
+        sections: [
+          {
+            name: 'Coro',
+            bars: 4,
+            arrangement: 'x',
+            melody: [{ text: 'caminando', notes: 'A4 B4' }]
+          }
+        ]
+      })
+    ).rejects.toThrow(/4 sílabas \(ca-mi-nan-do\) y solo 2 notas/)
+    expect(h.generated).toHaveLength(0)
+    expect(h.state.project.sections).toBeUndefined()
+  })
+
+  it('sing_melody cambia la melodía de una sección y vuelve a cantar', async () => {
+    const h = localHost()
+    await h.run('compose_song', localSong)
+    const coro = h.state.project.sections!.find((s) => s.name === 'Coro')!
+    await h.run('sing_melody', {
+      sections: [{ section_id: coro.id, melody: [{ text: 'te quiero', notes: 'A4 B4 C5:2' }] }]
+    })
+    expect(h.singer.sung).toHaveLength(2)
+    expect(h.singer.sung[1]).toContain("lyric: 'quiero'")
+    expect(h.state.project.sections!.find((s) => s.id === coro.id)!.lyrics).toBe('te quiero')
+  })
+
+  it('quién canta: preferencia, y el local solo en automático si está instalado', async () => {
+    const h = fakeHost(createProject('X'), demo, singer)
+    const who = async () =>
+      ((await h.run('get_project_state')) as { singing: { engine: string } | null }).singing
+    expect(await who()).toEqual({ engine: 'cloud' })
+    h.singer.ready = true
+    expect((await who())?.engine).toBe('local')
+    h.singer.preference = 'cloud'
+    expect(await who()).toEqual({ engine: 'cloud' })
+    h.singer.preference = 'local'
+    h.singer.ready = false
+    expect(await who()).toMatchObject({ engine: 'local', ready: false })
   })
 })

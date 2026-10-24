@@ -1,0 +1,65 @@
+name: Motor del cantante local
+
+# Compila OpenUtau sin interfaz (ver singer-engine/README.md) para cada plataforma y lo
+# sube a una PRERELEASE con el nombre del tag. La app lo descarga de ahí la primera vez
+# que se instala el cantante local. Es prerelease para que electron-updater no la tome
+# por una versión de VibeMusic.
+on:
+  push:
+    tags: ['singer-engine-v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Motor ${{ matrix.rid }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - { os: windows-latest, rid: win-x64 }
+          - { os: ubuntu-latest, rid: linux-x64 }
+          - { os: macos-14, rid: osx-arm64 }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+      - name: Compilar
+        shell: bash
+        run: singer-engine/build.sh ${{ matrix.rid }} out/engine
+      - name: Empaquetar
+        shell: bash
+        run: |
+          cd out/engine
+          name="openutau-cli-${{ matrix.rid }}.zip"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a -tzip "../$name" . > /dev/null
+            cd .. && sha256sum "$name" > "$name.sha256"
+          else
+            zip -qr "../$name" .
+            cd .. && shasum -a 256 "$name" > "$name.sha256"
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: engine-${{ matrix.rid }}
+          path: out/openutau-cli-*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Publicar la prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --prerelease \
+            --title "Motor del cantante local ($GITHUB_REF_NAME)" \
+            --notes "OpenUtau sin interfaz para el cantante local de VibeMusic. Ver singer-engine/README.md."

@@ -11,6 +11,7 @@ import {
 import { useProject } from '../store/project'
 import { useUi } from '../store/ui'
 import { useVoice } from '../store/voice'
+import { SINGER_PROVIDER } from '@shared/singer'
 
 const CONTINUE_BARS = [2, 4, 8]
 
@@ -54,9 +55,12 @@ export function RegionMenu(): React.JSX.Element | null {
     fn().catch((err: unknown) => notify(cleanError(err), 'error'))
   }
   const extra = instructions.trim() || undefined
-  // "Cantar con mi voz" solo tiene sentido en pistas de voz (p. ej. la que sale de separar).
+  // "Cantar con mi voz" solo tiene sentido en pistas de voz (p. ej. la que sale de separar),
+  // y no con el cantante local: sus condiciones de uso no permiten convertir su voz.
+  const owner = project?.tracks.find((t) => t.regions.some((r) => r.id === regionId))
+  const clipId = owner?.regions.find((r) => r.id === regionId)?.clipId
   const isVocal =
-    project?.tracks.find((t) => t.regions.some((r) => r.id === regionId))?.role === 'vocal'
+    owner?.role === 'vocal' && (!clipId || project?.clips[clipId]?.provider !== SINGER_PROVIDER)
   const myVoices = voiceStatus.state === 'ready' && isVocal ? voices : []
   const item = 'block w-full rounded px-3 py-1.5 text-left text-sm hover:bg-line'
 

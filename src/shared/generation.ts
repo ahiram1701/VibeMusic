@@ -5,6 +5,13 @@ import type { GenerationSpec } from './project'
 
 export type ProviderId = 'demo' | 'replicate' | 'local' | 'huggingface'
 
+/**
+ * Quién canta: 'cloud' = ACE-Step en Hugging Face (canción completa, pocas al día);
+ * 'local' = cantante DiffSinger en este equipo (pista de voz sobre el instrumental, sin
+ * límite); 'auto' = el local si está instalado y, si no, la nube.
+ */
+export type SingingEngine = 'auto' | 'cloud' | 'local'
+
 export interface ProviderCapabilities {
   maxDurationSec: number
   supportsSeed: boolean
@@ -55,6 +62,8 @@ export interface AppSettings {
   hasReplicateToken: boolean
   /** Hay token de Hugging Face guardado (más cuota gratuita para cantar). */
   hasHfToken: boolean
+  /** Quién canta las canciones con letra (ver SingingEngine). */
+  singingEngine: SingingEngine
   /** Modelo del motor local (ver LOCAL_MODELS). */
   localModel: string
   llm: LlmSettings

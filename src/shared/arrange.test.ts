@@ -58,9 +58,33 @@ describe('parseSongSpec', () => {
       })
     )
     expect(spec.sections).toEqual([
-      { name: 'Intro', bars: 8, arrangement: 'kick', energy: 5, reuse: false, lyrics: null },
-      { name: 'Coro', bars: 8, arrangement: 'all', energy: null, reuse: false, lyrics: null },
-      { name: 'coro', bars: 8, arrangement: '', energy: null, reuse: true, lyrics: null }
+      {
+        name: 'Intro',
+        bars: 8,
+        arrangement: 'kick',
+        energy: 5,
+        reuse: false,
+        lyrics: null,
+        melody: null
+      },
+      {
+        name: 'Coro',
+        bars: 8,
+        arrangement: 'all',
+        energy: null,
+        reuse: false,
+        lyrics: null,
+        melody: null
+      },
+      {
+        name: 'coro',
+        bars: 8,
+        arrangement: '',
+        energy: null,
+        reuse: true,
+        lyrics: null,
+        melody: null
+      }
     ])
   })
 

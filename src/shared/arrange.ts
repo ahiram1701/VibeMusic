@@ -35,6 +35,8 @@ export interface SongSpec {
     reuse: boolean
     /** Letra cantada en esta sección; null si es instrumental. */
     lyrics: string | null
+    /** Melodía de la letra para el cantante local (una entrada por frase), o null. */
+    melody: { text: string; notes: string }[] | null
   }[]
 }
 
@@ -111,8 +113,14 @@ export function parseSongSpec(input: Input): SongSpec {
       typeof rawEnergy === 'number' && Number.isFinite(rawEnergy)
         ? Math.min(5, Math.max(1, Math.round(rawEnergy)))
         : null
-    const lyrics = typeof it.lyrics === 'string' && it.lyrics.trim() ? cleanLyrics(it.lyrics) : null
-    sections.push({ name, bars: Math.round(bars), arrangement, energy, reuse, lyrics })
+    const melody = parseMelodyLines(it.melody, name)
+    // Con melodía, la letra son sus frases (así no pueden quedar distintas).
+    const lyrics = melody
+      ? melody.map((l) => l.text).join('\n')
+      : typeof it.lyrics === 'string' && it.lyrics.trim()
+        ? cleanLyrics(it.lyrics)
+        : null
+    sections.push({ name, bars: Math.round(bars), arrangement, energy, reuse, lyrics, melody })
   }
   if (sections.every((s) => s.reuse)) throw new Error('Alguna sección tiene que generarse')
   const vocals =
@@ -120,6 +128,31 @@ export function parseSongSpec(input: Input): SongSpec {
   const rawLanguage = typeof input.language === 'string' ? input.language.trim().toLowerCase() : ''
   const language = /^[a-z]{2,3}$/.test(rawLanguage) ? rawLanguage : null
   return { style, vocals, language, sections }
+}
+
+/** Frases con su melodía tal como las manda el LLM: [{text, notes}]. null si no hay. */
+export function parseMelodyLines(
+  raw: unknown,
+  section: string
+): { text: string; notes: string }[] | null {
+  const value = parseJsonish(raw)
+  if (value === undefined || value === null || (Array.isArray(value) && value.length === 0)) {
+    return null
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `Sección "${section}": "melody" debe ser una lista de frases: [{"text": "...", "notes": "A4 B4:0.5 ..."}]`
+    )
+  }
+  return value.map((item, i) => {
+    const it = (item ?? {}) as Input
+    const text = typeof it.text === 'string' ? it.text.trim() : ''
+    const notes = typeof it.notes === 'string' ? it.notes.trim() : ''
+    if (!text || !notes) {
+      throw new Error(`Sección "${section}", frase ${i + 1}: falta "text" o "notes"`)
+    }
+    return { text, notes }
+  })
 }
 
 // --- Letra -------------------------------------------------------------------

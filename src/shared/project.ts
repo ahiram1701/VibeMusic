@@ -108,6 +108,11 @@ export interface Section {
   sparse?: boolean
   /** Letra que se canta en esta sección (vacía o ausente: instrumental). */
   lyrics?: string
+  /**
+   * Melodía de la letra para el cantante local: una frase por línea con sus notas
+   * ("A4:0.5 B4 …", ver shared/melody.ts).
+   */
+  melody?: { text: string; notes: string }[]
 }
 
 export interface VersionMeta {

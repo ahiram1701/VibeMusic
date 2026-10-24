@@ -53,6 +53,8 @@ test.beforeAll(async () => {
       VIBE_USER_DATA: join(workDir, 'userdata'),
       // Carpeta del motor local propia: las pruebas no deben ver el motor del usuario.
       VIBE_ENGINE_DIR: join(workDir, 'engine'),
+      VIBE_SINGER_DIR: join(workDir, 'singer'),
+      VIBE_VOICE_DIR: join(workDir, 'voice'),
       VIBE_FAKE_LLM: '1',
       // Disco lento a propósito: destapa carreras entre guardar y deshacer.
       VIBE_TEST_SAVE_DELAY_MS: '120'
@@ -276,7 +278,9 @@ test('motor local sin instalar: lo indica en ajustes y en el panel manual', asyn
   await page.getByRole('button', { name: '⚙ Ajustes' }).first().click()
   const dialog = page.getByRole('dialog', { name: 'Ajustes' })
   await expect(dialog.getByText('Motor de audio: Local (tu equipo)')).toBeVisible()
-  await expect(dialog.getByText('no instalado')).toBeVisible()
+  // Hay varios motores opcionales: se mira el estado dentro de la sección del motor local.
+  const local = dialog.locator('section', { hasText: 'Motor de audio: Local (tu equipo)' })
+  await expect(local.getByText('no instalado')).toBeVisible()
   await expect(dialog.getByRole('button', { name: 'Instalar motor local' })).toBeVisible()
   await page.keyboard.press('Escape')
 

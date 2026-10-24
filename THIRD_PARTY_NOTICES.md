@@ -17,6 +17,29 @@ y https://lame.sourceforge.io. Texto de la licencia: https://www.gnu.org/license
 Cliente de la API de Gradio con el que se habla con el Space de ACE-Step.
 https://github.com/gradio-app/gradio
 
+## Descargados al instalar funciones opcionales (no incluidos en el instalador)
+
+### OpenUtau (motor del cantante local) — MIT
+
+Se compila desde el fork [boxboy523/OpenUtau-Headless](https://github.com/boxboy523/OpenUtau-Headless)
+(MIT, © 2014 StAkira y colaboradores de OpenUtau) con un parche de
+[Jibaru/vocaloid-cli](https://github.com/Jibaru/vocaloid-cli) (MIT, © 2026 Ignacio Rueda). Ver
+`singer-engine/`.
+
+### Hoshino Hanami ~AI❤dol~ (voicebank DiffSinger) — Team L❤VE Voicebank License
+
+La voz del cantante local, de **Lotte V** (https://lottev.moe). Se descarga desde su enlace
+original y no se redistribuye. Permite el uso comercial y no comercial **dando crédito a Lotte V**;
+no permite volver a subir ni vender los archivos, ni crear voces derivadas por medios ajenos al
+software de síntesis (por eso "Mi voz" no se aplica a ella). Condiciones:
+https://github.com/lottev1991/LotteV-Voicebank-Update-Repo/blob/main/ToU_ES.md
+
+### Applio (RVC, "Mi voz") — MIT
+
+Conversión de voz con los modelos que entrena el propio usuario. Se instala desde la etiqueta
+3.6.6 de https://github.com/IAHispano/Applio en un entorno de Python propio, con sus modelos base
+(ContentVec, RMVPE, FCPE).
+
 ## Modelos de IA (no incluidos: se descargan al usarlos)
 
 ### MusicGen (Meta) — pesos bajo CC-BY-NC 4.0

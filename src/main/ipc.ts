@@ -1,5 +1,5 @@
 import { homedir } from 'node:os'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron'
 import type { ProviderId } from '@shared/generation'
@@ -11,6 +11,9 @@ import {
   LOCAL_ENGINE_STATUS_EVENT,
   STEMS_PROGRESS_EVENT,
   UPDATE_STATUS_EVENT,
+  SINGER_LOG_EVENT,
+  SINGER_PROGRESS_EVENT,
+  SINGER_STATUS_EVENT,
   VOICE_LOG_EVENT,
   VOICE_PROGRESS_EVENT,
   VOICE_STATUS_EVENT,
@@ -33,6 +36,8 @@ import { llmSecret, SettingsStore } from './settings'
 import { SidecarManager } from './sidecar/manager'
 import { StemsService } from './stems'
 import { VoiceEngine } from './voice/engine'
+import { SingerEngine } from './singer/engine'
+import type { SingingEngine } from '@shared/generation'
 import type { VoiceConvertOptions } from '@shared/voice'
 import { checkForUpdates, getUpdateStatus, installUpdate, startAutoUpdates } from './updater'
 import { computeWhatsNew } from './whats-new'
@@ -244,6 +249,29 @@ export function registerIpc(): { shutdown(): void } {
   )
   handle('voice:cancel', (requestId: string) => voice.cancel(requestId))
 
+  // Cantante local: DiffSinger en OpenUtau sin interfaz, en su propia carpeta.
+  const singer = new SingerEngine(
+    process.env['VIBE_SINGER_DIR'] ?? join(homedir(), '.vibemusic', 'singer')
+  )
+  singer.onStatus((s) => broadcast(SINGER_STATUS_EVENT, s))
+  singer.onLog((line) => broadcast(SINGER_LOG_EVENT, line))
+  handle('singer:status', () => singer.status())
+  handle('singer:install', () => result(() => singer.install()))
+  handle('singer:uninstall', () => singer.uninstall())
+  ipcMain.handle('singer:render', async (event, requestId: string, dir: string, ustx: string) => {
+    const id = newId('sng')
+    const project = projectPath(dir, `clips/voice/${id}.ustx`)
+    const file = `clips/voice/${id}.wav`
+    await mkdir(dirname(project), { recursive: true })
+    await writeFile(project, ustx)
+    await singer.render(requestId, project, projectPath(dir, file), (stage) =>
+      event.sender.send(SINGER_PROGRESS_EVENT, requestId, stage)
+    )
+    return { file }
+  })
+  handle('singer:cancel', (requestId: string) => singer.cancel(requestId))
+  handle('settings:setSingingEngine', (engine: SingingEngine) => settings.setSingingEngine(engine))
+
   const stems = new StemsService(sidecar)
   ipcMain.handle('stems:separate', (event, requestId: string, dir: string, clipFile: string) =>
     stems.separate(requestId, dir, clipFile, (progress, stage) =>
@@ -333,6 +361,7 @@ export function registerIpc(): { shutdown(): void } {
     shutdown: () => {
       sidecar.killNow()
       voice.killAll()
+      singer.killAll()
     }
   }
 }

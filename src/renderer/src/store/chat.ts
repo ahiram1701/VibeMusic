@@ -4,12 +4,19 @@ import { textOf, type LlmMessage, type LlmRetry } from '@shared/llm'
 import { newId } from '@shared/project'
 import { PRODUCER_SYSTEM_PROMPT } from '@shared/producer-prompt'
 import { reviewProject } from '@shared/arrange'
-import { AGENT_PREFIX, createProducerTools, type ProducerHost } from '@shared/producer-tools'
+import {
+  AGENT_PREFIX,
+  createProducerTools,
+  singLocally,
+  whoSings,
+  type ProducerHost
+} from '@shared/producer-tools'
 import { engine } from '../audio/engine'
 import { continueRegion, convertVoiceRegion, separateRegion, varyRegion } from './clip-actions'
 import { useGeneration, vocalProvider, waitForJob } from './generation'
 import { useProject } from './project'
 import { useVoice } from './voice'
+import { renderSungVocal, useSinger } from './singer'
 
 /** `at`: cuándo apareció (ms). En herramientas, `endedAt`: cuándo terminaron. */
 export type ChatItem = { at: number } & (
@@ -69,6 +76,10 @@ const host: ProducerHost = {
     return providers.find((p) => p.id === settings?.defaultProvider) ?? providers[0]
   },
   vocalProvider: () => vocalProvider(),
+  localSingerReady: () => useSinger.getState().status.state === 'ready',
+  singingPreference: () => useGeneration.getState().settings?.singingEngine ?? 'auto',
+  singMelody: (ustx, message) =>
+    renderSungVocal(ustx, { message, signal: controller?.signal ?? undefined }),
   generate: async (input) => {
     const gen = useGeneration.getState()
     const provider = input.lyrics ? host.vocalProvider() : host.audioProvider()
@@ -116,11 +127,21 @@ async function agentJob(started: Promise<string>): Promise<{ trackId: string; re
 
 const tools = createProducerTools(host)
 
+/** Quién canta ahora las canciones con letra ('local', 'cloud' o nadie). */
+export function currentSinger(): 'local' | 'cloud' | null {
+  return whoSings(host)
+}
+
 /**
  * "Cantar de nuevo" desde el editor de letra: la misma herramienta que usa el
  * productor (sing_song), sin pasar por el LLM. La letra ya está guardada en el proyecto.
  */
 export async function singFromEditor(): Promise<void> {
+  // Con el cantante local se adapta la melodía guardada a la letra editada.
+  if (whoSings(host) === 'local') {
+    await singLocally(host, { strict: false, message: 'letra cantada de nuevo' })
+    return
+  }
   const sing = tools.find((t) => t.def.name === 'sing_song')
   if (!sing) throw new Error('sing_song no existe')
   await sing.run({}, new AbortController().signal)
