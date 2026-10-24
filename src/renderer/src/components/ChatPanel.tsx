@@ -308,6 +308,26 @@ export function describeTool(
       ]
         .filter(Boolean)
         .join(' · ')
+    case 'compose_song': {
+      const sections = Array.isArray(input.sections)
+        ? (input.sections as { name?: unknown }[])
+            .map((s) => (typeof s?.name === 'string' ? s.name : ''))
+            .filter(Boolean)
+        : []
+      return `${running ? 'Componiendo' : 'Compuesta'} la canción: ${sections.join(' → ')}${running ? ' (se graba parte a parte; cada una tarda unos minutos)' : ''}`
+    }
+    case 'fill_section':
+      return `${running ? 'Rellenando' : 'Rellenado'} “${input.section}” con ${role}: “${input.prompt}”`
+    case 'set_sections':
+      return 'Planificando la estructura'
+    case 'copy_section':
+      return 'Copiando una sección'
+    case 'create_variation':
+      return `${running ? 'Creando' : 'Creada'} otra versión de una región`
+    case 'extend_region':
+      return `${running ? 'Continuando' : 'Continuada'} una región ${input.bars} compases`
+    case 'separate_stems':
+      return `${running ? 'Separando' : 'Separada'} la canción en instrumentos`
     case 'generate_clip':
       return `${running ? 'Generando' : 'Generado'} ${role}: “${input.prompt}” · ${input.bars} compases desde el compás ${input.start_bar}`
     case 'repeat_region':

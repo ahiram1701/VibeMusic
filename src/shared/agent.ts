@@ -16,6 +16,7 @@ export type AgentEvent =
   | { type: 'tool_start'; id: string; name: string; input: Record<string, unknown> }
   | { type: 'tool_end'; id: string; result: string; isError: boolean }
   | { type: 'limit' }
+  | { type: 'review'; text: string }
   | { type: 'stopped'; reason: 'max_tokens' | 'refusal' }
 
 export interface RunAgentOptions {
@@ -34,6 +35,12 @@ export interface RunAgentOptions {
   onEvent(event: AgentEvent): void
   maxSteps?: number
   maxTokens?: number
+  /**
+   * Revisión antes de terminar: si en este turno se ejecutó alguna herramienta y el
+   * modelo da su respuesta final, se llama una vez; si devuelve un aviso, se le pasa
+   * al modelo para que lo corrija antes de dar el trabajo por hecho.
+   */
+  review?: () => string | null
 }
 
 export class AgentCancelled extends Error {
@@ -69,6 +76,8 @@ export async function runAgent(opts: RunAgentOptions): Promise<LlmMessage[]> {
     throw new Error('No hay nada que reanudar')
   }
 
+  let actedThisTurn = false
+  let reviewed = false
   for (let step = 0; step < maxSteps; step++) {
     if (signal.aborted) throw new AgentCancelled()
     let response: LlmResponse
@@ -95,7 +104,14 @@ export async function runAgent(opts: RunAgentOptions): Promise<LlmMessage[]> {
     const calls = response.content.filter(
       (b): b is Extract<ContentBlock, { type: 'tool_use' }> => b.type === 'tool_use'
     )
-    if (calls.length === 0) return messages
+    if (calls.length === 0) {
+      const note = actedThisTurn && !reviewed ? opts.review?.() : null
+      reviewed = true
+      if (!note) return messages
+      onEvent({ type: 'review', text: note })
+      messages.push({ role: 'user', content: [{ type: 'text', text: note }] })
+      continue
+    }
 
     // Varias herramientas en el mismo paso se ejecutan a la vez
     // (p. ej. generar batería, bajo y acordes en paralelo).
@@ -119,6 +135,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<LlmMessage[]> {
         return { type: 'tool_result', toolUseId: call.id, content, isError }
       })
     )
+    if (results.some((r) => r.type === 'tool_result' && !r.isError)) actedThisTurn = true
     messages.push({ role: 'user', content: results })
   }
 
