@@ -15,8 +15,8 @@ export interface SecretCipher {
   decrypt(data: Buffer): string
 }
 
-/** 'replicateToken' o `llm:<id del proveedor>`. */
-export type SecretName = 'replicateToken' | `llm:${string}`
+/** 'replicateToken', 'hfToken' o `llm:<id del proveedor>`. */
+export type SecretName = 'replicateToken' | 'hfToken' | `llm:${string}`
 
 export const llmSecret = (providerId: string): SecretName => `llm:${providerId}`
 
@@ -113,6 +113,7 @@ export class SettingsStore {
     return {
       defaultProvider: s.defaultProvider,
       hasReplicateToken: !!s.secrets.replicateToken,
+      hasHfToken: !!s.secrets.hfToken,
       localModel: s.localModel,
       llm: {
         provider: s.llmProvider,
@@ -224,5 +225,13 @@ export class SettingsStore {
 
   setReplicateToken(token: string | null): Promise<void> {
     return this.setSecret('replicateToken', token)
+  }
+
+  getHfToken(): Promise<string | null> {
+    return this.getSecret('hfToken')
+  }
+
+  setHfToken(token: string | null): Promise<void> {
+    return this.setSecret('hfToken', token)
   }
 }

@@ -68,7 +68,7 @@ export function appendSection(p: Project, bars = 8, name?: string): Project {
 /** Sustituye todas las secciones (lo usa el productor para planificar la estructura). */
 export function setSections(
   p: Project,
-  list: { name: string; startBar: number; bars: number; sparse?: boolean }[]
+  list: { name: string; startBar: number; bars: number; sparse?: boolean; lyrics?: string | null }[]
 ): Project {
   return withSections(
     p,
@@ -77,7 +77,8 @@ export function setSections(
       name: s.name.trim(),
       startBar: s.startBar,
       bars: s.bars,
-      ...(s.sparse && { sparse: true })
+      ...(s.sparse && { sparse: true }),
+      ...(s.lyrics?.trim() && { lyrics: s.lyrics.trim() })
     }))
   )
 }
@@ -85,7 +86,7 @@ export function setSections(
 export function updateSection(
   p: Project,
   id: string,
-  patch: Partial<Pick<Section, 'name' | 'startBar' | 'bars'>>
+  patch: Partial<Pick<Section, 'name' | 'startBar' | 'bars' | 'lyrics'>>
 ): Project {
   const existing = sectionsOf(p)
   if (!existing.some((s) => s.id === id)) throw new Error(`No existe la sección "${id}"`)
@@ -122,7 +123,13 @@ export function copySection(p: Project, id: string, toBar?: number): Project {
   const src = existing.find((s) => s.id === id)
   if (!src) throw new Error(`No existe la sección "${id}"`)
   const target = toBar ?? endBar(existing.at(-1)!)
-  const copy: Section = { id: newId('sec'), name: src.name, startBar: target, bars: src.bars }
+  const copy: Section = {
+    id: newId('sec'),
+    name: src.name,
+    startBar: target,
+    bars: src.bars,
+    ...(src.lyrics && { lyrics: src.lyrics })
+  }
   const next = withSections(p, [...existing, copy])
   return { ...next, tracks: copyAudio(p, src, target, src.bars) }
 }

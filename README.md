@@ -14,6 +14,10 @@ refinándolo por conversación con historial de versiones.
 Para generar con IA puedes usar el motor **Demo** (sin instalar nada), **Replicate** (token en
 Ajustes) o el motor **Local**, que se instala desde ⚙ Ajustes y necesita Python 3.10–3.13.
 
+Las canciones **con voz** (letra cantada) se generan con ACE-Step en Hugging Face, gratis pero con
+una cuota diaria de GPU (una o dos canciones al día; más con tu token gratuito de HF en Ajustes).
+El productor escribe la letra y puedes editarla en la pestaña **Letra**.
+
 ## Desarrollo
 
 ```bash
@@ -36,12 +40,13 @@ python server.py                 # http://127.0.0.1:8765/health
 
 ## Arquitectura
 
-| Capa              | Ruta            | Rol                                                                      |
-| ----------------- | --------------- | ------------------------------------------------------------------------ |
-| Modelo compartido | `src/shared/`   | `Project`, `Track`, `Region`, `Clip`, `GenerationSpec`, contrato IPC     |
-| Main (Node)       | `src/main/`     | Persistencia y versiones, agente productor, proveedores de audio, export |
-| Renderer (React)  | `src/renderer/` | Chat, timeline, mezclador, motor Web Audio                               |
-| Sidecar (Python)  | `sidecar/`      | MusicGen / Stable Audio Open / Demucs vía FastAPI                        |
+| Capa              | Ruta                                      | Rol                                                                      |
+| ----------------- | ----------------------------------------- | ------------------------------------------------------------------------ |
+| Modelo compartido | `src/shared/`                             | `Project`, `Track`, `Region`, `Clip`, `GenerationSpec`, contrato IPC     |
+| Main (Node)       | `src/main/`                               | Persistencia y versiones, agente productor, proveedores de audio, export |
+| Renderer (React)  | `src/renderer/`                           | Chat, timeline, mezclador, motor Web Audio                               |
+| Sidecar (Python)  | `sidecar/`                                | MusicGen / Stable Audio Open / Demucs vía FastAPI                        |
+| Voces (nube)      | `src/main/audio-providers/huggingface.ts` | ACE-Step 1.5 en su Space de Hugging Face (API de Gradio)                 |
 
 Un proyecto es una carpeta: `project.json`, `versions/<n>.json` (snapshots) y `clips/*.wav`.
 

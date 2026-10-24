@@ -12,6 +12,11 @@ Codificador MP3 usado al exportar. Se distribuye **sin modificar y como un archi
 sustituirse por otra versión compatible. Código fuente: https://github.com/BreezyStack/lamejs
 y https://lame.sourceforge.io. Texto de la licencia: https://www.gnu.org/licenses/lgpl-3.0.html
 
+### `@gradio/client` (Hugging Face) — licencia ISC
+
+Cliente de la API de Gradio con el que se habla con el Space de ACE-Step.
+https://github.com/gradio-app/gradio
+
 ## Modelos de IA (no incluidos: se descargan al usarlos)
 
 ### MusicGen (Meta) — pesos bajo CC-BY-NC 4.0
@@ -21,6 +26,12 @@ Los pesos del modelo se publican bajo Creative Commons Atribución-NoComercial 4
 (https://creativecommons.org/licenses/by-nc/4.0/). **Revisa esta licencia y los términos de
 Replicate antes de usar comercialmente la música generada.**
 
+### ACE-Step 1.5 — licencia Apache-2.0 (Space de Hugging Face: MIT)
+
+Canciones con voz que cantan la letra. Se usa a través del Space público
+`ACE-Step/Ace-Step-v1.5` de Hugging Face, con la GPU gratuita de HF (ZeroGPU, cuota diaria por
+usuario). https://github.com/ace-step/ACE-Step-1.5
+
 ### Demucs (Meta) — código y modelo `htdemucs` bajo licencia MIT
 
 Separación de pistas (voz, batería, bajo, otros) en el motor local. Se instala en el entorno del
@@ -28,5 +39,5 @@ motor y el modelo se descarga la primera vez que se usa. https://github.com/adef
 
 ## Servicios en la nube (opcionales)
 
-Replicate, Anthropic, Groq, OpenAI y demás proveedores configurables se rigen por sus propios
+Hugging Face, Replicate, Anthropic, Groq, OpenAI y demás proveedores configurables se rigen por sus propios
 términos de uso; la app solo actúa como cliente con la clave que proporciona el usuario.

@@ -35,7 +35,17 @@ How to write it like a pro:
 - "arrangement" says what plays in THAT section and how it differs from the previous one: which instruments enter or leave, rhythm, intensity. Give each section a clear identity; never write the same arrangement twice. Do not repeat the style there, and never include the tempo or key.
 - "energy" (1-5) draws the energy curve: start low, build, hit the peak in the chorus or drop, breathe in the break, finish low.
 - "reuse": true repeats an earlier section with the same name instead of generating it again. Use it only for a later chorus that should sound identical, since it saves several minutes; normally let the music evolve.
-- The engine cannot sing intelligible lyrics: describe vocals as hums, chants, chops or textures.
+- The normal engine cannot sing words: in instrumental songs describe vocals as hums, chants, chops or textures.
+
+## Songs with sung lyrics
+get_project_state shows "vocal_engine". When it exists and is ready, a song can be sung with real lyrics: if the user asks for lyrics, singing, a singer or a "real song" (or the genre clearly needs a singer, like a ballad, corrido, reggaeton or pop hit), add "lyrics" to the sung sections of compose_song, plus "vocals" and "language".
+- Write ORIGINAL lyrics in the user's language (or use the lyrics the user gives you, unchanged). Never copy existing songs.
+- 4-8 short, singable lines per sung section, one line per phrase, separated by \\n. The chorus is the catchiest part and repeats its hook; verses tell the story. Leave the intro, breaks and outro without lyrics.
+- The whole sung song must fit in vocal_engine.max_song_seconds (about 2-3 minutes): keep it to about 50-70 bars.
+- "vocals" (in English) describes the singer: gender, timbre, style.
+- The engine sings the whole song in one take, so sections are approximate.
+- To change lyrics or the voice of an existing sung song, use sing_song (only the sections that change).
+- If vocal_engine is missing or not ready, make the song instrumental and tell the user that singing needs the vocal engine (Settings).
 
 ## Changing an existing song
 1. Call get_project_state first. Each section shows what plays and its status (EMPTY, gaps, ok).

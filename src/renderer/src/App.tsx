@@ -3,6 +3,7 @@ import { arrangementKey, engine } from './audio/engine'
 import { ChatPanel } from './components/ChatPanel'
 import { GeneratePanel } from './components/GeneratePanel'
 import { History } from './components/History'
+import { LyricsPanel } from './components/LyricsPanel'
 import { Mixer } from './components/Mixer'
 import { RegionMenu, TaskList, Toast } from './components/RegionMenu'
 import { SettingsDialog } from './components/SettingsDialog'
@@ -17,7 +18,7 @@ export default function App(): React.JSX.Element {
   const { project, newProject, openProject } = useProject()
   const [version, setVersion] = useState('')
   const [showSettings, setShowSettings] = useState(false)
-  const [tab, setTab] = useState<'chat' | 'manual'>('chat')
+  const [tab, setTab] = useState<'chat' | 'lyrics' | 'manual'>('chat')
 
   useEffect(() => {
     window.vibe.app.version().then(setVersion)
@@ -83,6 +84,7 @@ export default function App(): React.JSX.Element {
           {(
             [
               ['chat', 'Productor'],
+              ['lyrics', 'Letra'],
               ['manual', 'Generar manual']
             ] as const
           ).map(([id, label]) => (
@@ -107,6 +109,8 @@ export default function App(): React.JSX.Element {
         </div>
         {tab === 'chat' ? (
           <ChatPanel onOpenSettings={() => setShowSettings(true)} />
+        ) : tab === 'lyrics' ? (
+          <LyricsPanel onOpenSettings={() => setShowSettings(true)} />
         ) : (
           <GeneratePanel onOpenSettings={() => setShowSettings(true)} />
         )}

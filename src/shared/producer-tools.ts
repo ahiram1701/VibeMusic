@@ -3,6 +3,7 @@ import {
   chunkBars,
   CONTEXT_SEC,
   fillSections,
+  hasLyrics,
   lastRegionIn,
   layerPrompt,
   loopBars,
@@ -11,7 +12,8 @@ import {
   polishSong,
   reviewProject,
   sectionCoverage,
-  trackBusy
+  trackBusy,
+  vocalSongRequest
 } from './arrange'
 import type { ProviderInfo } from './generation'
 import {
@@ -31,7 +33,7 @@ import {
 } from './project'
 import { barsToSeconds } from './prompt'
 import { MAX_GAIN_DB, MIN_GAIN_DB, withDefaultMix } from './mixer'
-import { copySection, copySectionInto, sectionsOf, setSections } from './sections'
+import { copySection, copySectionInto, sectionsOf, setSections, updateSection } from './sections'
 import { projectEndSec } from './timeline'
 
 // Herramientas del agente productor. Hablan con la app a través de `ProducerHost`,
@@ -50,6 +52,9 @@ export interface ProducerHost {
   ): Promise<{ adjusted: number; skipped: number }>
   /** Motor de audio que se usará para generar (el predeterminado). */
   audioProvider(): ProviderInfo | undefined
+  /** Motor que canta letra (canciones con voz), si hay alguno. */
+  vocalProvider(): ProviderInfo | undefined
+  /** Con `lyrics`, la genera el motor que canta (`vocalProvider`). */
   generate(input: {
     prompt: string
     role: TrackRole
@@ -57,6 +62,8 @@ export interface ProducerHost {
     atBeat: number
     trackId: string | null
     trackName?: string
+    lyrics?: string
+    lyricsLanguage?: string
   }): Promise<{ trackId: string; regionId: string }>
   /** Otra toma de una región (misma descripción, otra semilla); la sustituye. */
   vary(regionId: string, instructions?: string): Promise<{ trackId: string; regionId: string }>
@@ -205,6 +212,7 @@ export function maxBarsPerClip(p: Project, provider: ProviderInfo | undefined): 
 /** Resumen del proyecto pensado para el LLM (compacto, en compases). */
 export function describeProject(p: Project, host: ProducerHost): unknown {
   const provider = host.audioProvider()
+  const vocal = host.vocalProvider()
   return {
     name: p.name,
     ...(p.style && { style: p.style }),
@@ -221,12 +229,23 @@ export function describeProject(p: Project, host: ProducerHost): unknown {
           max_bars_per_clip: maxBarsPerClip(p, provider)
         }
       : null,
+    // Sin motor que cante, las canciones son instrumentales.
+    vocal_engine: vocal
+      ? {
+          name: vocal.label,
+          ready: vocal.ready,
+          ...(vocal.notReadyReason && { problem: vocal.notReadyReason }),
+          max_song_seconds: vocal.capabilities.maxDurationSec
+        }
+      : null,
+    ...(p.vocals && { vocals: p.vocals }),
     // Qué suena en cada sección: así el productor ve los huecos antes de dar nada por hecho.
     sections: sectionCoverage(p).map(({ section: s, layers, partial, thin }) => ({
       id: s.id,
       name: s.name,
       start_bar: s.startBar,
       bars: s.bars,
+      ...(s.lyrics && { lyrics: s.lyrics }),
       playing: layers.map((l) => l.track),
       status:
         layers.length === 0
@@ -271,6 +290,60 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       )
     }
     return provider
+  }
+
+  const readyVocalProvider = (): ProviderInfo => {
+    const vocal = host.vocalProvider()
+    if (!vocal) {
+      throw new Error(
+        'No hay ningún motor que cante letra. Haz la canción instrumental (sin "lyrics") y díselo al usuario.'
+      )
+    }
+    if (!vocal.ready) {
+      throw new Error(
+        `El motor de voz no está listo: ${vocal.notReadyReason ?? 'revisa Ajustes'}. Pide al usuario que lo configure en Ajustes.`
+      )
+    }
+    return vocal
+  }
+
+  /** Comprueba que la canción cabe en una sola generación del motor que canta. */
+  const checkVocalLength = (vocal: ProviderInfo, bars: number, p: Project): void => {
+    const sec = barsToSeconds(bars, p)
+    if (sec > vocal.capabilities.maxDurationSec) {
+      throw new Error(
+        `La canción dura ${Math.round(sec)} s y ${vocal.label} canta como mucho ${vocal.capabilities.maxDurationSec} s de una vez. Quita o acorta secciones (a ${p.bpm} BPM caben ${Math.floor(vocal.capabilities.maxDurationSec / barsToSeconds(1, p))} compases) y vuelve a llamar.`
+      )
+    }
+  }
+
+  /**
+   * Canta la canción entera de una vez con su letra en la pista `trackId` y la pule.
+   * Los motores que cantan generan la canción completa, así que no se encadenan
+   * tramos. Lo que tuviera la pista se sustituye solo si la toma nueva sale bien.
+   */
+  const singSong = async (trackId: string): Promise<string> => {
+    const p = host.getProject()
+    const req = vocalSongRequest(p)
+    checkVocalLength(readyVocalProvider(), req.bars, p)
+    const r = await host.generate({
+      prompt: req.prompt,
+      role: 'full',
+      bars: req.bars,
+      atBeat: 0,
+      trackId,
+      lyrics: req.lyrics,
+      ...(req.language && { lyricsLanguage: req.language })
+    })
+    const now = host.getProject()
+    const only = {
+      ...now,
+      tracks: now.tracks.map((t) =>
+        t.id === r.trackId ? { ...t, regions: t.regions.filter((x) => x.id === r.regionId) } : t
+      )
+    }
+    await commit(polishSong(only, r.trackId), 'canción cantada: pulido y fundidos')
+    return r.regionId
   }
 
   /**
@@ -328,6 +401,16 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             },
             bpm: { type: 'number', minimum: 40, maximum: 240 },
             key: { type: 'string', description: 'Key such as "E minor"' },
+            vocals: {
+              type: 'string',
+              description:
+                'Only for a sung song: the singing voice IN ENGLISH (e.g. "warm male latin vocal, intimate", "powerful female pop vocal with harmonies").'
+            },
+            language: {
+              type: 'string',
+              description:
+                'Only for a sung song: ISO 639-1 code of the lyrics language (e.g. "es").'
+            },
             sections: {
               type: 'array',
               description: 'Song structure in order. Total usually 48-96 bars.',
@@ -351,7 +434,12 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
                   reuse: {
                     type: 'boolean',
                     description:
-                      'true to repeat the audio of the previous section with the same name instead of generating it again (e.g. the last chorus). Saves time.'
+                      'true to repeat the audio of the previous section with the same name instead of generating it again (e.g. the last chorus). Saves time. Ignored in sung songs.'
+                  },
+                  lyrics: {
+                    type: 'string',
+                    description:
+                      "Lyrics sung in this section, in the user's language, one line per sung phrase (\\n between lines). Omit for instrumental sections. If any section has lyrics, the whole song is sung in one take by the vocal engine."
                   }
                 },
                 required: ['name', 'bars', 'arrangement'],
@@ -364,21 +452,27 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         }
       },
       run: async (input, signal) => {
-        const provider = readyProvider()
-        if (!provider.capabilities.supportsContinue) {
-          throw new Error(
-            `${provider.label} no sabe continuar audio, y compose_song lo necesita para que la canción suene como una sola pieza. Pide al usuario que elija otro motor en Ajustes.`
-          )
-        }
         // Se valida todo antes de tocar nada: si falla, el LLM corrige y vuelve a llamar.
         const spec = parseSongSpec(input)
         const bpm = num(input, 'bpm', 40, 240, true)
         const key = str(input, 'key', true)
+        const p = host.getProject()
+        // Con letra la canta entera, de una vez, el motor de voz; sin letra se graba
+        // por tramos encadenados con el motor de siempre.
+        const sung = hasLyrics(spec.sections)
+        const provider = sung ? readyVocalProvider() : readyProvider()
+        if (sung) {
+          const totalBars = spec.sections.reduce((n, s) => n + s.bars, 0)
+          checkVocalLength(provider, totalBars, { ...p, bpm: Math.round(bpm ?? p.bpm) })
+        } else if (!provider.capabilities.supportsContinue) {
+          throw new Error(
+            `${provider.label} no sabe continuar audio, y compose_song lo necesita para que la canción suene como una sola pieza. Pide al usuario que elija otro motor en Ajustes.`
+          )
+        }
 
         // Canción nueva: fuera el audio generado antes (el importado se queda) y una
         // pista para la canción. Se limpia antes de cambiar el tempo para no estirar
         // clips que van a desaparecer.
-        const p = host.getProject()
         const kept = p.tracks
           .map((t) => ({ ...t, regions: t.regions.filter((r) => !p.clips[r.clipId]?.spec) }))
           .filter((t) => t.regions.length > 0)
@@ -390,20 +484,51 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             ...p,
             tracks: [...kept, song],
             style: spec.style,
+            // La voz y el idioma solo tienen sentido en una canción cantada.
+            vocals: (sung && spec.vocals) || undefined,
+            lyricsLanguage: (sung && spec.language) || undefined,
             ...(sameTempo && key !== undefined && { key })
           },
           spec.sections.map((s) => {
             const startBar = nextBar
             nextBar += s.bars
-            return { name: s.name, startBar, bars: s.bars }
+            return { name: s.name, startBar, bars: s.bars, lyrics: s.lyrics }
           })
         )
         await commit(
           planned,
-          `nueva canción: ${spec.sections.map((s) => `${s.name} ${s.bars}`).join(' · ')}`
+          `nueva canción${sung ? ' con voz' : ''}: ${spec.sections.map((s) => `${s.name} ${s.bars}`).join(' · ')}`
         )
         if (!sameTempo) await host.setTempo(Math.round(bpm), key, AGENT_PREFIX)
         const sections = sectionsOf(planned)
+
+        if (sung) {
+          let error: string | null = null
+          try {
+            await singSong(song.id)
+          } catch (err) {
+            if (signal.aborted) throw err
+            error = err instanceof Error ? err.message : String(err)
+          }
+          const final = host.getProject()
+          return {
+            ok: error === null,
+            sung: true,
+            bpm: final.bpm,
+            key: final.key,
+            ...(error && { error }),
+            sections: sectionsOf(final).map((s) => ({
+              id: s.id,
+              name: s.name,
+              start_bar: s.startBar,
+              bars: s.bars,
+              sung: !!s.lyrics
+            })),
+            note: error
+              ? 'The structure and lyrics are saved; sing_song retries the vocal take.'
+              : 'Sung in one take: the sections are approximate, the singer follows the lyrics. Use sing_song to change lyrics or voice.'
+          }
+        }
 
         // Tramo a tramo y en orden: cada uno continúa al anterior (el motor escucha sus
         // últimos segundos), así que no puede ir en paralelo. Cada tramo se guarda al
@@ -486,6 +611,68 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             })),
           check: reviewProject(final) ?? 'Every section has music.'
         }
+      }
+    },
+    {
+      def: {
+        name: 'sing_song',
+        description:
+          'Sings the current song again in one take with the vocal engine: optionally replaces the lyrics of some sections and/or the singing voice first. Use it for "change the chorus lyrics", "make a man sing it", "another take of the vocals". The structure, style, tempo and key stay. Replaces the song track if the new take succeeds (the user can undo). Takes a while: it waits until the audio is ready.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            lyrics: {
+              type: 'array',
+              description:
+                'New lyrics per section (only the sections that change). Empty text makes the section instrumental.',
+              items: {
+                type: 'object',
+                properties: {
+                  section_id: { type: 'string' },
+                  text: { type: 'string', description: 'One line per sung phrase' }
+                },
+                required: ['section_id', 'text'],
+                additionalProperties: false
+              }
+            },
+            vocals: {
+              type: 'string',
+              description: 'New singing voice IN ENGLISH (e.g. "deep male baritone vocal")'
+            }
+          },
+          additionalProperties: false
+        }
+      },
+      run: async (input) => {
+        const vocal = readyVocalProvider()
+        let p = host.getProject()
+        const raw = input.lyrics
+        const changes = typeof raw === 'string' ? (JSON.parse(raw) as unknown) : (raw ?? [])
+        if (!Array.isArray(changes)) throw new Error('"lyrics" debe ser una lista')
+        for (const c of changes as { section_id?: unknown; text?: unknown }[]) {
+          const id = typeof c?.section_id === 'string' ? c.section_id : ''
+          if (!sectionsOf(p).some((s) => s.id === id)) {
+            throw new Error(`No existe la sección "${id}". Usa get_project_state para ver los ids.`)
+          }
+          p = updateSection(p, id, { lyrics: typeof c.text === 'string' ? c.text.trim() : '' })
+        }
+        const vocals = str(input, 'vocals', true)
+        if (vocals) p = { ...p, vocals: vocals.trim() }
+        if (!hasLyrics(sectionsOf(p))) {
+          throw new Error('La canción no tiene letra: escribe la de alguna sección en "lyrics".')
+        }
+        checkVocalLength(vocal, vocalSongRequest(p).bars, p)
+        if (p !== host.getProject()) await commit(p, 'letra y voz actualizadas')
+
+        // La canción vive en la pista completa más reciente; si no hay, se crea.
+        const songTrack =
+          [...p.tracks].reverse().find((t) => t.role === 'full' && t.name === 'Canción') ??
+          withDefaultMix(createTrack('Canción', 'full'))
+        if (!p.tracks.some((t) => t.id === songTrack.id)) {
+          await commit({ ...p, tracks: [...p.tracks, songTrack] }, 'pista para la canción')
+        }
+        const regionId = await singSong(songTrack.id)
+        return { ok: true, region_id: regionId, track_id: songTrack.id }
       }
     },
     {

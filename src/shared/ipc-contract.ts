@@ -77,6 +77,9 @@ export interface VibeApi {
       token: string
     ): Promise<{ ok: true; username: string } | { ok: false; error: string }>
     clearReplicateToken(): Promise<void>
+    /** Comprueba el token con Hugging Face y, si es válido, lo guarda cifrado. */
+    setHfToken(token: string): Promise<KeyCheck>
+    clearHfToken(): Promise<void>
     setDefaultProvider(id: ProviderId): Promise<void>
     setLocalModel(id: string): Promise<void>
     setLlm(patch: {
@@ -131,6 +134,8 @@ export type IpcChannel =
   | 'settings:get'
   | 'settings:setReplicateToken'
   | 'settings:clearReplicateToken'
+  | 'settings:setHfToken'
+  | 'settings:clearHfToken'
   | 'settings:setDefaultProvider'
   | 'settings:setLocalModel'
   | 'localEngine:status'

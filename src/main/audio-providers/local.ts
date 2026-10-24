@@ -48,7 +48,8 @@ export function createLocalProvider(
       maxDurationSec: MAX_SEC,
       supportsSeed: true,
       supportsContinue: true,
-      supportsMelody: false
+      supportsMelody: false,
+      supportsLyrics: false
     },
 
     async status() {

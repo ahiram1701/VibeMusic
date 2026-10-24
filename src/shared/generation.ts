@@ -3,13 +3,15 @@ import type { GenerationSpec } from './project'
 
 // Tipos compartidos del sistema de generación de audio (main ↔ renderer).
 
-export type ProviderId = 'demo' | 'replicate' | 'local'
+export type ProviderId = 'demo' | 'replicate' | 'local' | 'huggingface'
 
 export interface ProviderCapabilities {
   maxDurationSec: number
   supportsSeed: boolean
   supportsContinue: boolean
   supportsMelody: boolean
+  /** Canta letra: genera la canción completa con voz a partir de `lyrics`. */
+  supportsLyrics: boolean
 }
 
 export interface ProviderInfo {
@@ -51,6 +53,8 @@ export interface AppSettings {
   defaultProvider: ProviderId
   /** Solo indica si hay token guardado; el token nunca sale del proceso principal. */
   hasReplicateToken: boolean
+  /** Hay token de Hugging Face guardado (más cuota gratuita para cantar). */
+  hasHfToken: boolean
   /** Modelo del motor local (ver LOCAL_MODELS). */
   localModel: string
   llm: LlmSettings

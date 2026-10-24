@@ -4,6 +4,7 @@ import { useGeneration } from '../store/generation'
 import { LlmSettingsSection } from './LlmSettingsSection'
 import { LocalEngineSection } from './LocalEngineSection'
 import { UpdatesSection } from './UpdatesSection'
+import { VocalsSection } from './VocalsSection'
 
 export function SettingsDialog({ onClose }: { onClose(): void }): React.JSX.Element {
   const { settings, providers, refresh } = useGeneration()
@@ -122,6 +123,10 @@ export function SettingsDialog({ onClose }: { onClose(): void }): React.JSX.Elem
             </p>
           )}
         </section>
+
+        <hr className="my-5 border-line" />
+
+        <VocalsSection />
 
         <hr className="my-5 border-line" />
 

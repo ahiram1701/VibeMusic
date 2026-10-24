@@ -18,12 +18,32 @@ const demo: ProviderInfo = {
     maxDurationSec: 30,
     supportsSeed: true,
     supportsContinue: true,
-    supportsMelody: false
+    supportsMelody: false,
+    supportsLyrics: false
+  }
+}
+
+const singer: ProviderInfo = {
+  id: 'huggingface',
+  label: 'ACE-Step',
+  description: '',
+  ready: true,
+  capabilities: {
+    maxDurationSec: 240,
+    supportsSeed: true,
+    supportsContinue: false,
+    supportsMelody: false,
+    supportsLyrics: true
   }
 }
 
 /** Host en memoria: la "generación" crea la región al instante. */
-function fakeHost(initial: Project, provider: ProviderInfo | undefined = demo) {
+function fakeHost(
+  initial: Project,
+  provider: ProviderInfo | undefined = demo,
+  vocal: ProviderInfo | undefined = undefined
+) {
+  const generated: Parameters<ProducerHost['generate']>[0][] = []
   const state = { project: initial, messages: [] as string[], playedFrom: -1 }
   const host: ProducerHost = {
     getProject: () => state.project,
@@ -37,7 +57,9 @@ function fakeHost(initial: Project, provider: ProviderInfo | undefined = demo) {
       return { adjusted: 0, skipped: 0 }
     },
     audioProvider: () => provider,
+    vocalProvider: () => vocal,
     generate: async (g) => {
+      generated.push(g)
       const p = state.project
       const clipId = newId('clp')
       const region = {
@@ -70,9 +92,10 @@ function fakeHost(initial: Project, provider: ProviderInfo | undefined = demo) {
               bpm: p.bpm,
               key: p.key,
               durationSec: region.lengthSec,
-              mode: 'text'
+              mode: 'text',
+              ...(g.lyrics && { lyrics: g.lyrics })
             },
-            provider: 'demo'
+            provider: g.lyrics ? 'huggingface' : 'demo'
           }
         }
       }
@@ -98,7 +121,7 @@ function fakeHost(initial: Project, provider: ProviderInfo | undefined = demo) {
   const tools = Object.fromEntries(createProducerTools(host).map((t) => [t.def.name, t]))
   const run = (name: string, input: Record<string, unknown> = {}) =>
     tools[name].run(input, new AbortController().signal)
-  return { state, run, host }
+  return { state, run, host, generated }
 }
 
 describe('herramientas del productor', () => {
@@ -563,5 +586,105 @@ describe('productor · canciones completas', () => {
       'only one layer',
       'only one layer'
     ])
+  })
+})
+
+describe('canciones con voz', () => {
+  const sungSong = {
+    style: 'romantic cumbia, accordion, guiro',
+    bpm: 96,
+    key: 'A minor',
+    vocals: 'warm male latin vocal',
+    language: 'es',
+    sections: [
+      { name: 'Intro', bars: 4, arrangement: 'accordion riff' },
+      {
+        name: 'Verso',
+        bars: 16,
+        arrangement: 'groove enters',
+        lyrics: 'Caminando por la playa\nbajo el sol de la mañana'
+      },
+      { name: 'Coro', bars: 8, arrangement: 'full band', lyrics: 'Ay amor, ven a bailar' },
+      { name: 'Outro', bars: 4, arrangement: 'fade' }
+    ]
+  }
+
+  it('compose_song con letra canta la canción entera de una vez con el motor de voz', async () => {
+    const h = fakeHost(createProject('X'), demo, singer)
+    const res = (await h.run('compose_song', sungSong)) as { ok: boolean; sung: boolean }
+
+    expect(res).toMatchObject({ ok: true, sung: true })
+    // Una sola generación desde el compás 1 con toda la canción y su letra.
+    expect(h.generated).toHaveLength(1)
+    expect(h.generated[0]).toMatchObject({
+      role: 'full',
+      bars: 32,
+      atBeat: 0,
+      prompt: 'romantic cumbia, accordion, guiro, warm male latin vocal',
+      lyricsLanguage: 'es'
+    })
+    expect(h.generated[0].lyrics).toBe(
+      '[Intro]\n\n[Verse]\nCaminando por la playa\nbajo el sol de la mañana\n\n[Chorus]\nAy amor, ven a bailar\n\n[Outro]'
+    )
+    const p = h.state.project
+    expect(p.vocals).toBe('warm male latin vocal')
+    expect(p.sections!.map((s) => s.lyrics ?? null)).toEqual([
+      null,
+      'Caminando por la playa\nbajo el sol de la mañana',
+      'Ay amor, ven a bailar',
+      null
+    ])
+    expect(p.tracks.map((t) => t.name)).toEqual(['Canción'])
+    expect(p.tracks[0].regions).toHaveLength(1)
+  })
+
+  it('compose_song con letra falla con un error claro si no hay motor de voz o la canción es larga', async () => {
+    const sinVoz = fakeHost(createProject('X'))
+    await expect(sinVoz.run('compose_song', sungSong)).rejects.toThrow(/instrumental/)
+    expect(sinVoz.state.project.sections).toBeUndefined() // no tocó nada
+
+    const larga = fakeHost(createProject('X'), demo, singer)
+    await expect(
+      larga.run('compose_song', {
+        ...sungSong,
+        bpm: 60,
+        sections: [...sungSong.sections, { name: 'Coro', bars: 64, arrangement: 'x', lyrics: 'la' }]
+      })
+    ).rejects.toThrow(/canta como mucho 240 s/)
+    expect(larga.generated).toHaveLength(0)
+  })
+
+  it('sing_song cambia la letra de una sección y la voz, y sustituye la toma anterior', async () => {
+    const h = fakeHost(createProject('X'), demo, singer)
+    await h.run('compose_song', sungSong)
+    const coro = h.state.project.sections!.find((s) => s.name === 'Coro')!
+    const before = h.state.project.tracks[0].regions[0].id
+
+    await h.run('sing_song', {
+      lyrics: [{ section_id: coro.id, text: 'Nueva letra del coro' }],
+      vocals: 'deep female vocal'
+    })
+    const p = h.state.project
+    expect(h.generated).toHaveLength(2)
+    expect(h.generated[1].lyrics).toContain('[Chorus]\nNueva letra del coro')
+    expect(h.generated[1].prompt).toContain('deep female vocal')
+    expect(p.tracks).toHaveLength(1)
+    expect(p.tracks[0].regions.map((r) => r.id)).not.toContain(before)
+    expect(p.tracks[0].regions).toHaveLength(1)
+
+    await expect(
+      h.run('sing_song', { lyrics: [{ section_id: 'nope', text: 'x' }] })
+    ).rejects.toThrow(/No existe la sección/)
+  })
+
+  it('get_project_state enseña el motor de voz y la letra de cada sección', async () => {
+    const h = fakeHost(createProject('X'), demo, singer)
+    await h.run('compose_song', sungSong)
+    const d = (await h.run('get_project_state')) as {
+      vocal_engine: { name: string; max_song_seconds: number }
+      sections: { lyrics?: string }[]
+    }
+    expect(d.vocal_engine).toMatchObject({ name: 'ACE-Step', max_song_seconds: 240 })
+    expect(d.sections[2].lyrics).toBe('Ay amor, ven a bailar')
   })
 })

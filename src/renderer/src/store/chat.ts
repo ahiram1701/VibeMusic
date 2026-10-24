@@ -7,7 +7,7 @@ import { reviewProject } from '@shared/arrange'
 import { AGENT_PREFIX, createProducerTools, type ProducerHost } from '@shared/producer-tools'
 import { engine } from '../audio/engine'
 import { continueRegion, separateRegion, varyRegion } from './clip-actions'
-import { useGeneration, waitForJob } from './generation'
+import { useGeneration, vocalProvider, waitForJob } from './generation'
 import { useProject } from './project'
 
 /** `at`: cuándo apareció (ms). En herramientas, `endedAt`: cuándo terminaron. */
@@ -67,9 +67,10 @@ const host: ProducerHost = {
     const { providers, settings } = useGeneration.getState()
     return providers.find((p) => p.id === settings?.defaultProvider) ?? providers[0]
   },
+  vocalProvider: () => vocalProvider(),
   generate: async (input) => {
     const gen = useGeneration.getState()
-    const provider = host.audioProvider()
+    const provider = input.lyrics ? host.vocalProvider() : host.audioProvider()
     if (!provider) throw new Error('No hay motor de audio')
     const jobId = await gen.generate({
       ...input,
@@ -107,6 +108,16 @@ async function agentJob(started: Promise<string>): Promise<{ trackId: string; re
 }
 
 const tools = createProducerTools(host)
+
+/**
+ * "Cantar de nuevo" desde el editor de letra: la misma herramienta que usa el
+ * productor (sing_song), sin pasar por el LLM. La letra ya está guardada en el proyecto.
+ */
+export async function singFromEditor(): Promise<void> {
+  const sing = tools.find((t) => t.def.name === 'sing_song')
+  if (!sing) throw new Error('sing_song no existe')
+  await sing.run({}, new AbortController().signal)
+}
 
 export const useChat = create<ChatState>((set, get) => ({
   items: [],

@@ -17,6 +17,7 @@ import type { LlmRequest } from '@shared/llm'
 import type { TorchVariant } from '@shared/local-engine'
 import { createProject, type GenerationSpec, type Project } from '@shared/project'
 import { demoProvider } from './audio-providers/demo'
+import { createHuggingFaceProvider, verifyHfToken } from './audio-providers/huggingface'
 import { createLocalProvider } from './audio-providers/local'
 import { createReplicateProvider, verifyReplicateToken } from './audio-providers/replicate'
 import type { AudioProvider } from './audio-providers/types'
@@ -76,7 +77,8 @@ export function registerIpc(): { shutdown(): void } {
   const providers = new Map<ProviderId, AudioProvider>([
     ['demo', demoProvider],
     ['replicate', createReplicateProvider(() => settings.getReplicateToken())],
-    ['local', createLocalProvider(sidecar, () => settings.getLocalModel())]
+    ['local', createLocalProvider(sidecar, () => settings.getLocalModel())],
+    ['huggingface', createHuggingFaceProvider(() => settings.getHfToken())]
   ])
   const queue = new GenerationQueue(providers)
   const keepAwake = new KeepAwake()
@@ -153,6 +155,14 @@ export function registerIpc(): { shutdown(): void } {
     }
   })
   handle('settings:clearReplicateToken', () => settings.setReplicateToken(null))
+  handle('settings:setHfToken', (token: string) =>
+    check(async () => {
+      const name = await verifyHfToken(token.trim())
+      await settings.setHfToken(token.trim())
+      return name
+    })
+  )
+  handle('settings:clearHfToken', () => settings.setHfToken(null))
   handle('settings:setDefaultProvider', (id: ProviderId) => settings.setDefaultProvider(id))
 
   handle('settings:setLocalModel', (id: string) => settings.setLocalModel(id))
