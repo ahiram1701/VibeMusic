@@ -152,6 +152,70 @@ describe('runAgent', () => {
   })
 })
 
+describe('runAgent · revisión antes de terminar', () => {
+  const done = (text: string): LlmResponse => ({
+    stopReason: 'end_turn',
+    content: [{ type: 'text', text }]
+  })
+  const acts: LlmResponse = {
+    stopReason: 'tool_use',
+    content: [{ type: 'tool_use', id: 't1', name: 'fill', input: {} }]
+  }
+
+  it('si hubo cambios y la revisión encuentra huecos, el modelo sigue una sola vez más', async () => {
+    const { llm, requests } = scripted([
+      acts,
+      done('¡Listo, completo!'),
+      acts,
+      done('Ahora sí está completa.')
+    ])
+    const events: AgentEvent[] = []
+    let reviews = 0
+    const messages = await runAgent({
+      ...base,
+      llm,
+      userText: 'haz una canción',
+      tools: [tool('fill', async () => 'ok')],
+      review: () => (reviews++, 'Verso is empty'),
+      onEvent: (e) => events.push(e)
+    })
+    expect(reviews).toBe(1)
+    expect(requests[2].messages.at(-1)).toEqual({
+      role: 'user',
+      content: [{ type: 'text', text: 'Verso is empty' }]
+    })
+    expect(events.filter((e) => e.type === 'review')).toEqual([
+      { type: 'review', text: 'Verso is empty' }
+    ])
+    expect(messages.at(-1)).toMatchObject({ role: 'assistant' })
+    expect(requests).toHaveLength(4)
+  })
+
+  it('no revisa si en el turno no se hizo nada ni si todo está bien', async () => {
+    let reviews = 0
+    const review = (): string | null => (reviews++, null)
+    await runAgent({
+      ...base,
+      llm: scripted([done('Hola')]).llm,
+      userText: 'hola',
+      tools: [],
+      review,
+      onEvent: () => {}
+    })
+    expect(reviews).toBe(0)
+    const messages = await runAgent({
+      ...base,
+      llm: scripted([acts, done('Listo')]).llm,
+      userText: 'x',
+      tools: [tool('fill', async () => 'ok')],
+      review,
+      onEvent: () => {}
+    })
+    expect(reviews).toBe(1)
+    expect(messages).toHaveLength(4)
+  })
+})
+
 describe('runAgent · respuestas cortadas', () => {
   it('no ejecuta herramientas si la respuesta se cortó por max_tokens o refusal', async () => {
     for (const stopReason of ['max_tokens', 'refusal'] as const) {

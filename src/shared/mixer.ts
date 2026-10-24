@@ -1,4 +1,4 @@
-import type { Track } from './project'
+import type { Track, TrackRole } from './project'
 
 export const MIN_GAIN_DB = -60
 export const MAX_GAIN_DB = 6
@@ -21,4 +21,22 @@ export function isTrackAudible(track: Track, allTracks: Track[]): boolean {
   if (track.mute) return false
   const anySolo = allTracks.some((t) => t.solo)
   return anySolo ? track.solo : true
+}
+
+/**
+ * Mezcla inicial de una pista nueva según su papel: la base rítmica delante, la
+ * armonía y los efectos más atrás y un poco abiertos para que no tapen al resto.
+ */
+export const DEFAULT_MIX: Record<TrackRole, { gainDb: number; pan: number }> = {
+  drums: { gainDb: 0, pan: 0 },
+  bass: { gainDb: -3, pan: 0 },
+  chords: { gainDb: -6, pan: -0.2 },
+  melody: { gainDb: -4, pan: 0.15 },
+  vocal: { gainDb: -2, pan: 0 },
+  fx: { gainDb: -8, pan: 0.25 },
+  full: { gainDb: 0, pan: 0 }
+}
+
+export function withDefaultMix(track: Track): Track {
+  return { ...track, ...DEFAULT_MIX[track.role] }
 }

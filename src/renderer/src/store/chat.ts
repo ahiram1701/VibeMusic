@@ -3,6 +3,7 @@ import { AgentCancelled, AgentInterrupted, runAgent, type AgentEvent } from '@sh
 import { textOf, type LlmMessage, type LlmRetry } from '@shared/llm'
 import { newId } from '@shared/project'
 import { PRODUCER_SYSTEM_PROMPT } from '@shared/producer-prompt'
+import { reviewProject } from '@shared/arrange'
 import { AGENT_PREFIX, createProducerTools, type ProducerHost } from '@shared/producer-tools'
 import { engine } from '../audio/engine'
 import { continueRegion, separateRegion, varyRegion } from './clip-actions'
@@ -86,8 +87,8 @@ const host: ProducerHost = {
   },
   vary: (regionId, instructions) =>
     agentJob(varyRegion(regionId, { instructions, messagePrefix: AGENT_PREFIX })),
-  extend: (regionId, bars, instructions) =>
-    agentJob(continueRegion(regionId, bars, { instructions, messagePrefix: AGENT_PREFIX })),
+  extend: (regionId, bars, opts) =>
+    agentJob(continueRegion(regionId, bars, { ...opts, messagePrefix: AGENT_PREFIX })),
   separate: (regionId) => separateRegion(regionId, { messagePrefix: AGENT_PREFIX }),
   playheadSec: () => engine.positionSec,
   play: (sec) => void engine.play(host.getProject(), sec)
@@ -178,6 +179,10 @@ async function run(history: LlmMessage[], userText?: string): Promise<void> {
       signal: ctrl.signal,
       onEvent,
       maxTokens: 16000,
+      review: () => {
+        const p = useProject.getState().project
+        return p ? reviewProject(p) : null
+      },
       llm: async (req, onText) => {
         const requestId = newId('llm')
         currentRequest = requestId
@@ -274,6 +279,17 @@ function applyEvent(items: ChatItem[], e: AgentEvent): ChatItem[] {
           kind: 'notice',
           tone: 'info',
           text: 'El productor ha hecho muchos pasos seguidos y se ha detenido. Dile "sigue" si quieres que continúe.'
+        }
+      ]
+    case 'review':
+      return [
+        ...items,
+        {
+          id: newId('msg'),
+          at: Date.now(),
+          kind: 'notice',
+          tone: 'info',
+          text: 'Revisión automática: hay secciones vacías o con una sola capa. El productor las está corrigiendo…'
         }
       ]
     case 'stopped':

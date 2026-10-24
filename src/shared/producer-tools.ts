@@ -1,20 +1,37 @@
 import type { AgentTool } from './agent'
+import {
+  chunkBars,
+  CONTEXT_SEC,
+  fillSections,
+  lastRegionIn,
+  layerPrompt,
+  loopBars,
+  parseSongSpec,
+  planChunks,
+  polishSong,
+  reviewProject,
+  sectionCoverage,
+  trackBusy
+} from './arrange'
 import type { ProviderInfo } from './generation'
 import {
   beatsToSeconds,
+  createTrack,
   newId,
+  ROLE_LABELS,
   removeRegion,
   removeTrack,
   secondsToBeats,
   updateTrack,
   type Project,
   type Region,
+  type Section,
   type Track,
   type TrackRole
 } from './project'
 import { barsToSeconds } from './prompt'
-import { MAX_GAIN_DB, MIN_GAIN_DB } from './mixer'
-import { copySection, sectionsOf, setSections } from './sections'
+import { MAX_GAIN_DB, MIN_GAIN_DB, withDefaultMix } from './mixer'
+import { copySection, copySectionInto, sectionsOf, setSections } from './sections'
 import { projectEndSec } from './timeline'
 
 // Herramientas del agente productor. Hablan con la app a través de `ProducerHost`,
@@ -43,11 +60,15 @@ export interface ProducerHost {
   }): Promise<{ trackId: string; regionId: string }>
   /** Otra toma de una región (misma descripción, otra semilla); la sustituye. */
   vary(regionId: string, instructions?: string): Promise<{ trackId: string; regionId: string }>
-  /** Continúa una región `bars` compases a partir de su final, justo después. */
+  /**
+   * Continúa una región `bars` compases a partir de su final (el motor escucha sus
+   * últimos segundos). Por defecto va justo después y con la descripción del clip;
+   * `prompt` la sustituye y `atBeat` lo coloca en otro sitio de la misma pista.
+   */
   extend(
     regionId: string,
     bars: number,
-    instructions?: string
+    opts?: { instructions?: string; prompt?: string; atBeat?: number; message?: string }
   ): Promise<{ trackId: string; regionId: string }>
   /** Separa una región en pistas (voz, batería, bajo, otros) con el motor local. */
   separate(regionId: string): Promise<{ trackIds: string[]; stems: string[]; skipped: string[] }>
@@ -186,6 +207,7 @@ export function describeProject(p: Project, host: ProducerHost): unknown {
   const provider = host.audioProvider()
   return {
     name: p.name,
+    ...(p.style && { style: p.style }),
     bpm: p.bpm,
     key: p.key,
     time_signature: p.timeSignature.join('/'),
@@ -199,11 +221,21 @@ export function describeProject(p: Project, host: ProducerHost): unknown {
           max_bars_per_clip: maxBarsPerClip(p, provider)
         }
       : null,
-    sections: sectionsOf(p).map((s) => ({
+    // Qué suena en cada sección: así el productor ve los huecos antes de dar nada por hecho.
+    sections: sectionCoverage(p).map(({ section: s, layers, partial, thin }) => ({
       id: s.id,
       name: s.name,
       start_bar: s.startBar,
-      bars: s.bars
+      bars: s.bars,
+      playing: layers.map((l) => l.track),
+      status:
+        layers.length === 0
+          ? 'EMPTY'
+          : thin
+            ? 'only one layer'
+            : partial.length > 0
+              ? `gaps in: ${partial.join(', ')}`
+              : 'ok'
     })),
     tracks: p.tracks.map((t) => ({
       id: t.id,
@@ -231,6 +263,46 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
   const commit = (next: Project, message: string): Promise<void> =>
     host.commit(next, AGENT_PREFIX + message)
 
+  const readyProvider = (): ProviderInfo => {
+    const provider = host.audioProvider()
+    if (!provider?.ready) {
+      throw new Error(
+        `El motor de audio no está listo: ${provider?.notReadyReason ?? 'no hay ninguno configurado'}. Pide al usuario que lo configure en Ajustes.`
+      )
+    }
+    return provider
+  }
+
+  /**
+   * Genera un loop al principio de la primera sección y lo repite hasta llenar todas.
+   * Las secciones se vuelven a leer al terminar: el usuario pudo moverlas mientras.
+   */
+  const loopIntoSections = async (job: {
+    prompt: string
+    role: TrackRole
+    bars: number
+    trackId: string | null
+    sections: Section[]
+  }): Promise<{ trackId: string; filled: Section[] }> => {
+    const first = host.getProject()
+    const r = await host.generate({
+      prompt: job.prompt,
+      role: job.role,
+      bars: job.bars,
+      atBeat: beatOfBar(first, job.sections[0].startBar),
+      trackId: job.trackId
+    })
+    const now = host.getProject()
+    const { region } = findRegion(now, r.regionId)
+    const ids = new Set(job.sections.map((s) => s.id))
+    const filled = sectionsOf(now).filter((s) => ids.has(s.id))
+    await commit(
+      fillSections(now, r.trackId, region, filled),
+      `${ROLE_LABELS[job.role]} en ${filled.map((s) => s.name).join(', ')}`
+    )
+    return { trackId: r.trackId, filled }
+  }
+
   return [
     {
       def: {
@@ -240,6 +312,245 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         inputSchema: { type: 'object', properties: {}, additionalProperties: false }
       },
       run: async () => describeProject(host.getProject(), host)
+    },
+    {
+      def: {
+        name: 'compose_song',
+        description:
+          'Composes a complete NEW song in one call, the way a producer records it from start to end: sets tempo and key, creates the sections and generates the music section by section, each part continuing seamlessly from the previous one, so harmony, groove and sound stay coherent and the music evolves instead of looping. Transitions are added automatically (fills and build-ups between sections, fade in and fade out). You write the arrangement of each section. Replaces previously generated audio and sections (imported audio is kept; the user can undo). Use it for any request for a new song or beat. Takes a long time: it waits until all the audio is ready.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            style: {
+              type: 'string',
+              description:
+                'Shared sound of the whole song IN ENGLISH: genre, mood, instruments palette and production (e.g. "dark industrial techno, gritty analog synths, warehouse reverb"). Turn artist names into descriptions.'
+            },
+            bpm: { type: 'number', minimum: 40, maximum: 240 },
+            key: { type: 'string', description: 'Key such as "E minor"' },
+            sections: {
+              type: 'array',
+              description: 'Song structure in order. Total usually 48-96 bars.',
+              items: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string', description: "Section name in the user's language" },
+                  bars: { type: 'integer', minimum: 1, description: 'Usually 8 or 16' },
+                  arrangement: {
+                    type: 'string',
+                    description:
+                      'IN ENGLISH, what plays in this section and how: which instruments are in or out, energy, what changes (e.g. "drums drop out, only pad and filtered lead, tension rising"). No tempo or key.'
+                  },
+                  energy: {
+                    type: 'integer',
+                    minimum: 1,
+                    maximum: 5,
+                    description:
+                      '1 = very calm … 5 = peak. Used to shape the transitions (build-ups into higher energy, wind-downs into lower).'
+                  },
+                  reuse: {
+                    type: 'boolean',
+                    description:
+                      'true to repeat the audio of the previous section with the same name instead of generating it again (e.g. the last chorus). Saves time.'
+                  }
+                },
+                required: ['name', 'bars', 'arrangement'],
+                additionalProperties: false
+              }
+            }
+          },
+          required: ['style', 'sections'],
+          additionalProperties: false
+        }
+      },
+      run: async (input, signal) => {
+        const provider = readyProvider()
+        if (!provider.capabilities.supportsContinue) {
+          throw new Error(
+            `${provider.label} no sabe continuar audio, y compose_song lo necesita para que la canción suene como una sola pieza. Pide al usuario que elija otro motor en Ajustes.`
+          )
+        }
+        // Se valida todo antes de tocar nada: si falla, el LLM corrige y vuelve a llamar.
+        const spec = parseSongSpec(input)
+        const bpm = num(input, 'bpm', 40, 240, true)
+        const key = str(input, 'key', true)
+
+        // Canción nueva: fuera el audio generado antes (el importado se queda) y una
+        // pista para la canción. Se limpia antes de cambiar el tempo para no estirar
+        // clips que van a desaparecer.
+        const p = host.getProject()
+        const kept = p.tracks
+          .map((t) => ({ ...t, regions: t.regions.filter((r) => !p.clips[r.clipId]?.spec) }))
+          .filter((t) => t.regions.length > 0)
+        const song = withDefaultMix(createTrack('Canción', 'full'))
+        const sameTempo = bpm === undefined || Math.round(bpm) === p.bpm
+        let nextBar = 1
+        const planned = setSections(
+          {
+            ...p,
+            tracks: [...kept, song],
+            style: spec.style,
+            ...(sameTempo && key !== undefined && { key })
+          },
+          spec.sections.map((s) => {
+            const startBar = nextBar
+            nextBar += s.bars
+            return { name: s.name, startBar, bars: s.bars }
+          })
+        )
+        await commit(
+          planned,
+          `nueva canción: ${spec.sections.map((s) => `${s.name} ${s.bars}`).join(' · ')}`
+        )
+        if (!sameTempo) await host.setTempo(Math.round(bpm), key, AGENT_PREFIX)
+        const sections = sectionsOf(planned)
+
+        // Tramo a tramo y en orden: cada uno continúa al anterior (el motor escucha sus
+        // últimos segundos), así que no puede ir en paralelo. Cada tramo se guarda al
+        // terminar: la canción crece y, si algo se corta, lo hecho se queda.
+        const secPerBar = barsToSeconds(1, host.getProject())
+        const bars = chunkBars(secPerBar, provider.capabilities.maxDurationSec, CONTEXT_SEC)
+        const failed: { section: string; start_bar: number; error: string }[] = []
+        let generated = 0
+        let last: string | null = null
+        for (const step of planChunks(spec, bars)) {
+          if (signal.aborted) throw new Error('Cancelado')
+          const section = sections[step.section]
+          if (step.kind === 'reuse') {
+            const src = sections[step.from]
+            await commit(
+              copySectionInto(host.getProject(), src.id, section.id),
+              `${section.name}: repite ${src.name}`
+            )
+            last = lastRegionIn(host.getProject(), song.id, section)?.id ?? last
+            continue
+          }
+          const atBeat = beatOfBar(planned, step.startBar)
+          const span = `compases ${step.startBar}–${step.startBar + step.bars - 1}`
+          // Un tramo que falla se reintenta una vez; si vuelve a fallar, el siguiente
+          // continúa desde el último bueno.
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+              const r = last
+                ? await host.extend(last, step.bars, {
+                    prompt: step.prompt,
+                    atBeat,
+                    message: `${section.name} (${span})`
+                  })
+                : await host.generate({
+                    prompt: step.prompt,
+                    role: 'full',
+                    bars: step.bars,
+                    atBeat,
+                    trackId: song.id
+                  })
+              last = r.regionId
+              generated++
+              break
+            } catch (err) {
+              if (signal.aborted) throw err
+              if (attempt === 2) {
+                failed.push({
+                  section: section.name,
+                  start_bar: step.startBar,
+                  error: err instanceof Error ? err.message : String(err)
+                })
+              }
+            }
+          }
+        }
+        if (generated > 0) {
+          await commit(
+            polishSong(host.getProject(), song.id),
+            'pulido: fundidos de entrada y salida'
+          )
+        }
+
+        const final = host.getProject()
+        const ids = new Set(sections.map((s) => s.id))
+        return {
+          ok: failed.length === 0,
+          bpm: final.bpm,
+          key: final.key,
+          bars_per_part: bars,
+          parts_generated: generated,
+          ...(failed.length > 0 && { failed }),
+          sections: sectionCoverage(final)
+            .filter((c) => ids.has(c.section.id))
+            .map((c) => ({
+              id: c.section.id,
+              name: c.section.name,
+              start_bar: c.section.startBar,
+              bars: c.section.bars,
+              has_music: c.layers.length > 0
+            })),
+          check: reviewProject(final) ?? 'Every section has music.'
+        }
+      }
+    },
+    {
+      def: {
+        name: 'fill_section',
+        description:
+          'Generates a loop for one instrument layer and repeats it to fill a whole section from start to end, replacing what that layer had there. Pass a section id, or a section name to fill every section with that name (e.g. all the "Chorus" sections). Use it to add a missing layer ("add bass to the chorus"), redo a layer in a section, or fill gaps. Waits until the audio is ready.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            section: {
+              type: 'string',
+              description: 'Section id, or a section name to fill all sections with that name'
+            },
+            role: { type: 'string', enum: ROLES },
+            prompt: {
+              type: 'string',
+              description:
+                "IN ENGLISH, describe ONLY this instrument. The song's shared style is added automatically."
+            },
+            track_id: {
+              type: 'string',
+              description: 'Track to use (default: the existing track of that role, or a new one)'
+            }
+          },
+          required: ['section', 'role', 'prompt'],
+          additionalProperties: false
+        }
+      },
+      run: async (input) => {
+        const p = host.getProject()
+        const provider = readyProvider()
+        const ref = str(input, 'section').trim()
+        const all = sectionsOf(p)
+        let targets = all.filter((s) => s.id === ref)
+        if (targets.length === 0) {
+          targets = all.filter((s) => s.name.toLowerCase() === ref.toLowerCase())
+        }
+        if (targets.length === 0) {
+          throw new Error(
+            all.length === 0
+              ? 'La canción no tiene secciones: créalas con set_sections o usa compose_song.'
+              : `No existe la sección "${ref}". Secciones: ${all.map((s) => `${s.name} (${s.id})`).join(', ')}`
+          )
+        }
+        const role = str(input, 'role') as TrackRole
+        if (!ROLES.includes(role)) throw new Error(`"role" debe ser uno de: ${ROLES.join(', ')}`)
+        const trackId =
+          str(input, 'track_id', true) ?? p.tracks.find((t) => t.role === role)?.id ?? null
+        if (trackId) findTrack(p, trackId)
+        const bars = loopBars(maxBarsPerClip(p, provider), Math.max(...targets.map((t) => t.bars)))
+        const { trackId: usedTrack, filled } = await loopIntoSections({
+          prompt: layerPrompt(str(input, 'prompt'), p.style),
+          role,
+          bars,
+          trackId,
+          sections: targets
+        })
+        return {
+          ok: true,
+          track_id: usedTrack,
+          filled: filled.map((s) => ({ name: s.name, start_bar: s.startBar, bars: s.bars })),
+          loop_bars: bars
+        }
+      }
     },
     {
       def: {
@@ -323,11 +634,15 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       def: {
         name: 'copy_section',
         description:
-          'Copies a whole section, with all the audio regions that start inside it on every track, to another bar (default: right after the last section). Use it to repeat a finished chorus later in the song instead of generating it again.',
+          'Copies a whole section, with all the audio regions that start inside it on every track. Give to_section_id to copy it into an existing section (e.g. the first chorus into the second one), replacing its audio; or to_bar to create a new section there (default: after the last section). Use it to repeat a finished chorus instead of generating it again.',
         inputSchema: {
           type: 'object',
           properties: {
             section_id: { type: 'string' },
+            to_section_id: {
+              type: 'string',
+              description: 'Existing section to copy the audio into'
+            },
             to_bar: {
               type: 'integer',
               minimum: 1,
@@ -345,6 +660,23 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         if (!src)
           throw new Error(`No existe la sección "${id}". Usa get_project_state para ver los ids.`)
         const toBar = num(input, 'to_bar', 1, 1000, true)
+        const toSectionId = str(input, 'to_section_id', true)
+        // Si el destino es una sección que ya existe (por id, o porque empieza en ese
+        // compás), se copia dentro de ella en vez de fallar por solaparse.
+        const dst = toSectionId
+          ? sectionsOf(p).find((s) => s.id === toSectionId)
+          : toBar !== undefined
+            ? sectionsOf(p).find((s) => s.id !== id && s.startBar === Math.round(toBar))
+            : undefined
+        if (toSectionId && !dst) {
+          throw new Error(
+            `No existe la sección "${toSectionId}". Usa get_project_state para ver los ids.`
+          )
+        }
+        if (dst) {
+          await commit(copySectionInto(p, id, dst.id), `sección ${src.name} copiada en ${dst.name}`)
+          return { ok: true, section_id: dst.id, start_bar: dst.startBar, bars: dst.bars }
+        }
         const next = copySection(p, id, toBar === undefined ? undefined : Math.round(toBar))
         const copy = sectionsOf(next).find((s) => !sectionsOf(p).some((o) => o.id === s.id))!
         await commit(next, `sección ${src.name} copiada al compás ${copy.startBar}`)
@@ -355,7 +687,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       def: {
         name: 'generate_clip',
         description:
-          'Generates a new audio clip with the AI audio engine and places it on the timeline. Waits until the audio is ready (can take from seconds to a minute or more). Generate one instrument layer per call (drums, bass, chords, melody…) and request independent layers in the same turn so they run in parallel. Keep clips short (typically 4 or 8 bars, never more than max_bars_per_clip from get_project_state) and use repeat_region to extend them.',
+          'Generates ONE audio clip and places it at a bar. For a whole new song use compose_song, and to fill a section with a layer use fill_section; use this only for a single clip at a precise spot. Waits until the audio is ready. Never longer than max_bars_per_clip from get_project_state.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -373,7 +705,8 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             },
             track_id: {
               type: 'string',
-              description: 'Existing track to put it on. Omit to create a new track.'
+              description:
+                'Existing track to put it on. Omit to use the track of the same role (or create one).'
             },
             track_name: {
               type: 'string',
@@ -386,27 +719,30 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       },
       run: async (input) => {
         const p = host.getProject()
-        const provider = host.audioProvider()
-        if (!provider?.ready) {
-          throw new Error(
-            `El motor de audio no está listo: ${provider?.notReadyReason ?? 'no hay ninguno configurado'}. Pide al usuario que lo configure en Ajustes.`
-          )
-        }
+        const provider = readyProvider()
         const prompt = str(input, 'prompt')
         const role = str(input, 'role') as TrackRole
         if (!ROLES.includes(role)) throw new Error(`"role" debe ser uno de: ${ROLES.join(', ')}`)
         const max = maxBarsPerClip(p, provider)
         const bars = Math.round(num(input, 'bars', 1, max))
         const startBar = Math.round(num(input, 'start_bar', 1, 1000))
-        const trackId = str(input, 'track_id', true) ?? null
+        const trackName = str(input, 'track_name', true)
+        let trackId = str(input, 'track_id', true) ?? null
         if (trackId) findTrack(p, trackId)
+        // Sin pista indicada se usa la del mismo instrumento si está libre ahí, en vez
+        // de crear una pista nueva por cada clip.
+        if (!trackId && !trackName) {
+          const from = beatOfBar(p, startBar)
+          const to = beatOfBar(p, startBar + bars)
+          trackId = p.tracks.find((t) => t.role === role && !trackBusy(p, t, from, to))?.id ?? null
+        }
         const result = await host.generate({
-          prompt,
+          prompt: layerPrompt(prompt, p.style),
           role,
           bars,
           atBeat: beatOfBar(p, startBar),
           trackId,
-          trackName: str(input, 'track_name', true)
+          trackName
         })
         return {
           ok: true,
@@ -462,7 +798,9 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         const p = host.getProject()
         const { track, region } = findRegion(p, str(input, 'region_id'))
         const bars = Math.round(num(input, 'bars', 1, 64))
-        const result = await host.extend(region.id, bars, str(input, 'instructions', true))
+        const result = await host.extend(region.id, bars, {
+          instructions: str(input, 'instructions', true)
+        })
         return {
           ok: true,
           track_id: track.id,

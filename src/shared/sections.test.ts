@@ -3,6 +3,7 @@ import { createProject, createTrack, type Project, type Region } from './project
 import {
   appendSection,
   copySection,
+  copySectionInto,
   removeSection,
   sectionRangeSec,
   sectionsOf,
@@ -101,5 +102,27 @@ describe('secciones', () => {
       { name: 'B', startBar: 5, bars: 4 }
     ])
     expect(() => copySection(p, sectionsOf(p)[0].id, 3)).toThrow(/se solapa/)
+  })
+
+  it('copia dentro de una sección existente, sustituyendo su audio y recortando al final', () => {
+    let p = setSections(base(), [
+      { name: 'Coro', startBar: 1, bars: 4 },
+      { name: 'Coro', startBar: 5, bars: 2 }
+    ])
+    const track = {
+      ...createTrack('Lead', 'melody'),
+      regions: [region('a', 0, 8), region('viejo', 16, 4)] // a: compases 1-4
+    }
+    p = { ...p, tracks: [track] }
+    const [first, second] = sectionsOf(p)
+    const out = copySectionInto(p, first.id, second.id)
+
+    expect(sectionsOf(out)).toEqual(sectionsOf(p)) // no crea secciones
+    expect(out.tracks[0].regions.map((r) => [r.id === 'a', r.startBeat, r.lengthSec])).toEqual([
+      [true, 0, 8],
+      [false, 16, 4] // la copia, recortada a los 2 compases del destino; "viejo" fuera
+    ])
+    expect(() => copySectionInto(p, first.id, first.id)).toThrow(/misma sección/)
+    expect(() => copySectionInto(p, first.id, 'nope')).toThrow(/No existe/)
   })
 })
