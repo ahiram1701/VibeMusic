@@ -1,9 +1,13 @@
+import { CONTEXT_SEC } from '@shared/arrange'
 import { encodeWav } from '@shared/wav'
 
 /** Frecuencia de los fragmentos de partida (la nativa de MusicGen). */
 export const EXCERPT_SAMPLE_RATE = 32000
-/** Duración máxima del fragmento: MusicGen no usa más contexto y así pesa < 1 MB. */
-export const MAX_EXCERPT_SEC = 8
+/**
+ * Duración máxima del fragmento: MusicGen no usa más contexto y así pesa < 1 MB. El
+ * productor cuenta con ella para calcular cuánto cabe en cada tramo.
+ */
+export const MAX_EXCERPT_SEC = CONTEXT_SEC
 
 /**
  * Extrae [startSec, endSec) de un buffer como WAV mono a 32 kHz. Es el "audio de

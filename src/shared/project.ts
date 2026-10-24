@@ -3,6 +3,17 @@
 
 export type TrackRole = 'drums' | 'bass' | 'chords' | 'melody' | 'vocal' | 'fx' | 'full'
 
+/** Nombre visible de cada tipo de pista. */
+export const ROLE_LABELS: Record<TrackRole, string> = {
+  drums: 'Batería',
+  bass: 'Bajo',
+  chords: 'Acordes',
+  melody: 'Melodía',
+  vocal: 'Voz',
+  fx: 'Efectos',
+  full: 'Completo'
+}
+
 export type GenerationMode = 'text' | 'continue' | 'variation' | 'melody'
 
 export interface GenerationSpec {
@@ -69,6 +80,11 @@ export interface Project {
   clips: Record<string, Clip>
   /** Estructura de la canción (intro, estrofa…). Opcional: proyectos antiguos no la tienen. */
   sections?: Section[]
+  /**
+   * Sonido común de la canción (en inglés), fijado por el productor al componerla. Se
+   * añade a cada capa nueva para que todas suenen a la misma canción.
+   */
+  style?: string
 }
 
 /** Una parte de la canción, medida en compases (el primero es el 1). */
@@ -77,6 +93,8 @@ export interface Section {
   name: string
   startBar: number
   bars: number
+  /** Sección escasa a propósito (intro de solo batería, break…): no avisa de "una sola capa". */
+  sparse?: boolean
 }
 
 export interface VersionMeta {

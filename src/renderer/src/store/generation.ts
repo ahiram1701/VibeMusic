@@ -10,6 +10,7 @@ import {
   type TrackRole
 } from '@shared/project'
 import { barsToSeconds } from '@shared/prompt'
+import { withDefaultMix } from '@shared/mixer'
 import { encodeWav } from '@shared/wav'
 import { engine } from '../audio/engine'
 import { ROLE_LABELS } from '../labels'
@@ -282,7 +283,10 @@ async function finalize(jobId: string): Promise<void> {
     const label = ROLE_LABELS[job.spec.role]
     const newTrack = target
       ? null
-      : { ...createTrack(placement.trackName?.trim() || label, job.spec.role), regions: [region] }
+      : {
+          ...withDefaultMix(createTrack(placement.trackName?.trim() || label, job.spec.role)),
+          regions: [region]
+        }
     const next: Project = {
       ...project,
       clips: {

@@ -103,10 +103,19 @@ export async function varyRegion(regionId: string, opts: ActionOptions = {}): Pr
  * final de la región (hasta 8 s) para que siga tocando desde ahí; el resultado se
  * coloca justo después, en la misma pista.
  */
+export interface ContinueOptions extends ActionOptions {
+  /** Descripción completa del audio nuevo (sustituye a la del clip original). */
+  prompt?: string
+  /** Dónde colocarlo (por defecto, justo después de la región). */
+  atBeat?: number
+  /** Texto del cambio en el historial. */
+  message?: string
+}
+
 export async function continueRegion(
   regionId: string,
   bars: number,
-  opts: ActionOptions = {}
+  opts: ContinueOptions = {}
 ): Promise<string> {
   const { project, dir, track, region, clip } = find(regionId)
   const provider = pickProvider(opts.providerId)
@@ -128,19 +137,21 @@ export async function continueRegion(
   await window.vibe.clips.write(dir, file, excerpt.wav)
 
   const extra = opts.instructions?.trim()
-  const base = clip.spec?.prompt ?? `continuation of this ${track.role} part`
+  const base = opts.prompt?.trim() || clip.spec?.prompt || `continuation of this ${track.role} part`
   return useGeneration.getState().generate({
     prompt: extra ? `${base}, ${extra}` : base,
     role: clip.spec?.role ?? track.role,
     bars,
     providerId: provider.id,
-    atBeat: region.startBeat + secondsToBeats(region.lengthSec, project.bpm),
+    atBeat: opts.atBeat ?? region.startBeat + secondsToBeats(region.lengthSec, project.bpm),
     trackId: track.id,
     parentClipId: clip.id,
     mode: 'continue',
     conditioning: { clipId: clip.id, file, seconds: excerpt.seconds },
     messagePrefix: opts.messagePrefix,
-    message: `Continuación de ${track.name} (+${bars} ${bars === 1 ? 'compás' : 'compases'})`
+    message:
+      opts.message ??
+      `Continuación de ${track.name} (+${bars} ${bars === 1 ? 'compás' : 'compases'})`
   })
 }
 

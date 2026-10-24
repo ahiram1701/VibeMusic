@@ -68,11 +68,17 @@ export function appendSection(p: Project, bars = 8, name?: string): Project {
 /** Sustituye todas las secciones (lo usa el productor para planificar la estructura). */
 export function setSections(
   p: Project,
-  list: { name: string; startBar: number; bars: number }[]
+  list: { name: string; startBar: number; bars: number; sparse?: boolean }[]
 ): Project {
   return withSections(
     p,
-    list.map((s) => ({ id: newId('sec'), name: s.name.trim(), startBar: s.startBar, bars: s.bars }))
+    list.map((s) => ({
+      id: newId('sec'),
+      name: s.name.trim(),
+      startBar: s.startBar,
+      bars: s.bars,
+      ...(s.sparse && { sparse: true })
+    }))
   )
 }
 
@@ -116,15 +122,43 @@ export function copySection(p: Project, id: string, toBar?: number): Project {
   const src = existing.find((s) => s.id === id)
   if (!src) throw new Error(`No existe la sección "${id}"`)
   const target = toBar ?? endBar(existing.at(-1)!)
-  const perBar = p.timeSignature[0]
-  const srcStart = (src.startBar - 1) * perBar
-  const srcEnd = (endBar(src) - 1) * perBar
-  const shift = (target - src.startBar) * perBar
-
   const copy: Section = { id: newId('sec'), name: src.name, startBar: target, bars: src.bars }
   const next = withSections(p, [...existing, copy])
+  return { ...next, tracks: copyAudio(p, src, target, src.bars) }
+}
 
-  const tracks = p.tracks.map((t) => {
+/**
+ * Copia el audio de una sección dentro de otra ya existente (p. ej. el primer
+ * estribillo en el segundo, ya planificado), sustituyendo lo que hubiera en ella.
+ * Si el destino es más corto, se recorta en su final.
+ */
+export function copySectionInto(p: Project, id: string, targetId: string): Project {
+  const existing = sectionsOf(p)
+  const src = existing.find((s) => s.id === id)
+  const dst = existing.find((s) => s.id === targetId)
+  if (!src) throw new Error(`No existe la sección "${id}"`)
+  if (!dst) throw new Error(`No existe la sección "${targetId}"`)
+  if (src.id === dst.id) throw new Error('El origen y el destino son la misma sección')
+  const perBar = p.timeSignature[0]
+  const dstStart = (dst.startBar - 1) * perBar
+  const dstEnd = (endBar(dst) - 1) * perBar
+  const cleared: Project = {
+    ...p,
+    tracks: p.tracks.map((t) => ({
+      ...t,
+      regions: t.regions.filter((r) => r.startBeat < dstStart || r.startBeat >= dstEnd)
+    }))
+  }
+  return { ...cleared, tracks: copyAudio(cleared, src, dst.startBar, Math.min(src.bars, dst.bars)) }
+}
+
+/** Pistas con las regiones que empiezan en `src` copiadas a `toBar`, recortadas a `bars`. */
+function copyAudio(p: Project, src: Section, toBar: number, bars: number) {
+  const perBar = p.timeSignature[0]
+  const srcStart = (src.startBar - 1) * perBar
+  const srcEnd = srcStart + bars * perBar
+  const shift = (toBar - src.startBar) * perBar
+  return p.tracks.map((t) => {
     const copies: Region[] = []
     for (const r of t.regions) {
       if (r.startBeat < srcStart || r.startBeat >= srcEnd) continue
@@ -140,5 +174,4 @@ export function copySection(p: Project, id: string, toBar?: number): Project {
     }
     return copies.length ? { ...t, regions: [...t.regions, ...copies] } : t
   })
-  return { ...next, tracks }
 }

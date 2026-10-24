@@ -55,14 +55,31 @@ class Engine(Protocol):
     ) -> Audio: ...
 
 
-def to_mono_at(audio: Audio, sample_rate: int) -> np.ndarray:
-    """Mezcla a mono y remuestrea (interpolación lineal; suficiente para condicionar)."""
-    mono = audio.samples.mean(axis=0) if audio.samples.ndim == 2 else audio.samples
-    if audio.sample_rate == sample_rate:
-        return mono.astype(np.float32)
-    n = round(len(mono) * sample_rate / audio.sample_rate)
-    x = np.linspace(0, len(mono) - 1, n)
-    return np.interp(x, np.arange(len(mono)), mono).astype(np.float32)
+def _resample(wave: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
+    """Remuestrea un canal (interpolación lineal; suficiente para condicionar)."""
+    if src_rate == dst_rate:
+        return wave.astype(np.float32)
+    n = round(len(wave) * dst_rate / src_rate)
+    x = np.linspace(0, len(wave) - 1, n)
+    return np.interp(x, np.arange(len(wave)), wave).astype(np.float32)
+
+
+def prompt_wave(audio: Audio, sample_rate: int, channels: int) -> np.ndarray:
+    """
+    Audio de partida en la forma que espera el modelo: un vector (muestras,) para los
+    mono y una matriz (2, muestras) para los estéreo. Un vector plano en un modelo
+    estéreo se lee como "N canales" y falla; el mono se duplica a los dos canales.
+    """
+    samples = audio.samples if audio.samples.ndim == 2 else audio.samples[np.newaxis, :]
+    if channels == 1:
+        return _resample(samples.mean(axis=0), audio.sample_rate, sample_rate)
+    left, right = (samples[0], samples[1]) if len(samples) >= 2 else (samples[0], samples[0])
+    return np.stack(
+        [
+            _resample(left, audio.sample_rate, sample_rate),
+            _resample(right, audio.sample_rate, sample_rate),
+        ]
+    )
 
 
 def detect_device() -> dict[str, object]:
@@ -110,6 +127,9 @@ class MusicGenEngine:
         if self._device["device"] == "cuda":
             model = model.to("cuda", dtype=torch.float16)
         else:
+            # transformers 5 carga el checkpoint en su tipo original (float16 en los
+            # estéreo); en CPU el audio de partida va en float32 y no casarían.
+            model = model.float()
             torch.set_num_threads(os.cpu_count() or 4)
         self._model = model.eval()
         self._model_id = model_id
@@ -154,8 +174,10 @@ class MusicGenEngine:
             torch.manual_seed(seed)
         lead = 0
         if prompt_audio is not None:
-            wave_in = to_mono_at(prompt_audio, sr)
-            lead = len(wave_in)
+            # MusicGen stereo espera 2 canales; los demás, uno.
+            channels = int(getattr(self._processor.feature_extractor, "feature_size", 1))
+            wave_in = prompt_wave(prompt_audio, sr, channels)
+            lead = wave_in.shape[-1]
             inputs = self._processor(
                 audio=wave_in, sampling_rate=sr, text=[prompt], padding=True, return_tensors="pt"
             )

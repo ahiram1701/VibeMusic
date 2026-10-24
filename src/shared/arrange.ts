@@ -1,0 +1,379 @@
+import {
+  beatsToSeconds,
+  newId,
+  secondsToBeats,
+  type Project,
+  type Region,
+  type Section,
+  type Track,
+  type TrackRole
+} from './project'
+import { sectionsOf } from './sections'
+
+// Arreglo automático. El productor escribe el arreglo (qué suena y con qué energía en
+// cada sección) y este módulo hace lo mecánico: en qué tramos se genera la canción,
+// qué se pide en cada uno (con sus transiciones) y qué huecos quedan.
+// Los motores tipo MusicGen se entrenaron con mezclas completas y saben *continuar*
+// audio: por eso la canción se genera como una sola interpretación, tramo a tramo,
+// cada uno continuando al anterior, en lugar de capas sueltas que no se escuchan
+// entre sí. Todo es puro (sin E/S) para poder probarlo sin la app.
+
+/** Una canción tal como la describe el productor en `compose_song`. */
+export interface SongSpec {
+  style: string
+  sections: {
+    name: string
+    bars: number
+    arrangement: string
+    /** 1 (mínima) a 5 (máxima); sirve para elegir las transiciones. */
+    energy: number | null
+    /** Repite el audio de la sección anterior con el mismo nombre en vez de generarlo. */
+    reuse: boolean
+  }[]
+}
+
+/** Un paso de la composición: generar un tramo o repetir una sección ya hecha. */
+export type ChunkStep =
+  | {
+      kind: 'generate'
+      section: number
+      /** Compás (1 = primero) donde empieza el tramo. */
+      startBar: number
+      bars: number
+      prompt: string
+    }
+  | { kind: 'reuse'; section: number; from: number }
+
+type Input = Record<string, unknown>
+
+/** Los modelos pequeños a veces mandan listas u objetos serializados como texto. */
+function parseJsonish(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw
+  const t = raw.trim()
+  if (!t.startsWith('[') && !t.startsWith('{')) return raw
+  try {
+    return JSON.parse(t)
+  } catch {
+    return raw
+  }
+}
+
+function toNumber(raw: unknown): number {
+  return typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : (raw as number)
+}
+
+const sameName = (a: string, b: string): boolean =>
+  a.trim().toLowerCase() === b.trim().toLowerCase()
+
+/**
+ * Valida y normaliza la canción que manda el LLM. Los errores dicen exactamente qué
+ * corregir, porque el modelo los lee y vuelve a intentarlo.
+ */
+export function parseSongSpec(input: Input): SongSpec {
+  const style = typeof input.style === 'string' ? input.style.trim() : ''
+  if (!style) throw new Error('Falta "style": el sonido común de la canción, en inglés')
+
+  const rawSections = parseJsonish(input.sections)
+  if (!Array.isArray(rawSections) || rawSections.length === 0) {
+    throw new Error(
+      '"sections" debe ser una lista: [{"name": "Intro", "bars": 8, "arrangement": "..."}]'
+    )
+  }
+  const sections: SongSpec['sections'] = []
+  for (const [i, item] of rawSections.entries()) {
+    const it = (item ?? {}) as Input
+    const name = typeof it.name === 'string' ? it.name.trim() : ''
+    if (!name) throw new Error(`Sección ${i + 1}: falta "name"`)
+    const bars = toNumber(it.bars)
+    if (typeof bars !== 'number' || !Number.isFinite(bars) || bars < 1 || bars > 64) {
+      throw new Error(`Sección "${name}": "bars" debe ser un número de 1 a 64`)
+    }
+    const reuse = it.reuse === true || it.reuse === 'true'
+    if (reuse && !sections.some((s) => sameName(s.name, name))) {
+      throw new Error(
+        `Sección "${name}": "reuse" repite una sección anterior con el mismo nombre, y no hay ninguna antes`
+      )
+    }
+    const arrangement = typeof it.arrangement === 'string' ? it.arrangement.trim() : ''
+    if (!arrangement && !reuse) {
+      throw new Error(
+        `Sección "${name}": falta "arrangement" (qué instrumentos suenan y con qué energía, en inglés)`
+      )
+    }
+    const rawEnergy = it.energy === undefined || it.energy === null ? null : toNumber(it.energy)
+    const energy =
+      typeof rawEnergy === 'number' && Number.isFinite(rawEnergy)
+        ? Math.min(5, Math.max(1, Math.round(rawEnergy)))
+        : null
+    sections.push({ name, bars: Math.round(bars), arrangement, energy, reuse })
+  }
+  if (sections.every((s) => s.reuse)) throw new Error('Alguna sección tiene que generarse')
+  return { style, sections }
+}
+
+/**
+ * Compases por tramo: cada continuación lleva hasta `contextSec` de audio previo y el
+ * motor genera como mucho `maxSec` en total, así que caben `(maxSec − contexto)`
+ * segundos nuevos. Se redondea a 8 o 4 compases (frases musicales) si caben.
+ */
+export function chunkBars(secPerBar: number, maxSec: number, contextSec: number): number {
+  const fit = Math.floor((maxSec - contextSec) / secPerBar)
+  if (fit >= 8) return 8
+  if (fit >= 4) return 4
+  return Math.max(1, fit)
+}
+
+/** Texto de transición al final de una sección, según cómo cambia la energía. */
+function transitionOut(from: number | null, to: number | null): string {
+  if (from !== null && to !== null && to > from) {
+    return 'ending with a drum fill and a riser building up into the next section'
+  }
+  if (from !== null && to !== null && to < from) {
+    return 'winding down at the end, transitioning into a calmer next section'
+  }
+  return 'ending with a short drum fill into the next section'
+}
+
+/**
+ * Pasos para componer la canción: cada sección en tramos de `bars` compases (el
+ * último puede ser más corto), con transiciones automáticas en los bordes. Las
+ * secciones con `reuse` copian la anterior del mismo nombre.
+ */
+export function planChunks(spec: SongSpec, bars: number): ChunkStep[] {
+  const steps: ChunkStep[] = []
+  let startBar = 1
+  spec.sections.forEach((s, i) => {
+    if (s.reuse) {
+      const from = spec.sections.findIndex((o, j) => j < i && sameName(o.name, s.name))
+      steps.push({ kind: 'reuse', section: i, from })
+      startBar += s.bars
+      return
+    }
+    const prev = spec.sections[i - 1]
+    const next = spec.sections[i + 1]
+    const count = Math.ceil(s.bars / bars)
+    for (let k = 0; k < count; k++) {
+      const len = Math.min(bars, s.bars - k * bars)
+      const hints: string[] = []
+      if (k === 0 && i === 0) hints.push('song intro')
+      if (k === 0 && prev?.energy && s.energy && s.energy > prev.energy) {
+        hints.push('powerful entrance, full energy from the first beat')
+      }
+      if (k === count - 1) {
+        hints.push(next ? transitionOut(s.energy, next.energy) : 'song ending, fading out')
+      }
+      steps.push({
+        kind: 'generate',
+        section: i,
+        startBar: startBar + k * bars,
+        bars: len,
+        prompt: [s.arrangement, spec.style, ...hints].join(', ')
+      })
+    }
+    startBar += s.bars
+  })
+  return steps
+}
+
+/** Segundos de audio previo que escucha el motor al continuar (ver audio/excerpt.ts). */
+export const CONTEXT_SEC = 8
+
+/** La última región de la pista que empieza dentro de la sección. */
+export function lastRegionIn(p: Project, trackId: string, s: Section): Region | undefined {
+  const [a, b] = sectionBeats(p, s)
+  return p.tracks
+    .find((t) => t.id === trackId)
+    ?.regions.filter((r) => r.startBeat >= a && r.startBeat < b)
+    .sort((x, y) => y.startBeat - x.startBeat)[0]
+}
+
+/**
+ * Pulido final de la canción: un fundido mínimo en cada costura (evita clics), la
+ * entrada en fundido durante el primer compás y la salida durante los dos últimos.
+ */
+export function polishSong(p: Project, trackId: string): Project {
+  const track = p.tracks.find((t) => t.id === trackId)
+  if (!track || track.regions.length === 0) return p
+  const bar = beatsToSeconds(p.timeSignature[0], p.bpm)
+  const end = (r: Region): number => r.startBeat + secondsToBeats(r.lengthSec, p.bpm)
+  const first = track.regions.reduce((a, r) => (r.startBeat < a.startBeat ? r : a))
+  const last = track.regions.reduce((a, r) => (end(r) > end(a) ? r : a))
+  const seam = 0.01
+  return {
+    ...p,
+    tracks: p.tracks.map((t) =>
+      t.id !== trackId
+        ? t
+        : {
+            ...t,
+            regions: t.regions.map((r) => ({
+              ...r,
+              fadeInSec: Math.min(
+                r.lengthSec / 2,
+                r.id === first.id ? bar : Math.max(r.fadeInSec, seam)
+              ),
+              fadeOutSec: Math.min(
+                r.lengthSec / 2,
+                r.id === last.id ? 2 * bar : Math.max(r.fadeOutSec, seam)
+              )
+            }))
+          }
+    )
+  }
+}
+
+/** Compases de un loop para una capa encima: 8 si caben, si no 4 o lo que quepa. */
+export function loopBars(maxBarsPerClip: number, longestSection: number): number {
+  const preferred = maxBarsPerClip >= 8 ? 8 : maxBarsPerClip >= 4 ? 4 : maxBarsPerClip
+  return Math.max(1, Math.min(preferred, longestSection))
+}
+
+/** Prompt de una capa con el sonido común de la canción (la capa primero: es lo que se ve). */
+export function layerPrompt(prompt: string, style: string | undefined): string {
+  return style ? `${prompt.trim()}, ${style.trim()}` : prompt.trim()
+}
+
+/**
+ * Copias de `template` una detrás de otra de `fromBeat` a `toBeat`. La última se
+ * recorta (con un fundido mínimo para que no haga clic) si no cabe entera.
+ */
+export function tileRegions(
+  template: Region,
+  fromBeat: number,
+  toBeat: number,
+  bpm: number
+): Region[] {
+  const lenBeats = secondsToBeats(template.lengthSec, bpm)
+  if (lenBeats <= 0) return []
+  const out: Region[] = []
+  for (let beat = fromBeat; beat < toBeat - 1e-6; beat += lenBeats) {
+    const beats = Math.min(lenBeats, toBeat - beat)
+    const trimmed = beats < lenBeats - 1e-6
+    out.push({
+      ...template,
+      id: newId('rgn'),
+      startBeat: beat,
+      lengthSec: trimmed ? beatsToSeconds(beats, bpm) : template.lengthSec,
+      fadeOutSec: trimmed ? Math.min(0.01, template.lengthSec) : template.fadeOutSec
+    })
+  }
+  return out
+}
+
+const sectionBeats = (p: Project, s: Section): [number, number] => {
+  const perBar = p.timeSignature[0]
+  return [(s.startBar - 1) * perBar, (s.startBar - 1 + s.bars) * perBar]
+}
+
+/**
+ * Llena unas secciones de una pista con un loop: quita lo que empezaba dentro de
+ * ellas y pone copias de `template` de principio a fin de cada una.
+ */
+export function fillSections(
+  p: Project,
+  trackId: string,
+  template: Region,
+  sections: Section[]
+): Project {
+  const ranges = sections.map((s) => sectionBeats(p, s))
+  const inside = (beat: number): boolean => ranges.some(([a, b]) => beat >= a && beat < b)
+  return {
+    ...p,
+    tracks: p.tracks.map((t) =>
+      t.id !== trackId
+        ? t
+        : {
+            ...t,
+            regions: [
+              ...t.regions.filter((r) => r.id !== template.id && !inside(r.startBeat)),
+              ...ranges.flatMap(([a, b]) => tileRegions(template, a, b, p.bpm))
+            ]
+          }
+    )
+  }
+}
+
+/** ¿Tiene la pista audio que se solape con [fromBeat, toBeat)? */
+export function trackBusy(p: Project, track: Track, fromBeat: number, toBeat: number): boolean {
+  return track.regions.some((r) => {
+    const end = r.startBeat + secondsToBeats(r.lengthSec, p.bpm)
+    return r.startBeat < toBeat && end > fromBeat
+  })
+}
+
+/** Qué suena en cada sección: capas presentes y las que se cortan antes del final. */
+export interface SectionCoverage {
+  section: Section
+  /** Pistas audibles con audio en la sección (nombre y papel). */
+  layers: { track: string; role: TrackRole }[]
+  /** Pistas que suenan en parte de la sección pero dejan huecos. */
+  partial: string[]
+  /**
+   * Suena una sola capa suelta (no una mezcla completa) y la sección no es escasa a
+   * propósito: suele sonar vacía.
+   */
+  thin: boolean
+}
+
+export function sectionCoverage(p: Project): SectionCoverage[] {
+  const audible = p.tracks.filter((t) => !t.mute)
+  return sectionsOf(p).map((section) => {
+    const [a, b] = sectionBeats(p, section)
+    const layers: SectionCoverage['layers'] = []
+    const partial: string[] = []
+    for (const t of audible) {
+      const covered = coveredBeats(p, t, a, b)
+      if (covered <= 0) continue
+      layers.push({ track: t.name, role: t.role })
+      // El audio importado dura lo que dura: sus huecos no son un fallo del productor.
+      const imported = t.regions.every((r) => p.clips[r.clipId]?.spec === null)
+      if (!imported && covered < (b - a) * 0.9) partial.push(t.name)
+    }
+    const thin = layers.length === 1 && layers[0].role !== 'full' && !section.sparse
+    return { section, layers, partial, thin }
+  })
+}
+
+/** Beats de [a, b) cubiertos por regiones de la pista (sin contar solapes dos veces). */
+function coveredBeats(p: Project, t: Track, a: number, b: number): number {
+  const spans = t.regions
+    .map((r) => [r.startBeat, r.startBeat + secondsToBeats(r.lengthSec, p.bpm)] as const)
+    .map(([s, e]) => [Math.max(s, a), Math.min(e, b)] as const)
+    .filter(([s, e]) => e > s)
+    .sort((x, y) => x[0] - y[0])
+  let total = 0
+  let cursor = a
+  for (const [s, e] of spans) {
+    const from = Math.max(s, cursor)
+    if (e > from) total += e - from
+    cursor = Math.max(cursor, e)
+  }
+  return total
+}
+
+/**
+ * Revisión automática antes de que el productor dé la canción por terminada.
+ * Devuelve un aviso para el LLM, o null si todo está en orden.
+ */
+export function reviewProject(p: Project): string | null {
+  const problems: string[] = []
+  const coverage = sectionCoverage(p)
+  const hasAudio = coverage.some((c) => c.layers.length > 0)
+  if (!hasAudio) return null // aún no hay canción (p. ej. solo se planificó la estructura)
+  for (const c of coverage) {
+    const where = `"${c.section.name}" (bars ${c.section.startBar}-${c.section.startBar + c.section.bars - 1}, id ${c.section.id})`
+    if (c.layers.length === 0) problems.push(`${where} is empty: nothing plays there.`)
+    else if (c.thin) {
+      problems.push(`${where} has only one layer (${c.layers[0].track}).`)
+    }
+    if (c.partial.length > 0) {
+      problems.push(`${where}: ${c.partial.join(', ')} stop(s) before the section ends.`)
+    }
+  }
+  if (problems.length === 0) return null
+  return [
+    'Automatic check of the song before you finish:',
+    ...problems.map((x) => `- ${x}`),
+    'Fix these (extend_region continues the song into an empty section, fill_section adds a layer, copy_section repeats a finished section), then reply. If a gap is intentional, say so to the user instead of calling the song complete.'
+  ].join('\n')
+}
