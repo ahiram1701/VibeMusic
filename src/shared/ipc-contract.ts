@@ -4,6 +4,7 @@ import type { LocalEngineStatus, TorchVariant } from './local-engine'
 import type { StemResult } from './stems'
 import type { GenerationSpec, Project, VersionMeta } from './project'
 import type { UpdateStatus, WhatsNew } from './update'
+import type { VoiceConvertOptions, VoiceEngineStatus, VoiceModel } from './voice'
 
 export type KeyCheck = { ok: true; info: string } | { ok: false; error: string }
 
@@ -61,6 +62,31 @@ export interface VibeApi {
     stop(): Promise<void>
     onStatus(listener: (status: LocalEngineStatus) => void): () => void
     onLog(listener: (line: string) => void): () => void
+  }
+  voice: {
+    status(): Promise<VoiceEngineStatus>
+    /** Instala "Mi voz" (Applio + PyTorch CPU + modelos base, ~2 GB). Tarda varios minutos. */
+    install(): Promise<{ ok: true } | { ok: false; error: string }>
+    uninstall(): Promise<void>
+    list(): Promise<VoiceModel[]>
+    /** Pide los archivos de una voz (.zip o .pth + .index) y la importa. null si se cancela. */
+    importVoice(): Promise<{ ok: true; voice: VoiceModel } | { ok: false; error: string } | null>
+    remove(id: string): Promise<void>
+    /**
+     * Convierte un clip del proyecto a una voz. Devuelve el archivo nuevo (ruta relativa
+     * al proyecto). El paso actual llega por `onProgress`.
+     */
+    convert(
+      requestId: string,
+      dir: string,
+      clipFile: string,
+      voiceId: string,
+      opts: VoiceConvertOptions
+    ): Promise<{ file: string }>
+    cancel(requestId: string): Promise<void>
+    onStatus(listener: (status: VoiceEngineStatus) => void): () => void
+    onLog(listener: (line: string) => void): () => void
+    onProgress(listener: (requestId: string, stage: string) => void): () => void
   }
   stems: {
     /** Separa un clip del proyecto en pistas. El progreso llega por `onProgress`. */
@@ -143,6 +169,14 @@ export type IpcChannel =
   | 'localEngine:uninstall'
   | 'localEngine:installStems'
   | 'stems:separate'
+  | 'voice:status'
+  | 'voice:install'
+  | 'voice:uninstall'
+  | 'voice:list'
+  | 'voice:import'
+  | 'voice:remove'
+  | 'voice:convert'
+  | 'voice:cancel'
   | 'stems:cancel'
   | 'localEngine:start'
   | 'localEngine:stop'
@@ -171,4 +205,7 @@ export const LLM_RETRY_EVENT = 'llm:retry'
 export const LOCAL_ENGINE_STATUS_EVENT = 'localEngine:status'
 export const LOCAL_ENGINE_LOG_EVENT = 'localEngine:log'
 export const STEMS_PROGRESS_EVENT = 'stems:progress'
+export const VOICE_STATUS_EVENT = 'voice:status'
+export const VOICE_LOG_EVENT = 'voice:log'
+export const VOICE_PROGRESS_EVENT = 'voice:progress'
 export const UPDATE_STATUS_EVENT = 'app:update-status'

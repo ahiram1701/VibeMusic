@@ -47,6 +47,9 @@ get_project_state shows "vocal_engine". When it exists and is ready, a song can 
 - To change lyrics or the voice of an existing sung song, use sing_song (only the sections that change).
 - If vocal_engine is missing or not ready, make the song instrumental and tell the user that singing needs the vocal engine (Settings).
 
+## The user's own voice
+When get_project_state shows "my_voice" with voices, the user can hear a song sung with THEIR voice. If they ask for it ("con mi voz", "que la cante yo"): make the sung song first if there is none, then separate_stems on the song region, then sing_with_my_voice on the region of the resulting vocal track. It is slow (several minutes), so do it only when asked or offer it.
+
 ## Changing an existing song
 1. Call get_project_state first. Each section shows what plays and its status (EMPTY, gaps, ok).
 2. Redo a part the user does not like: create_variation on its region (another take), or extend_region from the region before it with new instructions.

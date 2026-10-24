@@ -44,6 +44,7 @@ function fakeHost(
   vocal: ProviderInfo | undefined = undefined
 ) {
   const generated: Parameters<ProducerHost['generate']>[0][] = []
+  const myVoices: ReturnType<ProducerHost['myVoices']> = { ready: false, voices: [] }
   const state = { project: initial, messages: [] as string[], playedFrom: -1 }
   const host: ProducerHost = {
     getProject: () => state.project,
@@ -58,6 +59,11 @@ function fakeHost(
     },
     audioProvider: () => provider,
     vocalProvider: () => vocal,
+    myVoices: () => myVoices,
+    convertVoice: async (regionId, opts) => {
+      state.messages.push(`voice ${regionId} ${opts.voiceName} ${opts.pitch}`)
+      return { trackId: 'tv', regionId: 'rv' }
+    },
     generate: async (g) => {
       generated.push(g)
       const p = state.project
@@ -121,7 +127,7 @@ function fakeHost(
   const tools = Object.fromEntries(createProducerTools(host).map((t) => [t.def.name, t]))
   const run = (name: string, input: Record<string, unknown> = {}) =>
     tools[name].run(input, new AbortController().signal)
-  return { state, run, host, generated }
+  return { state, run, host, generated, myVoices }
 }
 
 describe('herramientas del productor', () => {
@@ -686,5 +692,62 @@ describe('canciones con voz', () => {
     }
     expect(d.vocal_engine).toMatchObject({ name: 'ACE-Step', max_song_seconds: 240 })
     expect(d.sections[2].lyrics).toBe('Ay amor, ven a bailar')
+  })
+})
+
+describe('cantar con la voz del usuario', () => {
+  function withVocalTrack() {
+    const h = fakeHost(createProject('X'))
+    const vocal = {
+      ...createTrack('Canción · Voz', 'vocal'),
+      regions: [
+        {
+          id: 'rv1',
+          clipId: 'c',
+          startBeat: 0,
+          offsetSec: 0,
+          lengthSec: 8,
+          fadeInSec: 0,
+          fadeOutSec: 0
+        }
+      ]
+    }
+    const song = {
+      ...createTrack('Canción', 'full'),
+      regions: [{ ...vocal.regions[0], id: 'rs1' }]
+    }
+    h.state.project = { ...h.state.project, tracks: [song, vocal] }
+    return h
+  }
+
+  it('convierte una región de voz con la voz elegida y el tono pedido', async () => {
+    const h = withVocalTrack()
+    h.myVoices.ready = true
+    h.myVoices.voices.push({ id: 'alberto', name: 'Alberto' }, { id: 'coro', name: 'Coro grave' })
+    const res = await h.run('sing_with_my_voice', { region_id: 'rv1', voice: 'grave', pitch: -12 })
+    expect(res).toMatchObject({ ok: true, voice: 'Coro grave' })
+    expect(h.state.messages.at(-1)).toBe('voice rv1 Coro grave -12')
+    await h.run('sing_with_my_voice', { region_id: 'rv1' })
+    expect(h.state.messages.at(-1)).toBe('voice rv1 Alberto 0')
+
+    const d = (await h.run('get_project_state')) as { my_voice: unknown }
+    expect(d.my_voice).toEqual({ ready: true, voices: ['Alberto', 'Coro grave'] })
+  })
+
+  it('explica qué falta: instalar, entrenar una voz o separar antes la canción', async () => {
+    const h = withVocalTrack()
+    await expect(h.run('sing_with_my_voice', { region_id: 'rv1' })).rejects.toThrow(
+      /no está instalado/
+    )
+    expect((await h.run('get_project_state')) as object).not.toHaveProperty('my_voice')
+    h.myVoices.ready = true
+    await expect(h.run('sing_with_my_voice', { region_id: 'rv1' })).rejects.toThrow(/entrene una/)
+    h.myVoices.voices.push({ id: 'alberto', name: 'Alberto' })
+    await expect(h.run('sing_with_my_voice', { region_id: 'rs1' })).rejects.toThrow(
+      /separate_stems/
+    )
+    await expect(h.run('sing_with_my_voice', { region_id: 'rv1', voice: 'Pedro' })).rejects.toThrow(
+      /No existe la voz "Pedro"/
+    )
   })
 })

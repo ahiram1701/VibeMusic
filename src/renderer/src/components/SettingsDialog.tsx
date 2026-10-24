@@ -3,6 +3,7 @@ import type { ProviderId } from '@shared/generation'
 import { useGeneration } from '../store/generation'
 import { LlmSettingsSection } from './LlmSettingsSection'
 import { LocalEngineSection } from './LocalEngineSection'
+import { MyVoiceSection } from './MyVoiceSection'
 import { UpdatesSection } from './UpdatesSection'
 import { VocalsSection } from './VocalsSection'
 
@@ -127,6 +128,10 @@ export function SettingsDialog({ onClose }: { onClose(): void }): React.JSX.Elem
         <hr className="my-5 border-line" />
 
         <VocalsSection />
+
+        <hr className="my-5 border-line" />
+
+        <MyVoiceSection />
 
         <hr className="my-5 border-line" />
 

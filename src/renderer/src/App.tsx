@@ -13,6 +13,7 @@ import { UpdateBanner } from './components/UpdateBanner'
 import { WhatsNewDialog } from './components/WhatsNewDialog'
 import { useGeneration } from './store/generation'
 import { useProject } from './store/project'
+import { useVoice } from './store/voice'
 
 export default function App(): React.JSX.Element {
   const { project, newProject, openProject } = useProject()
@@ -23,6 +24,7 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     window.vibe.app.version().then(setVersion)
     void useGeneration.getState().init()
+    void useVoice.getState().init()
   }, [])
 
   // Sincroniza el motor con el proyecto: si cambian posiciones/tempo reprograma

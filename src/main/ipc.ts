@@ -1,5 +1,6 @@
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { mkdir } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron'
 import type { ProviderId } from '@shared/generation'
 import {
@@ -10,12 +11,15 @@ import {
   LOCAL_ENGINE_STATUS_EVENT,
   STEMS_PROGRESS_EVENT,
   UPDATE_STATUS_EVENT,
+  VOICE_LOG_EVENT,
+  VOICE_PROGRESS_EVENT,
+  VOICE_STATUS_EVENT,
   type IpcChannel,
   type KeyCheck
 } from '@shared/ipc-contract'
 import type { LlmRequest } from '@shared/llm'
 import type { TorchVariant } from '@shared/local-engine'
-import { createProject, type GenerationSpec, type Project } from '@shared/project'
+import { createProject, newId, type GenerationSpec, type Project } from '@shared/project'
 import { demoProvider } from './audio-providers/demo'
 import { createHuggingFaceProvider, verifyHfToken } from './audio-providers/huggingface'
 import { createLocalProvider } from './audio-providers/local'
@@ -28,6 +32,8 @@ import { KeepAwake } from './power'
 import { llmSecret, SettingsStore } from './settings'
 import { SidecarManager } from './sidecar/manager'
 import { StemsService } from './stems'
+import { VoiceEngine } from './voice/engine'
+import type { VoiceConvertOptions } from '@shared/voice'
 import { checkForUpdates, getUpdateStatus, installUpdate, startAutoUpdates } from './updater'
 import { computeWhatsNew } from './whats-new'
 import {
@@ -38,7 +44,7 @@ import {
   saveProject
 } from './project/store'
 import { ExportFolders, saveFileDialog, type ExportExt } from './export'
-import { importAudio, readClip, writeClip } from './project/clips'
+import { importAudio, projectPath, readClip, writeClip } from './project/clips'
 
 function handle(channel: IpcChannel, fn: (...args: never[]) => unknown): void {
   ipcMain.handle(channel, (_event, ...args) => fn(...(args as never[])))
@@ -185,6 +191,59 @@ export function registerIpc(): { shutdown(): void } {
     }
   })
 
+  // "Mi voz": conversión de voz con RVC (Applio) en su propio entorno de Python.
+  const voice = new VoiceEngine(
+    process.env['VIBE_VOICE_DIR'] ?? join(homedir(), '.vibemusic', 'voice')
+  )
+  voice.onStatus((s) => broadcast(VOICE_STATUS_EVENT, s))
+  voice.onLog((line) => broadcast(VOICE_LOG_EVENT, line))
+  const result = async (fn: () => Promise<unknown>) => {
+    try {
+      await fn()
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+  handle('voice:status', () => voice.status())
+  handle('voice:install', () => result(() => voice.install()))
+  handle('voice:uninstall', () => voice.uninstall())
+  handle('voice:list', () => voice.listVoices())
+  handle('voice:import', async () => {
+    const res = await dialog.showOpenDialog({
+      title: 'Importar tu voz (.zip, o el .pth con su .index)',
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'Voz RVC', extensions: ['zip', 'pth', 'index'] }]
+    })
+    if (res.canceled || res.filePaths.length === 0) return null
+    try {
+      return { ok: true, voice: await voice.importVoice(res.filePaths) }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+  handle('voice:remove', (id: string) => voice.removeVoice(id))
+  ipcMain.handle(
+    'voice:convert',
+    async (
+      event,
+      requestId: string,
+      dir: string,
+      clipFile: string,
+      voiceId: string,
+      opts: VoiceConvertOptions
+    ) => {
+      const file = `clips/voice/${newId('vox')}.wav`
+      const output = projectPath(dir, file)
+      await mkdir(dirname(output), { recursive: true })
+      await voice.convert(requestId, projectPath(dir, clipFile), output, voiceId, opts, (stage) =>
+        event.sender.send(VOICE_PROGRESS_EVENT, requestId, stage)
+      )
+      return { file }
+    }
+  )
+  handle('voice:cancel', (requestId: string) => voice.cancel(requestId))
+
   const stems = new StemsService(sidecar)
   ipcMain.handle('stems:separate', (event, requestId: string, dir: string, clipFile: string) =>
     stems.separate(requestId, dir, clipFile, (progress, stage) =>
@@ -270,5 +329,10 @@ export function registerIpc(): { shutdown(): void } {
     await shell.openPath(logDir())
   })
 
-  return { shutdown: () => sidecar.killNow() }
+  return {
+    shutdown: () => {
+      sidecar.killNow()
+      voice.killAll()
+    }
+  }
 }

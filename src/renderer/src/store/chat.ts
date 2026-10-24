@@ -6,9 +6,10 @@ import { PRODUCER_SYSTEM_PROMPT } from '@shared/producer-prompt'
 import { reviewProject } from '@shared/arrange'
 import { AGENT_PREFIX, createProducerTools, type ProducerHost } from '@shared/producer-tools'
 import { engine } from '../audio/engine'
-import { continueRegion, separateRegion, varyRegion } from './clip-actions'
+import { continueRegion, convertVoiceRegion, separateRegion, varyRegion } from './clip-actions'
 import { useGeneration, vocalProvider, waitForJob } from './generation'
 import { useProject } from './project'
+import { useVoice } from './voice'
 
 /** `at`: cuándo apareció (ms). En herramientas, `endedAt`: cuándo terminaron. */
 export type ChatItem = { at: number } & (
@@ -91,6 +92,12 @@ const host: ProducerHost = {
   extend: (regionId, bars, opts) =>
     agentJob(continueRegion(regionId, bars, { ...opts, messagePrefix: AGENT_PREFIX })),
   separate: (regionId) => separateRegion(regionId, { messagePrefix: AGENT_PREFIX }),
+  myVoices: () => {
+    const { status, voices } = useVoice.getState()
+    return { ready: status.state === 'ready', voices }
+  },
+  convertVoice: (regionId, opts) =>
+    convertVoiceRegion(regionId, { ...opts, messagePrefix: AGENT_PREFIX }),
   playheadSec: () => engine.positionSec,
   play: (sec) => void engine.play(host.getProject(), sec)
 }

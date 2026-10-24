@@ -3,18 +3,22 @@ import { removeRegion } from '@shared/project'
 import { cleanError } from '../store/chat'
 import {
   continueRegion,
+  convertVoiceRegion,
   duplicateRegionAfter,
   separateRegion,
   varyRegion
 } from '../store/clip-actions'
 import { useProject } from '../store/project'
 import { useUi } from '../store/ui'
+import { useVoice } from '../store/voice'
 
 const CONTINUE_BARS = [2, 4, 8]
 
 /** Menú contextual (clic derecho) de una región del timeline. */
 export function RegionMenu(): React.JSX.Element | null {
   const { regionMenu, closeRegionMenu, notify, select } = useUi()
+  const { status: voiceStatus, voices } = useVoice()
+  const project = useProject((s) => s.project)
   const [instructions, setInstructions] = useState('')
   const ref = useRef<HTMLDivElement>(null)
 
@@ -50,6 +54,10 @@ export function RegionMenu(): React.JSX.Element | null {
     fn().catch((err: unknown) => notify(cleanError(err), 'error'))
   }
   const extra = instructions.trim() || undefined
+  // "Cantar con mi voz" solo tiene sentido en pistas de voz (p. ej. la que sale de separar).
+  const isVocal =
+    project?.tracks.find((t) => t.regions.some((r) => r.id === regionId))?.role === 'vocal'
+  const myVoices = voiceStatus.state === 'ready' && isVocal ? voices : []
   const item = 'block w-full rounded px-3 py-1.5 text-left text-sm hover:bg-line'
 
   return (
@@ -115,6 +123,22 @@ export function RegionMenu(): React.JSX.Element | null {
       >
         🎚 Separar en pistas (voz, batería…)
       </button>
+      {myVoices.map((v) => (
+        <button
+          key={v.id}
+          role="menuitem"
+          className={item}
+          title="Convierte esta voz a tu timbre (en CPU tarda unas 2–3 veces lo que dura)"
+          onClick={() =>
+            run(`Cantando con ${v.name} (puede tardar varios minutos)…`, async () => {
+              await convertVoiceRegion(regionId, { voiceId: v.id, voiceName: v.name })
+              useUi.getState().notify(`Listo: pista nueva cantada con ${v.name}`)
+            })
+          }
+        >
+          🎤 Cantar con {v.name}
+        </button>
+      ))}
       <button
         role="menuitem"
         className={item}

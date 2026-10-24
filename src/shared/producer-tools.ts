@@ -79,6 +79,13 @@ export interface ProducerHost {
   ): Promise<{ trackId: string; regionId: string }>
   /** Separa una región en pistas (voz, batería, bajo, otros) con el motor local. */
   separate(regionId: string): Promise<{ trackIds: string[]; stems: string[]; skipped: string[] }>
+  /** "Mi voz": modelos de voz del usuario (RVC) y si el motor que los usa está instalado. */
+  myVoices(): { ready: boolean; voices: { id: string; name: string }[] }
+  /** Convierte una región de voz al timbre de un modelo del usuario (pista nueva debajo). */
+  convertVoice(
+    regionId: string,
+    opts: { voiceId: string; voiceName: string; pitch: number }
+  ): Promise<{ trackId: string; regionId: string }>
   playheadSec(): number
   play(fromSec: number): void
 }
@@ -239,6 +246,13 @@ export function describeProject(p: Project, host: ProducerHost): unknown {
         }
       : null,
     ...(p.vocals && { vocals: p.vocals }),
+    // Solo si el usuario configuró "Mi voz": así el productor no lo ofrece sin más.
+    ...(() => {
+      const mine = host.myVoices()
+      return mine.ready || mine.voices.length > 0
+        ? { my_voice: { ready: mine.ready, voices: mine.voices.map((v) => v.name) } }
+        : {}
+    })(),
     // Qué suena en cada sección: así el productor ve los huecos antes de dar nada por hecho.
     sections: sectionCoverage(p).map(({ section: s, layers, partial, thin }) => ({
       id: s.id,
@@ -673,6 +687,69 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         }
         const regionId = await singSong(songTrack.id)
         return { ok: true, region_id: regionId, track_id: songTrack.id }
+      }
+    },
+    {
+      def: {
+        name: 'sing_with_my_voice',
+        description:
+          "Makes a vocal track sound like the USER'S OWN voice (voice conversion with their trained voice model). The input must be a region of a VOCAL track: for a sung song, first call separate_stems on the song region and use the region of its vocal track. The result is a new track under it and the original vocal track is muted. Slow on CPU: about 2-3 times the length of the audio.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            region_id: { type: 'string', description: 'Region of a vocal track' },
+            voice: {
+              type: 'string',
+              description: 'Name of the user voice (see my_voice.voices). Default: the first one.'
+            },
+            pitch: {
+              type: 'integer',
+              minimum: -24,
+              maximum: 24,
+              description:
+                'Semitones. 0 by default. Use -12 when a female singer is converted to a male voice, +12 for male to female.'
+            }
+          },
+          required: ['region_id'],
+          additionalProperties: false
+        }
+      },
+      run: async (input) => {
+        const mine = host.myVoices()
+        if (!mine.ready) {
+          throw new Error(
+            '"Mi voz" no está instalado. Pide al usuario que lo instale en Ajustes → Mi voz.'
+          )
+        }
+        if (mine.voices.length === 0) {
+          throw new Error(
+            'El usuario aún no tiene ninguna voz suya. Dile que entrene una (Ajustes → Mi voz explica cómo, gratis) y la importe.'
+          )
+        }
+        const wanted = str(input, 'voice', true)?.trim().toLowerCase()
+        const voice = wanted
+          ? (mine.voices.find((v) => v.name.toLowerCase() === wanted) ??
+            mine.voices.find((v) => v.name.toLowerCase().includes(wanted)))
+          : mine.voices[0]
+        if (!voice) {
+          throw new Error(
+            `No existe la voz "${String(input.voice)}". Voces: ${mine.voices.map((v) => v.name).join(', ')}`
+          )
+        }
+        const regionId = str(input, 'region_id')
+        const { track } = findRegion(host.getProject(), regionId)
+        if (track.role !== 'vocal') {
+          throw new Error(
+            `La región está en "${track.name}", que no es una pista de voz. Separa antes la canción con separate_stems y usa la región de su pista de voz.`
+          )
+        }
+        const pitch = Math.round(num(input, 'pitch', -24, 24, true) ?? 0)
+        const r = await host.convertVoice(regionId, {
+          voiceId: voice.id,
+          voiceName: voice.name,
+          pitch
+        })
+        return { ok: true, voice: voice.name, track_id: r.trackId, region_id: r.regionId }
       }
     },
     {
