@@ -45,7 +45,7 @@ get_project_state shows "singing": who sings songs with lyrics ("local" or "clou
 
 singing.engine "cloud": add "lyrics" (lines separated by \\n) to the sung sections. The engine sings the whole song in one take (sections are approximate) and it must fit in vocal_engine.max_song_seconds: about 50-70 bars. To change lyrics or the voice later, use sing_song.
 
-singing.engine "local": the singer sings exactly the notes you write over the instrumental, in tempo and key. Instead of "lyrics", give each sung section a "melody": its phrases in order, each with "notes" = space-separated NOTE:BEATS (beats = quarter notes; R:BEATS is a rest), exactly ONE note per syllable (extra notes stretch the last syllable).
+singing.engine "local": the singer sings exactly the notes you write over the instrumental, in tempo and key. Instead of "lyrics", give each sung section a "melody": its phrases in order, each with "notes" = space-separated NOTE:BEATS (beats = quarter notes; R:BEATS is a rest), ONE note per syllable (extra notes stretch the last syllable). Vowels that touch may share a note, as singers do: "sobre el" = so-brel, "cae" = cae.
 - Example phrase: {"text": "ven a bailar conmigo", "notes": "E4:0.5 G4:0.5 A4 C5 B4:0.5 A4:0.5 G4:2"} (ven-a-bai-lar-con-mi-go = 7 syllables, 7 notes).
 - Use notes of the song's key, stepwise motion with a few leaps, longer notes at the end of phrases, rests between phrases (R:1 or R:2). Keep it in singing.comfortable_range. The phrases of a section must fit in its bars (bars x 4 beats in 4/4); start sections with a short rest if the singer should come in later.
 - The chorus melody is the hook: higher and more repetitive than the verses.

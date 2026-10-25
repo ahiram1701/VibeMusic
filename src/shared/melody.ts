@@ -181,13 +181,17 @@ export function alignLine(
   const pitched = parsed.filter((p) => p.midi !== null)
   if (sung.length === 0) return { notes: [], beats: total }
   if (pitched.length < sung.length) {
-    if (opts.strict) {
+    // Cantando, las vocales que se tocan se unen en una sílaba (sinalefa, sinéresis):
+    // una melodía con menos notas es correcta mientras no baje de ese mínimo.
+    const fewest = sung.length - vowelJoins(words)
+    if (opts.strict && pitched.length < fewest) {
       const split = words.map((w) => w.syllables.join('-')).join(' ')
       throw new Error(
-        `"${line.text}" tiene ${sung.length} sílabas (${split}) y solo ${pitched.length} notas: pon una nota por sílaba`
+        `"${line.text}" tiene ${sung.length} sílabas (${split})${fewest < sung.length ? `, ${fewest} uniendo las vocales que se tocan,` : ''} y solo ${pitched.length} notas: pon una nota por sílaba`
       )
     }
-    // Se parten las notas más largas hasta que haya una por sílaba.
+    // Se parten las notas más largas hasta que haya una por sílaba (como un cantante
+    // que pronuncia rápido las dos vocales unidas).
     const many = [...parsed]
     while (many.filter((p) => p.midi !== null).length < sung.length) {
       const i = many.reduce(
@@ -210,6 +214,27 @@ export function alignLine(
     beat += p.beats
   }
   return { notes: out, beats: total }
+}
+
+const VOWELS = /[aeiouáéíóúü]/
+const endsInVowel = (w: string): boolean => VOWELS.test(w.at(-1) ?? '') || w.endsWith('y')
+const startsWithVowel = (w: string): boolean =>
+  VOWELS.test(w[0] ?? '') || (w[0] === 'h' && VOWELS.test(w[1] ?? '')) || w === 'y'
+
+/**
+ * Cuántas sílabas se pueden unir al cantar: entre palabras (sinalefa: "sobre el" →
+ * so-brel) y dentro de una palabra en hiato (sinéresis: "cae" → cae).
+ */
+export function vowelJoins(words: { word: string; syllables: string[] }[]): number {
+  let joins = 0
+  words.forEach((w, i) => {
+    const next = words[i + 1]
+    if (next && endsInVowel(w.word) && startsWithVowel(next.word)) joins++
+    for (let k = 0; k + 1 < w.syllables.length; k++) {
+      if (endsInVowel(w.syllables[k]) && startsWithVowel(w.syllables[k + 1])) joins++
+    }
+  })
+  return joins
 }
 
 function noteText(p: ParsedNote): string {

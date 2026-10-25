@@ -7,7 +7,8 @@ import {
   noteToMidi,
   parseNotes,
   placeMelody,
-  syllables
+  syllables,
+  vowelJoins
 } from './melody'
 
 describe('sílabas en español', () => {
@@ -77,6 +78,33 @@ describe('notas', () => {
       '+'
     ])
     expect(notes.map((n) => n.beat)).toEqual([4, 4.5, 5, 5.5, 7, 8, 9, 10])
+  })
+
+  it('acepta la sinalefa y la sinéresis, pero no menos notas que eso', () => {
+    // 9 sílabas; cantando "ca-e" y "sobre el" se unen: con 8 notas vale.
+    const luna = alignLine(
+      { text: 'la luna cae sobre el mar', notes: 'A4 A4 B4 C5 B4 A4 G4 A4:2' },
+      0,
+      { strict: true }
+    )
+    expect(luna.notes).toHaveLength(9) // la nota más larga se parte en dos
+    expect(luna.beats).toBe(9)
+    expect(luna.notes.map((n) => n.lyric).slice(0, 4)).toEqual(['la', 'luna', '+', 'cae'])
+    // 7 sílabas sin vocales que se toquen: con 6 notas no vale.
+    expect(() =>
+      alignLine({ text: 'quédate cerca de mí', notes: 'A4 B4 C5 B4 A4 G4' }, 0, { strict: true })
+    ).toThrow(/tiene 7 sílabas \(qué-da-te cer-ca de mí\) y solo 6 notas/)
+    expect(() =>
+      alignLine({ text: 'la luna cae sobre el mar', notes: 'A4 B4 C5 B4 A4 G4' }, 0, {
+        strict: true
+      })
+    ).toThrow(/9 sílabas .*, 7 uniendo las vocales que se tocan, y solo 6 notas/)
+  })
+
+  it('cuenta las vocales que se pueden unir al cantar', () => {
+    expect(vowelJoins(lineSyllables('la luna cae sobre el mar'))).toBe(2)
+    expect(vowelJoins(lineSyllables('mi amor y hoy'))).toBe(2) // "mi amor" y "y hoy"
+    expect(vowelJoins(lineSyllables('caminando por la playa'))).toBe(0)
   })
 
   it('las notas de más alargan la última sílaba; las que faltan dan un error claro', () => {
