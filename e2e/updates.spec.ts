@@ -19,6 +19,7 @@ const launch = async (): Promise<ElectronApplication> =>
       ...process.env,
       VIBE_USER_DATA: join(workDir, 'userdata'),
       VIBE_ENGINE_DIR: join(workDir, 'engine'),
+      VIBE_PROJECTS_DIR: workDir,
       VIBE_FAKE_LLM: '1'
     }
   }))
@@ -96,16 +97,8 @@ test('tras actualizar muestra las novedades una sola vez, sin código ni la list
   await expect(page.getByRole('button', { name: 'Reiniciar ahora' })).toBeVisible()
 
   // Ajustes → Actualizaciones refleja el mismo estado.
-  await electronApp.evaluate(
-    ({ dialog: d }, dir) => {
-      d.showOpenDialog = (async () => ({
-        canceled: false,
-        filePaths: [dir]
-      })) as typeof d.showOpenDialog
-    },
-    join(workDir, 'proyecto')
-  )
   await page.getByRole('button', { name: 'Nuevo proyecto' }).click()
+  await page.getByRole('button', { name: 'Crear' }).click()
   await page.getByRole('button', { name: '⚙ Ajustes' }).click()
   const section = page.getByRole('region', { name: 'Actualizaciones' })
   await expect(section).toContainText(`Versión ${pkg.version}`)

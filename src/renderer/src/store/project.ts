@@ -29,8 +29,10 @@ interface ProjectState {
   history: UndoState
   /** Se incrementa al cargar audio para que las formas de onda se redibujen. */
   clipsLoaded: number
-  newProject(name: string): Promise<void>
-  openProject(): Promise<void>
+  /** Crea el proyecto en una carpeta nueva dentro de `parent`. */
+  newProject(name: string, parent: string): Promise<void>
+  /** Abre un proyecto: el de `dir` (recientes) o el que elija el usuario. */
+  openProject(dir?: string): Promise<void>
   /** Cambio temporal (p. ej. mientras arrastras un fader): se oye pero no crea versión. */
   preview(next: Project): void
   /** Guarda un cambio del usuario (o del agente) como versión nueva y lo hace deshacible. */
@@ -60,9 +62,8 @@ export const useProject = create<ProjectState>((set, get) => ({
   history: emptyUndo,
   clipsLoaded: 0,
 
-  async newProject(name) {
-    const res = await window.vibe.project.create(name)
-    if (!res) return
+  async newProject(name, parent) {
+    const res = await window.vibe.project.create(name, parent)
     engine.stop()
     engine.buffers.clear()
     set({
@@ -73,8 +74,8 @@ export const useProject = create<ProjectState>((set, get) => ({
     })
   },
 
-  async openProject() {
-    const res = await window.vibe.project.open()
+  async openProject(dir) {
+    const res = dir ? await window.vibe.project.openPath(dir) : await window.vibe.project.open()
     if (!res) return
     engine.stop()
     engine.buffers.clear()

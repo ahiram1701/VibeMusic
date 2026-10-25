@@ -1,6 +1,7 @@
+import { existsSync } from 'node:fs'
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import type { Project, VersionMeta } from '@shared/project'
+import { basename, join } from 'node:path'
+import { folderName, type Project, type VersionMeta } from '@shared/project'
 
 // Layout en disco de un proyecto:
 //   <dir>/project.json          estado actual
@@ -23,6 +24,35 @@ export async function initProjectDir(dir: string, project: Project): Promise<Ver
 export async function loadProject(dir: string): Promise<Project> {
   const raw = await readFile(join(dir, 'project.json'), 'utf8')
   return JSON.parse(raw) as Project
+}
+
+export { folderName }
+
+export const isProjectDir = (dir: string): boolean => existsSync(join(dir, 'project.json'))
+
+/**
+ * Carpeta para un proyecto nuevo dentro de `parent`: "<nombre>", o "<nombre> (2)"… si ya
+ * existe. Nunca devuelve una carpeta ocupada, así que crear no pisa nada.
+ */
+export function newProjectDir(parent: string, name: string): string {
+  const base = folderName(name)
+  let dir = join(parent, base)
+  for (let n = 2; existsSync(dir); n++) dir = join(parent, `${base} (${n})`)
+  return dir
+}
+
+/** Abre un proyecto o explica por qué esa carpeta no lo es. */
+export async function openProjectDir(dir: string): Promise<Project> {
+  if (!isProjectDir(dir)) {
+    throw new Error(
+      `"${basename(dir)}" no es un proyecto de VibeMusic (no tiene project.json). Elige la carpeta del proyecto, la que se creó con "Nuevo proyecto".`
+    )
+  }
+  try {
+    return await loadProject(dir)
+  } catch {
+    throw new Error(`El proyecto "${basename(dir)}" está dañado: no se pudo leer su project.json.`)
+  }
 }
 
 export async function listVersions(dir: string): Promise<VersionMeta[]> {
