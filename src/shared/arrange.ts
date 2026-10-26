@@ -21,6 +21,10 @@ import { sectionsOf } from './sections'
 /** Una canción tal como la describe el productor en `compose_song`. */
 export interface SongSpec {
   style: string
+  /** Cómo es la voz que canta, en inglés (solo si hay letra). */
+  vocals: string | null
+  /** Idioma de la letra (ISO 639-1, p. ej. "es"), o null si no se indicó. */
+  language: string | null
   sections: {
     name: string
     bars: number
@@ -29,6 +33,10 @@ export interface SongSpec {
     energy: number | null
     /** Repite el audio de la sección anterior con el mismo nombre en vez de generarlo. */
     reuse: boolean
+    /** Letra cantada en esta sección; null si es instrumental. */
+    lyrics: string | null
+    /** Melodía de la letra para el cantante local (una entrada por frase), o null. */
+    melody: { text: string; notes: string }[] | null
   }[]
 }
 
@@ -105,10 +113,119 @@ export function parseSongSpec(input: Input): SongSpec {
       typeof rawEnergy === 'number' && Number.isFinite(rawEnergy)
         ? Math.min(5, Math.max(1, Math.round(rawEnergy)))
         : null
-    sections.push({ name, bars: Math.round(bars), arrangement, energy, reuse })
+    const melody = parseMelodyLines(it.melody, name)
+    // Con melodía, la letra son sus frases (así no pueden quedar distintas).
+    const lyrics = melody
+      ? melody.map((l) => l.text).join('\n')
+      : typeof it.lyrics === 'string' && it.lyrics.trim()
+        ? cleanLyrics(it.lyrics)
+        : null
+    sections.push({ name, bars: Math.round(bars), arrangement, energy, reuse, lyrics, melody })
   }
   if (sections.every((s) => s.reuse)) throw new Error('Alguna sección tiene que generarse')
-  return { style, sections }
+  const vocals =
+    typeof input.vocals === 'string' && input.vocals.trim() ? input.vocals.trim() : null
+  const rawLanguage = typeof input.language === 'string' ? input.language.trim().toLowerCase() : ''
+  const language = /^[a-z]{2,3}$/.test(rawLanguage) ? rawLanguage : null
+  return { style, vocals, language, sections }
+}
+
+/** Frases con su melodía tal como las manda el LLM: [{text, notes}]. null si no hay. */
+export function parseMelodyLines(
+  raw: unknown,
+  section: string
+): { text: string; notes: string }[] | null {
+  const value = parseJsonish(raw)
+  if (value === undefined || value === null || (Array.isArray(value) && value.length === 0)) {
+    return null
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `Sección "${section}": "melody" debe ser una lista de frases: [{"text": "...", "notes": "A4 B4:0.5 ..."}]`
+    )
+  }
+  return value.map((item, i) => {
+    const it = (item ?? {}) as Input
+    const text = typeof it.text === 'string' ? it.text.trim() : ''
+    const notes = typeof it.notes === 'string' ? it.notes.trim() : ''
+    if (!text || !notes) {
+      throw new Error(`Sección "${section}", frase ${i + 1}: falta "text" o "notes"`)
+    }
+    return { text, notes }
+  })
+}
+
+// --- Letra -------------------------------------------------------------------
+// Los motores que cantan (ACE-Step) reciben la letra de toda la canción en un solo
+// texto, con una etiqueta por sección: "[Verse]", "[Chorus]"… Así saben dónde va
+// cada parte y qué repetir con más fuerza.
+
+/** Quita líneas vacías de más y espacios sobrantes de una letra escrita a mano o por el LLM. */
+export function cleanLyrics(text: string): string {
+  return text
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l, i, all) => l !== '' || (i > 0 && all[i - 1] !== ''))
+    .join('\n')
+    .trim()
+}
+
+const TAGS: [RegExp, string][] = [
+  [/^pre.?(coro|chorus|estribillo)/, 'Pre-Chorus'],
+  [/^(coro|chorus|estribillo|hook|refran)/, 'Chorus'],
+  [/^(verso|verse|estrofa)/, 'Verse'],
+  [/^(puente|bridge)/, 'Bridge'],
+  [/^intro/, 'Intro'],
+  [/^(outro|final|cierre|coda)/, 'Outro']
+]
+
+/** Etiqueta de ACE-Step para una sección según su nombre ("Coro 2" → "Chorus"). */
+export function lyricsTag(name: string, sung: boolean): string {
+  const n = name.normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase()
+  const tag = TAGS.find(([re]) => re.test(n))?.[1]
+  // Sin letra, solo la intro y el final conservan su nombre; el resto es instrumental.
+  if (sung) return tag ?? 'Verse'
+  return tag === 'Intro' || tag === 'Outro' ? tag : 'Instrumental'
+}
+
+/** Letra de la canción completa: una etiqueta por sección y su texto (vacío si es instrumental). */
+export function formatLyrics(sections: { name: string; lyrics?: string | null }[]): string {
+  return sections
+    .map((s) => {
+      const text = s.lyrics ? cleanLyrics(s.lyrics) : ''
+      const tag = `[${lyricsTag(s.name, !!text)}]`
+      return text ? `${tag}\n${text}` : tag
+    })
+    .join('\n\n')
+}
+
+/** ¿Tiene letra alguna sección? */
+export function hasLyrics(sections: { lyrics?: string | null }[]): boolean {
+  return sections.some((s) => !!s.lyrics?.trim())
+}
+
+/**
+ * Lo que hay que pedir al motor para cantar la canción del proyecto entera, de una
+ * vez: descripción del sonido y la voz, la letra con sus etiquetas y cuántos compases
+ * dura (desde el compás 1 hasta el final de la última sección).
+ */
+export function vocalSongRequest(p: Project): {
+  prompt: string
+  lyrics: string
+  language?: string
+  bars: number
+} {
+  const sections = sectionsOf(p)
+  if (!hasLyrics(sections)) throw new Error('La canción no tiene letra')
+  const bars = Math.max(...sections.map((s) => s.startBar + s.bars - 1))
+  const prompt = [p.style?.trim(), p.vocals?.trim()].filter(Boolean).join(', ')
+  return {
+    prompt: prompt || 'song with vocals',
+    lyrics: formatLyrics(sections),
+    ...(p.lyricsLanguage && { language: p.lyricsLanguage }),
+    bars
+  }
 }
 
 /**

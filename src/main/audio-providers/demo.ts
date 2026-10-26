@@ -109,7 +109,8 @@ export const demoProvider: AudioProvider = {
     maxDurationSec: 120,
     supportsSeed: true,
     supportsContinue: true,
-    supportsMelody: false
+    supportsMelody: false,
+    supportsLyrics: false
   },
 
   async status() {

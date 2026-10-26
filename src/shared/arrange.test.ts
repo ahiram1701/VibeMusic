@@ -4,6 +4,7 @@ import {
   fillSections,
   lastRegionIn,
   layerPrompt,
+  lyricsTag,
   loopBars,
   parseSongSpec,
   planChunks,
@@ -12,6 +13,7 @@ import {
   sectionCoverage,
   tileRegions,
   trackBusy,
+  vocalSongRequest,
   type ChunkStep
 } from './arrange'
 import { createProject, createTrack, type Project, type Region } from './project'
@@ -56,9 +58,33 @@ describe('parseSongSpec', () => {
       })
     )
     expect(spec.sections).toEqual([
-      { name: 'Intro', bars: 8, arrangement: 'kick', energy: 5, reuse: false },
-      { name: 'Coro', bars: 8, arrangement: 'all', energy: null, reuse: false },
-      { name: 'coro', bars: 8, arrangement: '', energy: null, reuse: true }
+      {
+        name: 'Intro',
+        bars: 8,
+        arrangement: 'kick',
+        energy: 5,
+        reuse: false,
+        lyrics: null,
+        melody: null
+      },
+      {
+        name: 'Coro',
+        bars: 8,
+        arrangement: 'all',
+        energy: null,
+        reuse: false,
+        lyrics: null,
+        melody: null
+      },
+      {
+        name: 'coro',
+        bars: 8,
+        arrangement: '',
+        energy: null,
+        reuse: true,
+        lyrics: null,
+        melody: null
+      }
     ])
   })
 
@@ -269,5 +295,65 @@ describe('cobertura y revisión', () => {
       ]
     }
     expect(reviewProject(full)).toBeNull()
+  })
+})
+
+describe('letra', () => {
+  it('parseSongSpec guarda letra, voz e idioma (y limpia la letra)', () => {
+    const spec = parseSongSpec({
+      style: 'pop',
+      vocals: ' bright female vocal ',
+      language: 'ES',
+      sections: [
+        { name: 'Intro', bars: 4, arrangement: 'pad' },
+        {
+          name: 'Verso',
+          bars: 8,
+          arrangement: 'beat',
+          lyrics: '  línea uno \r\n\r\n\r\nlínea dos  '
+        }
+      ]
+    })
+    expect(spec.vocals).toBe('bright female vocal')
+    expect(spec.language).toBe('es')
+    expect(spec.sections.map((s) => s.lyrics)).toEqual([null, 'línea uno\n\nlínea dos'])
+    expect(
+      parseSongSpec({
+        style: 'x',
+        language: 'español',
+        sections: [{ name: 'A', bars: 4, arrangement: 'y' }]
+      }).language
+    ).toBeNull()
+  })
+
+  it('lyricsTag reconoce los nombres en español e inglés', () => {
+    expect(lyricsTag('Estribillo 2', true)).toBe('Chorus')
+    expect(lyricsTag('Pre-coro', true)).toBe('Pre-Chorus')
+    expect(lyricsTag('Estrofa', true)).toBe('Verse')
+    expect(lyricsTag('Puente', true)).toBe('Bridge')
+    expect(lyricsTag('Drop', true)).toBe('Verse')
+    expect(lyricsTag('Drop', false)).toBe('Instrumental')
+    expect(lyricsTag('Introducción', false)).toBe('Intro')
+    expect(lyricsTag('Final', false)).toBe('Outro')
+  })
+
+  it('vocalSongRequest junta estilo, voz y letra de todas las secciones', () => {
+    const p = {
+      ...createProject('X'),
+      style: 'ballad',
+      vocals: 'soft male vocal',
+      lyricsLanguage: 'es',
+      sections: [
+        { id: 'b', name: 'Coro', startBar: 9, bars: 8, lyrics: 'te quiero' },
+        { id: 'a', name: 'Verso', startBar: 1, bars: 8 }
+      ]
+    }
+    expect(vocalSongRequest(p)).toEqual({
+      prompt: 'ballad, soft male vocal',
+      lyrics: '[Instrumental]\n\n[Chorus]\nte quiero',
+      language: 'es',
+      bars: 16
+    })
+    expect(() => vocalSongRequest({ ...p, sections: [p.sections[1]] })).toThrow(/no tiene letra/)
   })
 })

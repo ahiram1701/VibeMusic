@@ -58,6 +58,15 @@ export interface GenerateInput {
   mode?: GenerationSpec['mode']
   conditioning?: GenerationSpec['conditioning']
   parentClipId?: string
+  /** Canción con voz: letra con etiquetas de sección e idioma. */
+  lyrics?: string
+  lyricsLanguage?: string
+}
+
+/** Motor que canta letra: el primero listo (o el primero, para explicar qué le falta). */
+export function vocalProvider(): ProviderInfo | undefined {
+  const { singers } = useGeneration.getState()
+  return singers.find((p) => p.ready) ?? singers[0]
 }
 
 /** Resultado de una generación ya colocada en el timeline. */
@@ -68,7 +77,10 @@ export interface GenerationResult {
 }
 
 interface GenerationState {
+  /** Motores para clips y capas (los que se eligen como predeterminados). */
   providers: ProviderInfo[]
+  /** Motores que cantan letra: solo generan canciones completas con voz. */
+  singers: ProviderInfo[]
   settings: AppSettings | null
   jobs: Record<string, JobView>
   init(): Promise<void>
@@ -117,6 +129,7 @@ export function waitForJob(jobId: string): Promise<GenerationResult> {
 
 export const useGeneration = create<GenerationState>((set, get) => ({
   providers: [],
+  singers: [],
   settings: null,
   jobs: {},
 
@@ -136,11 +149,15 @@ export const useGeneration = create<GenerationState>((set, get) => ({
   },
 
   async refresh() {
-    const [providers, settings] = await Promise.all([
+    const [all, settings] = await Promise.all([
       window.vibe.generation.providers(),
       window.vibe.settings.get()
     ])
-    set({ providers, settings })
+    set({
+      providers: all.filter((p) => !p.capabilities.supportsLyrics),
+      singers: all.filter((p) => p.capabilities.supportsLyrics),
+      settings
+    })
   },
 
   async generate(input) {
@@ -154,6 +171,8 @@ export const useGeneration = create<GenerationState>((set, get) => ({
       durationSec: barsToSeconds(input.bars, project),
       mode: input.mode ?? 'text',
       ...(input.conditioning && { conditioning: input.conditioning }),
+      ...(input.lyrics && { lyrics: input.lyrics }),
+      ...(input.lyricsLanguage && { lyricsLanguage: input.lyricsLanguage }),
       // Siempre guardamos una semilla: así cualquier clip se puede volver a generar igual.
       seed: input.seed ?? Math.floor(Math.random() * 2 ** 31)
     }
@@ -206,7 +225,9 @@ export const useGeneration = create<GenerationState>((set, get) => ({
       message: view.placement.message,
       parentClipId: view.placement.parentClipId,
       mode: view.job.spec.mode,
-      conditioning: view.job.spec.conditioning
+      conditioning: view.job.spec.conditioning,
+      lyrics: view.job.spec.lyrics,
+      lyricsLanguage: view.job.spec.lyricsLanguage
     })
   },
 

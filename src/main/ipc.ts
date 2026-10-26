@@ -1,5 +1,6 @@
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron'
 import type { ProviderId } from '@shared/generation'
 import {
@@ -10,13 +11,20 @@ import {
   LOCAL_ENGINE_STATUS_EVENT,
   STEMS_PROGRESS_EVENT,
   UPDATE_STATUS_EVENT,
+  SINGER_LOG_EVENT,
+  SINGER_PROGRESS_EVENT,
+  SINGER_STATUS_EVENT,
+  VOICE_LOG_EVENT,
+  VOICE_PROGRESS_EVENT,
+  VOICE_STATUS_EVENT,
   type IpcChannel,
   type KeyCheck
 } from '@shared/ipc-contract'
 import type { LlmRequest } from '@shared/llm'
 import type { TorchVariant } from '@shared/local-engine'
-import { createProject, type GenerationSpec, type Project } from '@shared/project'
+import { createProject, newId, type GenerationSpec, type Project } from '@shared/project'
 import { demoProvider } from './audio-providers/demo'
+import { createHuggingFaceProvider, verifyHfToken } from './audio-providers/huggingface'
 import { createLocalProvider } from './audio-providers/local'
 import { createReplicateProvider, verifyReplicateToken } from './audio-providers/replicate'
 import type { AudioProvider } from './audio-providers/types'
@@ -27,6 +35,10 @@ import { KeepAwake } from './power'
 import { llmSecret, SettingsStore } from './settings'
 import { SidecarManager } from './sidecar/manager'
 import { StemsService } from './stems'
+import { VoiceEngine } from './voice/engine'
+import { SingerEngine } from './singer/engine'
+import type { SingingEngine } from '@shared/generation'
+import type { VoiceConvertOptions } from '@shared/voice'
 import { checkForUpdates, getUpdateStatus, installUpdate, startAutoUpdates } from './updater'
 import { computeWhatsNew } from './whats-new'
 import {
@@ -39,7 +51,7 @@ import {
   saveProject
 } from './project/store'
 import { ExportFolders, saveFileDialog, type ExportExt } from './export'
-import { importAudio, readClip, writeClip } from './project/clips'
+import { importAudio, projectPath, readClip, writeClip } from './project/clips'
 
 function handle(channel: IpcChannel, fn: (...args: never[]) => unknown): void {
   ipcMain.handle(channel, (_event, ...args) => fn(...(args as never[])))
@@ -78,7 +90,8 @@ export function registerIpc(): { shutdown(): void } {
   const providers = new Map<ProviderId, AudioProvider>([
     ['demo', demoProvider],
     ['replicate', createReplicateProvider(() => settings.getReplicateToken())],
-    ['local', createLocalProvider(sidecar, () => settings.getLocalModel())]
+    ['local', createLocalProvider(sidecar, () => settings.getLocalModel())],
+    ['huggingface', createHuggingFaceProvider(() => settings.getHfToken())]
   ])
   const queue = new GenerationQueue(providers)
   const keepAwake = new KeepAwake()
@@ -176,6 +189,14 @@ export function registerIpc(): { shutdown(): void } {
     }
   })
   handle('settings:clearReplicateToken', () => settings.setReplicateToken(null))
+  handle('settings:setHfToken', (token: string) =>
+    check(async () => {
+      const name = await verifyHfToken(token.trim())
+      await settings.setHfToken(token.trim())
+      return name
+    })
+  )
+  handle('settings:clearHfToken', () => settings.setHfToken(null))
   handle('settings:setDefaultProvider', (id: ProviderId) => settings.setDefaultProvider(id))
 
   handle('settings:setLocalModel', (id: string) => settings.setLocalModel(id))
@@ -197,6 +218,82 @@ export function registerIpc(): { shutdown(): void } {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
   })
+
+  // "Mi voz": conversión de voz con RVC (Applio) en su propio entorno de Python.
+  const voice = new VoiceEngine(
+    process.env['VIBE_VOICE_DIR'] ?? join(homedir(), '.vibemusic', 'voice')
+  )
+  voice.onStatus((s) => broadcast(VOICE_STATUS_EVENT, s))
+  voice.onLog((line) => broadcast(VOICE_LOG_EVENT, line))
+  const result = async (fn: () => Promise<unknown>) => {
+    try {
+      await fn()
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+  handle('voice:status', () => voice.status())
+  handle('voice:install', () => result(() => voice.install()))
+  handle('voice:uninstall', () => voice.uninstall())
+  handle('voice:list', () => voice.listVoices())
+  handle('voice:import', async () => {
+    const res = await dialog.showOpenDialog({
+      title: 'Importar tu voz (.zip, o el .pth con su .index)',
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'Voz RVC', extensions: ['zip', 'pth', 'index'] }]
+    })
+    if (res.canceled || res.filePaths.length === 0) return null
+    try {
+      return { ok: true, voice: await voice.importVoice(res.filePaths) }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+  handle('voice:remove', (id: string) => voice.removeVoice(id))
+  ipcMain.handle(
+    'voice:convert',
+    async (
+      event,
+      requestId: string,
+      dir: string,
+      clipFile: string,
+      voiceId: string,
+      opts: VoiceConvertOptions
+    ) => {
+      const file = `clips/voice/${newId('vox')}.wav`
+      const output = projectPath(dir, file)
+      await mkdir(dirname(output), { recursive: true })
+      await voice.convert(requestId, projectPath(dir, clipFile), output, voiceId, opts, (stage) =>
+        event.sender.send(VOICE_PROGRESS_EVENT, requestId, stage)
+      )
+      return { file }
+    }
+  )
+  handle('voice:cancel', (requestId: string) => voice.cancel(requestId))
+
+  // Cantante local: DiffSinger en OpenUtau sin interfaz, en su propia carpeta.
+  const singer = new SingerEngine(
+    process.env['VIBE_SINGER_DIR'] ?? join(homedir(), '.vibemusic', 'singer')
+  )
+  singer.onStatus((s) => broadcast(SINGER_STATUS_EVENT, s))
+  singer.onLog((line) => broadcast(SINGER_LOG_EVENT, line))
+  handle('singer:status', () => singer.status())
+  handle('singer:install', () => result(() => singer.install()))
+  handle('singer:uninstall', () => singer.uninstall())
+  ipcMain.handle('singer:render', async (event, requestId: string, dir: string, ustx: string) => {
+    const id = newId('sng')
+    const project = projectPath(dir, `clips/voice/${id}.ustx`)
+    const file = `clips/voice/${id}.wav`
+    await mkdir(dirname(project), { recursive: true })
+    await writeFile(project, ustx)
+    await singer.render(requestId, project, projectPath(dir, file), (stage) =>
+      event.sender.send(SINGER_PROGRESS_EVENT, requestId, stage)
+    )
+    return { file }
+  })
+  handle('singer:cancel', (requestId: string) => singer.cancel(requestId))
+  handle('settings:setSingingEngine', (engine: SingingEngine) => settings.setSingingEngine(engine))
 
   const stems = new StemsService(sidecar)
   ipcMain.handle('stems:separate', (event, requestId: string, dir: string, clipFile: string) =>
@@ -283,5 +380,11 @@ export function registerIpc(): { shutdown(): void } {
     await shell.openPath(logDir())
   })
 
-  return { shutdown: () => sidecar.killNow() }
+  return {
+    shutdown: () => {
+      sidecar.killNow()
+      voice.killAll()
+      singer.killAll()
+    }
+  }
 }

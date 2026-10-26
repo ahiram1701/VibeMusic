@@ -30,6 +30,13 @@ export interface GenerationSpec {
    */
   conditioning?: { clipId: string; file: string; seconds: number }
   mode: GenerationMode
+  /**
+   * Letra cantada (canción completa con voz), con etiquetas de sección como
+   * "[verse]" o "[chorus]". Solo la usan los motores que saben cantar.
+   */
+  lyrics?: string
+  /** Idioma de la letra (ISO 639-1, p. ej. "es"); ayuda al motor a pronunciarla bien. */
+  lyricsLanguage?: string
 }
 
 export interface Clip {
@@ -85,6 +92,10 @@ export interface Project {
    * añade a cada capa nueva para que todas suenen a la misma canción.
    */
   style?: string
+  /** Cómo es la voz que canta (en inglés, p. ej. "warm female pop vocal"). */
+  vocals?: string
+  /** Idioma de la letra (ISO 639-1). */
+  lyricsLanguage?: string
 }
 
 /** Una parte de la canción, medida en compases (el primero es el 1). */
@@ -95,6 +106,13 @@ export interface Section {
   bars: number
   /** Sección escasa a propósito (intro de solo batería, break…): no avisa de "una sola capa". */
   sparse?: boolean
+  /** Letra que se canta en esta sección (vacía o ausente: instrumental). */
+  lyrics?: string
+  /**
+   * Melodía de la letra para el cantante local: una frase por línea con sus notas
+   * ("A4:0.5 B4 …", ver shared/melody.ts).
+   */
+  melody?: { text: string; notes: string }[]
 }
 
 export interface VersionMeta {

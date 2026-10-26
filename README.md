@@ -14,6 +14,18 @@ refinándolo por conversación con historial de versiones.
 Para generar con IA puedes usar el motor **Demo** (sin instalar nada), **Replicate** (token en
 Ajustes) o el motor **Local**, que se instala desde ⚙ Ajustes y necesita Python 3.10–3.13.
 
+Las canciones **con voz** (letra cantada) tienen dos motores; el productor escribe la letra, y
+puedes editarla en la pestaña **Letra**:
+
+- **Cantante local** (DiffSinger con la voz Hoshino Hanami de Lotte V): canta en tu equipo, gratis y
+  sin límite, la melodía que compone el productor encima del instrumental. Suena a cantante virtual.
+  Se instala desde ⚙ Ajustes (~650 MB, no necesita Python ni GPU).
+- **Nube** (ACE-Step en Hugging Face): canta la canción entera con voz natural. Es gratis, pero con
+  una cuota diaria de GPU (una o dos canciones al día; más con tu token gratuito de HF).
+
+Con **Mi voz** (RVC con Applio) una voz cantada se convierte a tu timbre. Se entrena una sola vez,
+gratis, con el cuaderno `notebooks/entrenar-mi-voz.ipynb` en Colab o Kaggle.
+
 ## Desarrollo
 
 ```bash
@@ -36,12 +48,15 @@ python server.py                 # http://127.0.0.1:8765/health
 
 ## Arquitectura
 
-| Capa              | Ruta            | Rol                                                                      |
-| ----------------- | --------------- | ------------------------------------------------------------------------ |
-| Modelo compartido | `src/shared/`   | `Project`, `Track`, `Region`, `Clip`, `GenerationSpec`, contrato IPC     |
-| Main (Node)       | `src/main/`     | Persistencia y versiones, agente productor, proveedores de audio, export |
-| Renderer (React)  | `src/renderer/` | Chat, timeline, mezclador, motor Web Audio                               |
-| Sidecar (Python)  | `sidecar/`      | MusicGen / Stable Audio Open / Demucs vía FastAPI                        |
+| Capa              | Ruta                                       | Rol                                                                      |
+| ----------------- | ------------------------------------------ | ------------------------------------------------------------------------ |
+| Modelo compartido | `src/shared/`                              | `Project`, `Track`, `Region`, `Clip`, `GenerationSpec`, contrato IPC     |
+| Main (Node)       | `src/main/`                                | Persistencia y versiones, agente productor, proveedores de audio, export |
+| Renderer (React)  | `src/renderer/`                            | Chat, timeline, mezclador, motor Web Audio                               |
+| Sidecar (Python)  | `sidecar/`                                 | MusicGen / Stable Audio Open / Demucs vía FastAPI                        |
+| Voces (nube)      | `src/main/audio-providers/huggingface.ts`  | ACE-Step 1.5 en su Space de Hugging Face (API de Gradio)                 |
+| Cantante local    | `src/main/singer/`, `src/shared/melody.ts` | OpenUtau sin interfaz + DiffSinger (motor en `singer-engine/`)           |
+| Mi voz            | `src/main/voice/`                          | RVC con Applio en un entorno de Python propio                            |
 
 Un proyecto es una carpeta: `project.json`, `versions/<n>.json` (snapshots) y `clips/*.wav`.
 

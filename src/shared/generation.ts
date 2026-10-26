@@ -3,13 +3,22 @@ import type { GenerationSpec } from './project'
 
 // Tipos compartidos del sistema de generación de audio (main ↔ renderer).
 
-export type ProviderId = 'demo' | 'replicate' | 'local'
+export type ProviderId = 'demo' | 'replicate' | 'local' | 'huggingface'
+
+/**
+ * Quién canta: 'cloud' = ACE-Step en Hugging Face (canción completa, pocas al día);
+ * 'local' = cantante DiffSinger en este equipo (pista de voz sobre el instrumental, sin
+ * límite); 'auto' = el local si está instalado y, si no, la nube.
+ */
+export type SingingEngine = 'auto' | 'cloud' | 'local'
 
 export interface ProviderCapabilities {
   maxDurationSec: number
   supportsSeed: boolean
   supportsContinue: boolean
   supportsMelody: boolean
+  /** Canta letra: genera la canción completa con voz a partir de `lyrics`. */
+  supportsLyrics: boolean
 }
 
 export interface ProviderInfo {
@@ -51,6 +60,10 @@ export interface AppSettings {
   defaultProvider: ProviderId
   /** Solo indica si hay token guardado; el token nunca sale del proceso principal. */
   hasReplicateToken: boolean
+  /** Hay token de Hugging Face guardado (más cuota gratuita para cantar). */
+  hasHfToken: boolean
+  /** Quién canta las canciones con letra (ver SingingEngine). */
+  singingEngine: SingingEngine
   /** Modelo del motor local (ver LOCAL_MODELS). */
   localModel: string
   llm: LlmSettings

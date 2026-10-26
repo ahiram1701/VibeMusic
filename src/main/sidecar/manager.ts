@@ -4,6 +4,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import type { LocalDevice, LocalEngineStatus, TorchVariant } from '@shared/local-engine'
+import { defaultPythonCandidates, pickPython, runLogged } from './python'
 
 // Gestor del motor local (sidecar Python):
 //   · instala un entorno virtual propio en una carpeta corta (no toca el Python del sistema)
@@ -85,6 +86,7 @@ export class SidecarManager {
   private log(line: string): void {
     for (const fn of this.logListeners) fn(line)
   }
+  private readonly logLine = (line: string): void => this.log(line)
 
   get baseUrl(): string {
     return `http://127.0.0.1:${this.port}`
@@ -132,14 +134,14 @@ export class SidecarManager {
       if (process.platform === 'win32' && this.envDir.length + DEEPEST_TORCH_PATH > WINDOWS_MAX_PATH) {
         throw new Error(`La carpeta del motor (${this.envDir}) es demasiado larga. ${LONG_PATHS_HELP}`)
       }
-      const base = await this.pickPython()
+      const base = await pickPython(await this.findPython(), this.logLine)
       await rm(this.envDir, { recursive: true, force: true })
       await mkdir(this.envDir, { recursive: true })
 
       this.set({ state: 'installing', variant, step: 'Creando el entorno…' })
-      await this.run(base[0], [...base.slice(1), '-m', 'venv', this.envDir])
+      await runLogged(base[0], [...base.slice(1), '-m', 'venv', this.envDir], this.logLine)
       const pip = (args: string[]): Promise<void> =>
-        this.run(this.python, ['-m', 'pip', '--disable-pip-version-check', ...args])
+        runLogged(this.python, ['-m', 'pip', '--disable-pip-version-check', ...args], this.logLine)
 
       this.set({ state: 'installing', variant, step: 'Instalando el servidor…' })
       await pip(['install', '-r', join(this.paths.sidecarDir, 'requirements.txt')])
@@ -181,14 +183,18 @@ export class SidecarManager {
     await this.stop()
     this.set({ state: 'installing', variant: marker.variant, step: 'Instalando la separación de pistas…' })
     try {
-      await this.run(this.python, [
+      await runLogged(
+        this.python,
+        [
         '-m',
         'pip',
         '--disable-pip-version-check',
         'install',
         '-r',
-        join(this.paths.sidecarDir, 'requirements-stems.txt')
-      ])
+          join(this.paths.sidecarDir, 'requirements-stems.txt')
+        ],
+        this.logLine
+      )
       await writeFile(this.markerFile, JSON.stringify({ ...marker, stems: true }, null, 2))
       this.log('✓ Separación de pistas instalada.')
       this.set({ state: 'stopped', variant: marker.variant, stems: true })
@@ -287,65 +293,6 @@ export class SidecarManager {
     this.proc?.kill()
     this.proc = null
   }
-
-  private async pickPython(): Promise<string[]> {
-    const tried: string[] = []
-    for (const candidate of await this.findPython()) {
-      const cmd = candidate.split(' ')
-      tried.push(candidate)
-      try {
-        const out = await this.capture(cmd[0], [
-          ...cmd.slice(1),
-          '-c',
-          'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")'
-        ])
-        const [major, minor] = out.trim().split('.').map(Number)
-        if (major === 3 && minor >= 10 && minor <= 13) {
-          this.log(`Usando Python ${out.trim()} (${candidate})`)
-          return cmd
-        }
-        this.log(`Python ${out.trim()} (${candidate}) no es compatible: hace falta 3.10–3.13`)
-      } catch {
-        // no existe ese comando
-      }
-    }
-    throw new Error(
-      `No se encontró Python 3.10–3.13 (probado: ${tried.join(', ')}). Instálalo desde python.org y vuelve a intentarlo.`
-    )
-  }
-
-  /** Ejecuta un comando mostrando su salida en el registro. */
-  private run(cmd: string, args: string[]): Promise<void> {
-    this.log(`$ ${[cmd, ...args].join(' ')}`)
-    return new Promise((resolve, reject) => {
-      const p = spawn(cmd, args, { windowsHide: true, env: { ...process.env, PYTHONUNBUFFERED: '1' } })
-      const onData = (d: Buffer): void => {
-        for (const line of d.toString().split(/\r?\n/).filter(Boolean)) this.log(line)
-      }
-      p.stdout?.on('data', onData)
-      p.stderr?.on('data', onData)
-      p.on('error', reject)
-      p.on('exit', (code) =>
-        code === 0 ? resolve() : reject(new Error(`"${cmd} ${args.slice(0, 3).join(' ')}…" terminó con código ${code}`))
-      )
-    })
-  }
-
-  private capture(cmd: string, args: string[]): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const p = spawn(cmd, args, { windowsHide: true })
-      let out = ''
-      p.stdout?.on('data', (d: Buffer) => (out += d.toString()))
-      p.on('error', reject)
-      p.on('exit', (code) => (code === 0 ? resolve(out) : reject(new Error(`código ${code}`))))
-    })
-  }
-}
-
-async function defaultPythonCandidates(): Promise<string[]> {
-  return process.platform === 'win32'
-    ? ['py -3.12', 'py -3.11', 'py -3.13', 'python', 'py -3']
-    : ['python3.12', 'python3.11', 'python3', 'python']
 }
 
 function freePort(): Promise<number> {

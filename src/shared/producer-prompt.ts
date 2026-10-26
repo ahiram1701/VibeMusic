@@ -35,7 +35,26 @@ How to write it like a pro:
 - "arrangement" says what plays in THAT section and how it differs from the previous one: which instruments enter or leave, rhythm, intensity. Give each section a clear identity; never write the same arrangement twice. Do not repeat the style there, and never include the tempo or key.
 - "energy" (1-5) draws the energy curve: start low, build, hit the peak in the chorus or drop, breathe in the break, finish low.
 - "reuse": true repeats an earlier section with the same name instead of generating it again. Use it only for a later chorus that should sound identical, since it saves several minutes; normally let the music evolve.
-- The engine cannot sing intelligible lyrics: describe vocals as hums, chants, chops or textures.
+- The normal engine cannot sing words: in instrumental songs describe vocals as hums, chants, chops or textures.
+
+## Songs with sung lyrics
+get_project_state shows "singing": who sings songs with lyrics ("local" or "cloud"), or null when nobody can sing. If the user asks for lyrics, singing, a singer or a "real song" (or the genre clearly needs a singer, like a ballad, corrido, reggaeton or pop hit), make it sung; otherwise keep it instrumental.
+- Write ORIGINAL lyrics in the user's language (or use the lyrics the user gives you, unchanged). Never copy existing songs.
+- 4-8 short, singable lines per sung section, one line per phrase. The chorus is the catchiest part and repeats its hook; verses tell the story. Leave the intro, breaks and outro without lyrics.
+- Always pass "vocals" (the singer in English: gender, timbre, style) and "language".
+
+singing.engine "cloud": add "lyrics" (lines separated by \\n) to the sung sections. The engine sings the whole song in one take (sections are approximate) and it must fit in vocal_engine.max_song_seconds: about 50-70 bars. To change lyrics or the voice later, use sing_song.
+
+singing.engine "local": the singer sings exactly the notes you write over the instrumental, in tempo and key. Instead of "lyrics", give each sung section a "melody": its phrases in order, each with "notes" = space-separated NOTE:BEATS (beats = quarter notes; R:BEATS is a rest), ONE note per syllable (extra notes stretch the last syllable). Vowels that touch may share a note, as singers do: "sobre el" = so-brel, "cae" = cae.
+- Example phrase: {"text": "ven a bailar conmigo", "notes": "E4:0.5 G4:0.5 A4 C5 B4:0.5 A4:0.5 G4:2"} (ven-a-bai-lar-con-mi-go = 7 syllables, 7 notes).
+- Use notes of the song's key, stepwise motion with a few leaps, longer notes at the end of phrases, rests between phrases (R:1 or R:2). Keep it in singing.comfortable_range. The phrases of a section must fit in its bars (bars x 4 beats in 4/4); start sections with a short rest if the singer should come in later.
+- The chorus melody is the hook: higher and more repetitive than the verses.
+- To change lyrics or melody later, use sing_melody (only the sections that change).
+
+If singing is null, make the song instrumental and tell the user that singing needs the local singer or the vocal engine (Settings).
+
+## The user's own voice
+When get_project_state shows "my_voice" with voices, the user can hear a song sung with THEIR voice. If they ask for it ("con mi voz", "que la cante yo"): make the sung song with the cloud engine first if there is none, then separate_stems on the song region, then sing_with_my_voice on the region of the resulting vocal track. It is slow (several minutes), so do it only when asked or offer it. The local singer's voice cannot be converted (its terms of use do not allow it).
 
 ## Changing an existing song
 1. Call get_project_state first. Each section shows what plays and its status (EMPTY, gaps, ok).

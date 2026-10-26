@@ -3,6 +3,8 @@ import type { GenerationJob } from '@shared/generation'
 import type { LlmRetry } from '@shared/llm'
 import type { LocalEngineStatus } from '@shared/local-engine'
 import type { UpdateStatus } from '@shared/update'
+import type { VoiceEngineStatus } from '@shared/voice'
+import type { SingerEngineStatus } from '@shared/singer'
 import {
   GENERATION_UPDATE_EVENT,
   LLM_DELTA_EVENT,
@@ -10,7 +12,13 @@ import {
   LOCAL_ENGINE_LOG_EVENT,
   LOCAL_ENGINE_STATUS_EVENT,
   STEMS_PROGRESS_EVENT,
+  SINGER_LOG_EVENT,
+  SINGER_PROGRESS_EVENT,
+  SINGER_STATUS_EVENT,
   UPDATE_STATUS_EVENT,
+  VOICE_LOG_EVENT,
+  VOICE_PROGRESS_EVENT,
+  VOICE_STATUS_EVENT,
   type IpcChannel,
   type VibeApi
 } from '@shared/ipc-contract'
@@ -81,6 +89,56 @@ const api: VibeApi = {
       return () => ipcRenderer.removeListener(LOCAL_ENGINE_LOG_EVENT, handler)
     }
   },
+  singer: {
+    status: () => invoke('singer:status'),
+    install: () => invoke('singer:install'),
+    uninstall: () => invoke('singer:uninstall'),
+    render: (requestId, dir, ustx) => invoke('singer:render', requestId, dir, ustx),
+    cancel: (requestId) => invoke('singer:cancel', requestId),
+    onStatus: (listener) => {
+      const handler = (_e: Electron.IpcRendererEvent, s: SingerEngineStatus): void => listener(s)
+      ipcRenderer.on(SINGER_STATUS_EVENT, handler)
+      return () => ipcRenderer.removeListener(SINGER_STATUS_EVENT, handler)
+    },
+    onLog: (listener) => {
+      const handler = (_e: Electron.IpcRendererEvent, line: string): void => listener(line)
+      ipcRenderer.on(SINGER_LOG_EVENT, handler)
+      return () => ipcRenderer.removeListener(SINGER_LOG_EVENT, handler)
+    },
+    onProgress: (listener) => {
+      const handler = (_e: Electron.IpcRendererEvent, requestId: string, stage: string): void =>
+        listener(requestId, stage)
+      ipcRenderer.on(SINGER_PROGRESS_EVENT, handler)
+      return () => ipcRenderer.removeListener(SINGER_PROGRESS_EVENT, handler)
+    }
+  },
+  voice: {
+    status: () => invoke('voice:status'),
+    install: () => invoke('voice:install'),
+    uninstall: () => invoke('voice:uninstall'),
+    list: () => invoke('voice:list'),
+    importVoice: () => invoke('voice:import'),
+    remove: (id) => invoke('voice:remove', id),
+    convert: (requestId, dir, clipFile, voiceId, opts) =>
+      invoke('voice:convert', requestId, dir, clipFile, voiceId, opts),
+    cancel: (requestId) => invoke('voice:cancel', requestId),
+    onStatus: (listener) => {
+      const handler = (_e: Electron.IpcRendererEvent, s: VoiceEngineStatus): void => listener(s)
+      ipcRenderer.on(VOICE_STATUS_EVENT, handler)
+      return () => ipcRenderer.removeListener(VOICE_STATUS_EVENT, handler)
+    },
+    onLog: (listener) => {
+      const handler = (_e: Electron.IpcRendererEvent, line: string): void => listener(line)
+      ipcRenderer.on(VOICE_LOG_EVENT, handler)
+      return () => ipcRenderer.removeListener(VOICE_LOG_EVENT, handler)
+    },
+    onProgress: (listener) => {
+      const handler = (_e: Electron.IpcRendererEvent, requestId: string, stage: string): void =>
+        listener(requestId, stage)
+      ipcRenderer.on(VOICE_PROGRESS_EVENT, handler)
+      return () => ipcRenderer.removeListener(VOICE_PROGRESS_EVENT, handler)
+    }
+  },
   stems: {
     separate: (requestId, dir, clipFile) => invoke('stems:separate', requestId, dir, clipFile),
     cancel: (requestId) => invoke('stems:cancel', requestId),
@@ -99,7 +157,10 @@ const api: VibeApi = {
     get: () => invoke('settings:get'),
     setReplicateToken: (token) => invoke('settings:setReplicateToken', token),
     clearReplicateToken: () => invoke('settings:clearReplicateToken'),
+    setHfToken: (token) => invoke('settings:setHfToken', token),
+    clearHfToken: () => invoke('settings:clearHfToken'),
     setDefaultProvider: (id) => invoke('settings:setDefaultProvider', id),
+    setSingingEngine: (engine) => invoke('settings:setSingingEngine', engine),
     setLocalModel: (id) => invoke('settings:setLocalModel', id),
     setLlm: (patch) => invoke('settings:setLlm', patch),
     setLlmKey: (provider, key) => invoke('settings:setLlmKey', provider, key),

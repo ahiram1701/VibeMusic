@@ -242,3 +242,66 @@ export async function separateRegion(
   useProject.setState((s) => ({ clipsLoaded: s.clipsLoaded + 1 }))
   return { trackIds: newTracks.map((t) => t.id), stems: labels, skipped }
 }
+
+/**
+ * "Cantar con mi voz": convierte la voz de una región (una pista de voz, p. ej. la que
+ * sale de separar una canción) al timbre de un modelo RVC del usuario. El resultado va
+ * en una pista nueva justo debajo y la original se silencia (se puede comparar).
+ */
+export async function convertVoiceRegion(
+  regionId: string,
+  opts: { voiceId: string; voiceName: string; pitch?: number } & Pick<
+    ActionOptions,
+    'messagePrefix'
+  >
+): Promise<{ trackId: string; regionId: string }> {
+  const { dir, track, region, clip } = find(regionId)
+  const ui = useUi.getState()
+  const requestId = newId('vox')
+  const taskId = ui.startTask(
+    `Cantando con ${opts.voiceName}`,
+    () => void window.vibe.voice.cancel(requestId)
+  )
+  const off = window.vibe.voice.onProgress((id, stage) => {
+    if (id === requestId) useUi.getState().updateTask(taskId, { progress: null, stage })
+  })
+  let file: string
+  try {
+    ;({ file } = await window.vibe.voice.convert(requestId, dir, clip.file, opts.voiceId, {
+      pitch: opts.pitch ?? 0
+    }))
+  } finally {
+    off()
+    useUi.getState().endTask(taskId)
+  }
+
+  const clipId = newId('clp')
+  const voiceClip: Clip = {
+    id: clipId,
+    file,
+    durationSec: 0,
+    spec: null,
+    provider: 'rvc',
+    parentClipId: clip.id
+  }
+  const buffer = await engine.loadClip(dir, voiceClip)
+  // Se lee el proyecto ahora: pudo cambiar mientras se convertía.
+  const project = useProject.getState().project!
+  const newTrack = {
+    ...createTrack(`Voz · ${opts.voiceName}`, 'vocal'),
+    regions: [{ ...region, id: newId('rgn'), clipId }]
+  }
+  const at = project.tracks.findIndex((t) => t.id === track.id)
+  const tracks = project.tracks.map((t) => (t.id === track.id ? { ...t, mute: true } : t))
+  tracks.splice(at + 1, 0, newTrack)
+  await useProject.getState().commit(
+    {
+      ...project,
+      clips: { ...project.clips, [clipId]: { ...voiceClip, durationSec: buffer.duration } },
+      tracks
+    },
+    `${opts.messagePrefix ?? ''}${track.name} cantada con ${opts.voiceName}`
+  )
+  useProject.setState((s) => ({ clipsLoaded: s.clipsLoaded + 1 }))
+  return { trackId: newTrack.id, regionId: newTrack.regions[0].id }
+}

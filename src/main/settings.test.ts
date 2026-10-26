@@ -38,6 +38,22 @@ describe('SettingsStore', () => {
     expect(await store.getReplicateToken()).toBeNull()
   })
 
+  it('guarda el token de Hugging Face aparte del de Replicate', async () => {
+    const file = join(dir, 'settings.json')
+    const store = new SettingsStore(file, fakeCipher)
+    expect((await store.publicSettings()).hasHfToken).toBe(false)
+    await store.setHfToken('hf_secreto')
+
+    expect(await readFile(file, 'utf8')).not.toContain('hf_secreto')
+    expect(await store.publicSettings()).toMatchObject({
+      hasHfToken: true,
+      hasReplicateToken: false
+    })
+    expect(await new SettingsStore(file, fakeCipher).getHfToken()).toBe('hf_secreto')
+    await store.setHfToken(null)
+    expect(await store.getHfToken()).toBeNull()
+  })
+
   it('recuerda el proveedor por defecto', async () => {
     const file = join(dir, 'settings.json')
     await new SettingsStore(file, fakeCipher).setDefaultProvider('replicate')

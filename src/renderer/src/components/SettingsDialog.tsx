@@ -3,7 +3,10 @@ import type { ProviderId } from '@shared/generation'
 import { useGeneration } from '../store/generation'
 import { LlmSettingsSection } from './LlmSettingsSection'
 import { LocalEngineSection } from './LocalEngineSection'
+import { MyVoiceSection } from './MyVoiceSection'
+import { SingerSection } from './SingerSection'
 import { UpdatesSection } from './UpdatesSection'
+import { VocalsSection } from './VocalsSection'
 
 export function SettingsDialog({ onClose }: { onClose(): void }): React.JSX.Element {
   const { settings, providers, refresh } = useGeneration()
@@ -122,6 +125,18 @@ export function SettingsDialog({ onClose }: { onClose(): void }): React.JSX.Elem
             </p>
           )}
         </section>
+
+        <hr className="my-5 border-line" />
+
+        <SingerSection />
+
+        <hr className="my-5 border-line" />
+
+        <VocalsSection />
+
+        <hr className="my-5 border-line" />
+
+        <MyVoiceSection />
 
         <hr className="my-5 border-line" />
 

@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import type { AppSettings, ProviderId } from '@shared/generation'
+import type { AppSettings, ProviderId, SingingEngine } from '@shared/generation'
 import type { LlmProviderId } from '@shared/llm'
 import { findProvider, LLM_PROVIDERS } from '@shared/llm-providers'
 import { DEFAULT_LOCAL_MODEL, LOCAL_MODELS } from '@shared/local-engine'
@@ -15,13 +15,14 @@ export interface SecretCipher {
   decrypt(data: Buffer): string
 }
 
-/** 'replicateToken' o `llm:<id del proveedor>`. */
-export type SecretName = 'replicateToken' | `llm:${string}`
+/** 'replicateToken', 'hfToken' o `llm:<id del proveedor>`. */
+export type SecretName = 'replicateToken' | 'hfToken' | `llm:${string}`
 
 export const llmSecret = (providerId: string): SecretName => `llm:${providerId}`
 
 interface SettingsFile {
   defaultProvider: ProviderId
+  singingEngine: SingingEngine
   localModel: string
   llmProvider: LlmProviderId
   llmModels: Record<string, string>
@@ -70,6 +71,7 @@ export class SettingsStore {
   private defaults(): SettingsFile {
     return {
       defaultProvider: 'demo',
+      singingEngine: 'auto',
       localModel: DEFAULT_LOCAL_MODEL,
       llmProvider: 'anthropic',
       llmModels: Object.fromEntries(LLM_PROVIDERS.map((p) => [p.id, p.defaultModel])),
@@ -97,6 +99,7 @@ export class SettingsStore {
 
       this.cache = {
         defaultProvider: raw.defaultProvider ?? d.defaultProvider,
+        singingEngine: raw.singingEngine ?? d.singingEngine,
         localModel: raw.localModel ?? d.localModel,
         llmProvider: raw.llmProvider ?? d.llmProvider,
         // Modelos vacíos se rellenan con los del catálogo.
@@ -127,6 +130,8 @@ export class SettingsStore {
     return {
       defaultProvider: s.defaultProvider,
       hasReplicateToken: !!s.secrets.replicateToken,
+      hasHfToken: !!s.secrets.hfToken,
+      singingEngine: s.singingEngine,
       localModel: s.localModel,
       llm: {
         provider: s.llmProvider,
@@ -145,6 +150,13 @@ export class SettingsStore {
   async setDefaultProvider(id: ProviderId): Promise<void> {
     const s = await this.load()
     await this.save({ ...s, defaultProvider: id })
+  }
+
+  async setSingingEngine(engine: SingingEngine): Promise<void> {
+    if (!['auto', 'cloud', 'local'].includes(engine)) {
+      throw new Error(`Motor de canto desconocido: ${engine}`)
+    }
+    await this.save({ ...(await this.load()), singingEngine: engine })
   }
 
   async setLocalModel(id: string): Promise<void> {
@@ -259,5 +271,13 @@ export class SettingsStore {
 
   setReplicateToken(token: string | null): Promise<void> {
     return this.setSecret('replicateToken', token)
+  }
+
+  getHfToken(): Promise<string | null> {
+    return this.getSecret('hfToken')
+  }
+
+  setHfToken(token: string | null): Promise<void> {
+    return this.setSecret('hfToken', token)
   }
 }

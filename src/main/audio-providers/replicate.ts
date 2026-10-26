@@ -79,7 +79,8 @@ export function createReplicateProvider(
       maxDurationSec: MAX_SEC,
       supportsSeed: true,
       supportsContinue: true,
-      supportsMelody: true
+      supportsMelody: true,
+      supportsLyrics: false
     },
 
     async status() {
