@@ -1,9 +1,18 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createProject, createTrack } from '@shared/project'
-import { initProjectDir, listVersions, loadProject, loadVersion, saveProject } from './store'
+import {
+  folderName,
+  initProjectDir,
+  listVersions,
+  loadProject,
+  loadVersion,
+  newProjectDir,
+  openProjectDir,
+  saveProject
+} from './store'
 
 describe('project store', () => {
   let dir: string
@@ -45,5 +54,22 @@ describe('project store', () => {
     const versions = await listVersions(dir)
     expect(versions.map((v) => v.id)).toEqual([1, 2, 3, 4])
     expect((await loadVersion(dir, 4)).bpm).toBe(110)
+  })
+
+  it('da a cada proyecto nuevo su carpeta, sin pisar nunca otra', async () => {
+    expect(folderName('Mi canción: "prueba"?')).toBe('Mi canción prueba')
+    expect(folderName('  ...  ')).toBe('Nueva canción')
+    expect(newProjectDir(dir, 'Balada')).toBe(join(dir, 'Balada'))
+    await initProjectDir(join(dir, 'Balada'), createProject('Balada'))
+    await mkdir(join(dir, 'Balada (2)'))
+    expect(newProjectDir(dir, 'Balada')).toBe(join(dir, 'Balada (3)'))
+  })
+
+  it('al abrir explica si la carpeta no es un proyecto o está dañado', async () => {
+    await expect(openProjectDir(dir)).rejects.toThrow(/no es un proyecto de VibeMusic/)
+    await writeFile(join(dir, 'project.json'), '{roto')
+    await expect(openProjectDir(dir)).rejects.toThrow(/está dañado/)
+    await initProjectDir(dir, createProject('Bien'))
+    expect((await openProjectDir(dir)).name).toBe('Bien')
   })
 })

@@ -15,6 +15,12 @@ import type { VoiceConvertOptions, VoiceEngineStatus, VoiceModel } from './voice
 
 export type KeyCheck = { ok: true; info: string } | { ok: false; error: string }
 
+export interface RecentProject {
+  dir: string
+  name: string
+  openedAt: string
+}
+
 export interface ImportedFile {
   clipId: string
   /** Ruta relativa a la carpeta del proyecto. */
@@ -27,8 +33,19 @@ export interface ImportedFile {
 // TypeScript avisa en ambos lados.
 export interface VibeApi {
   project: {
-    create(name: string): Promise<{ dir: string; project: Project } | null>
+    /** Carpeta donde se crean los proyectos por defecto (Documentos/VibeMusic). */
+    defaultParent(): Promise<string>
+    /** Pide otra carpeta donde crear el proyecto. null si se cancela. */
+    chooseParent(current: string): Promise<string | null>
+    /** Crea el proyecto en una carpeta nueva "<parent>/<nombre>" (nunca pisa otra). */
+    create(name: string, parent: string): Promise<{ dir: string; project: Project }>
+    /** Pide la carpeta de un proyecto y lo abre. null si se cancela; error si no lo es. */
     open(): Promise<{ dir: string; project: Project } | null>
+    /** Abre un proyecto ya conocido (de la lista de recientes). */
+    openPath(dir: string): Promise<{ dir: string; project: Project }>
+    /** Proyectos recientes que siguen existiendo, el último primero. */
+    recent(): Promise<RecentProject[]>
+    forgetRecent(dir: string): Promise<void>
     save(dir: string, project: Project, message: string): Promise<VersionMeta>
     listVersions(dir: string): Promise<VersionMeta[]>
     loadVersion(dir: string, versionId: number): Promise<Project>
@@ -168,8 +185,13 @@ export interface VibeApi {
 }
 
 export type IpcChannel =
+  | 'project:defaultParent'
+  | 'project:chooseParent'
   | 'project:create'
   | 'project:open'
+  | 'project:openPath'
+  | 'project:recent'
+  | 'project:forgetRecent'
   | 'project:save'
   | 'project:listVersions'
   | 'project:loadVersion'

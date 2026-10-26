@@ -126,6 +126,17 @@ export function newId(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`
 }
 
+/** Nombre de carpeta válido en Windows, macOS y Linux a partir del nombre de la canción. */
+export function folderName(name: string): string {
+  const clean = [...name]
+    // Fuera los caracteres de control y los que Windows no admite en nombres de carpeta.
+    .filter((c) => c.charCodeAt(0) >= 32 && !'<>:"/\\|?*'.includes(c))
+    .join('')
+    .replace(/[. ]+$/, '')
+    .trim()
+  return clean.slice(0, 80) || 'Nueva canción'
+}
+
 export function createProject(name: string): Project {
   return {
     schemaVersion: 1,

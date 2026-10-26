@@ -23,6 +23,7 @@ test.beforeAll(async () => {
       VIBE_ENGINE_DIR: join(workDir, 'engine'),
       VIBE_VOICE_DIR: join(workDir, 'voice'),
       VIBE_SINGER_DIR: singerDir!,
+      VIBE_PROJECTS_DIR: workDir,
       VIBE_FAKE_LLM: '1'
     }
   })
@@ -36,16 +37,8 @@ test.afterAll(async () => {
 test('el productor compone con melodía y el cantante local la canta en su pista', async () => {
   test.setTimeout(5 * 60_000)
   const page = await app.firstWindow()
-  await app.evaluate(
-    ({ dialog }, dir) => {
-      dialog.showOpenDialog = (async () => ({
-        canceled: false,
-        filePaths: [dir]
-      })) as typeof dialog.showOpenDialog
-    },
-    join(workDir, 'proyecto')
-  )
   await page.getByRole('button', { name: 'Nuevo proyecto' }).click()
+  await page.getByRole('button', { name: 'Crear' }).click()
 
   await page.getByRole('tab', { name: 'Productor' }).click()
   await page.getByPlaceholder(/Describe/).fill('Haz una canción corta y canta la letra')

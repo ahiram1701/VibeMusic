@@ -27,8 +27,13 @@ const invoke = (channel: IpcChannel, ...args: unknown[]) => ipcRenderer.invoke(c
 
 const api: VibeApi = {
   project: {
-    create: (name) => invoke('project:create', name),
+    defaultParent: () => invoke('project:defaultParent'),
+    chooseParent: (current) => invoke('project:chooseParent', current),
+    create: (name, parent) => invoke('project:create', name, parent),
     open: () => invoke('project:open'),
+    openPath: (dir) => invoke('project:openPath', dir),
+    recent: () => invoke('project:recent'),
+    forgetRecent: (dir) => invoke('project:forgetRecent', dir),
     save: (dir, project, message) => invoke('project:save', dir, project, message),
     listVersions: (dir) => invoke('project:listVersions', dir),
     loadVersion: (dir, id) => invoke('project:loadVersion', dir, id)

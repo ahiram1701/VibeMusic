@@ -7,6 +7,7 @@ import { LyricsPanel } from './components/LyricsPanel'
 import { Mixer } from './components/Mixer'
 import { RegionMenu, TaskList, Toast } from './components/RegionMenu'
 import { SettingsDialog } from './components/SettingsDialog'
+import { StartScreen } from './components/StartScreen'
 import { Timeline } from './components/Timeline'
 import { Transport } from './components/Transport'
 import { UpdateBanner } from './components/UpdateBanner'
@@ -17,7 +18,7 @@ import { useVoice } from './store/voice'
 import { useSinger } from './store/singer'
 
 export default function App(): React.JSX.Element {
-  const { project, newProject, openProject } = useProject()
+  const { project } = useProject()
   const [version, setVersion] = useState('')
   const [showSettings, setShowSettings] = useState(false)
   const [tab, setTab] = useState<'chat' | 'lyrics' | 'manual'>('chat')
@@ -45,29 +46,11 @@ export default function App(): React.JSX.Element {
 
   if (!project) {
     return (
-      <main className="flex h-full flex-col items-center justify-center gap-6">
-        <h1 className="text-4xl font-semibold tracking-tight">
-          Vibe<span className="text-accent">Music</span>
-        </h1>
-        <p className="text-muted">Describe la canción. El productor la construye.</p>
-        <div className="flex gap-3">
-          <button
-            className="rounded-md bg-accent px-4 py-2 font-medium hover:opacity-90"
-            onClick={() => newProject('Nueva canción')}
-          >
-            Nuevo proyecto
-          </button>
-          <button
-            className="rounded-md border border-line px-4 py-2 hover:bg-panel"
-            onClick={openProject}
-          >
-            Abrir…
-          </button>
-        </div>
-        <span className="text-xs text-muted">v{version}</span>
+      <>
+        <StartScreen version={version} />
         <UpdateBanner />
         <WhatsNewDialog />
-      </main>
+      </>
     )
   }
 
