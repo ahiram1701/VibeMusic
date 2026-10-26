@@ -25,7 +25,7 @@
     "dist": "npm run build && electron-builder --publish never"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.135.0",
+    "@anthropic-ai/sdk": "^1.1.0",
     "@gradio/client": "2.7.1",
     "electron-updater": "^6.8.11",
     "lucide-react": "1.55.0",
