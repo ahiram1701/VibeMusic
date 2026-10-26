@@ -33,6 +33,8 @@ interface ProjectState {
   newProject(name: string, parent: string): Promise<void>
   /** Abre un proyecto: el de `dir` (recientes) o el que elija el usuario. */
   openProject(dir?: string): Promise<void>
+  /** Vuelve a la pantalla de inicio (el proyecto ya está guardado). */
+  closeProject(): void
   /** Cambio temporal (p. ej. mientras arrastras un fader): se oye pero no crea versión. */
   preview(next: Project): void
   /** Guarda un cambio del usuario (o del agente) como versión nueva y lo hace deshacible. */
@@ -86,6 +88,12 @@ export const useProject = create<ProjectState>((set, get) => ({
       versions: await window.vibe.project.listVersions(res.dir)
     })
     await get().loadClips()
+  },
+
+  closeProject() {
+    engine.stop()
+    engine.buffers.clear()
+    set({ project: null, dir: null, saved: null, history: emptyUndo, versions: [] })
   },
 
   preview(next) {

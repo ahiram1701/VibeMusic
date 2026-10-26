@@ -15,11 +15,13 @@ import {
   SINGER_LOG_EVENT,
   SINGER_PROGRESS_EVENT,
   SINGER_STATUS_EVENT,
+  MENU_COMMAND_EVENT,
   UPDATE_STATUS_EVENT,
   VOICE_LOG_EVENT,
   VOICE_PROGRESS_EVENT,
   VOICE_STATUS_EVENT,
   type IpcChannel,
+  type MenuCommand,
   type VibeApi
 } from '@shared/ipc-contract'
 
@@ -178,6 +180,11 @@ const api: VibeApi = {
     updateStatus: () => invoke('app:updateStatus'),
     checkForUpdates: () => invoke('app:checkForUpdates'),
     installUpdate: () => invoke('app:installUpdate'),
+    onMenuCommand: (listener) => {
+      const handler = (_e: Electron.IpcRendererEvent, c: MenuCommand): void => listener(c)
+      ipcRenderer.on(MENU_COMMAND_EVENT, handler)
+      return () => ipcRenderer.removeListener(MENU_COMMAND_EVENT, handler)
+    },
     onUpdateStatus: (listener) => {
       const handler = (_e: Electron.IpcRendererEvent, status: UpdateStatus): void =>
         listener(status)

@@ -149,7 +149,7 @@ export function LyricsPanel({ onOpenSettings }: { onOpenSettings(): void }): Rea
             }
             onClick={sing}
           >
-            {singing ? 'Cantando… (puede tardar unos minutos)' : '🎤 Cantar de nuevo'}
+            {singing ? 'Cantando… (puede tardar unos minutos)' : 'Cantar de nuevo'}
           </button>
           {error && <p className="text-xs text-red-400">{error}</p>}
           <p className="text-xs text-muted">

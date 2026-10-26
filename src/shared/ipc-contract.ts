@@ -181,6 +181,8 @@ export interface VibeApi {
     setBusy(busy: boolean): Promise<void>
     /** Abre la carpeta con el registro de la app (para diagnosticar fallos). */
     openLogs(): Promise<void>
+    /** Comandos del menú de la ventana (Archivo, Edición, Ver, Ayuda). */
+    onMenuCommand(listener: (command: MenuCommand) => void): () => void
   }
 }
 
@@ -249,6 +251,20 @@ export type IpcChannel =
   | 'app:setBusy'
   | 'app:openLogs'
 
+/** Comandos que el menú de la ventana pide al renderer. */
+export type MenuCommand =
+  | 'home'
+  | 'import'
+  | 'export'
+  | 'settings'
+  | 'undo'
+  | 'redo'
+  | 'zoomIn'
+  | 'zoomOut'
+  | 'toggleAside'
+  | 'toggleMixer'
+  | 'shortcuts'
+
 /** Eventos main → renderer. */
 export const GENERATION_UPDATE_EVENT = 'generation:update'
 export const LLM_DELTA_EVENT = 'llm:delta'
@@ -263,3 +279,4 @@ export const SINGER_PROGRESS_EVENT = 'singer:progress'
 export const VOICE_LOG_EVENT = 'voice:log'
 export const VOICE_PROGRESS_EVENT = 'voice:progress'
 export const UPDATE_STATUS_EVENT = 'app:update-status'
+export const MENU_COMMAND_EVENT = 'menu:command'

@@ -33,8 +33,7 @@ async function queueDialogs(answers: string[][]): Promise<void> {
   }, answers)
 }
 
-const playButton = (): ReturnType<Page['getByRole']> =>
-  page.getByRole('button', { name: /Play|Stop/ })
+const playButton = (): ReturnType<Page['getByTestId']> => page.getByTestId('play')
 
 const playheadX = (): Promise<number> =>
   page.evaluate(() => {
@@ -90,14 +89,14 @@ test('crear proyecto e importar dos pistas', async () => {
 
 test('play/stop con el botón y la línea de reproducción avanza', async () => {
   await playButton().click()
-  await expect(playButton()).toHaveText('■ Stop')
+  await expect(playButton()).toHaveAttribute('aria-label', 'Parar')
   const x1 = await playheadX()
   await page.waitForTimeout(600)
   const x2 = await playheadX()
   expect(x2).toBeGreaterThan(x1)
 
   await playButton().click()
-  await expect(playButton()).toHaveText('▶ Play')
+  await expect(playButton()).toHaveAttribute('aria-label', 'Reproducir')
   // La línea se redibuja en el siguiente fotograma: se espera a que se asiente
   // antes de medir (en máquinas lentas, como el CI, puede tardar un poco).
   await page.waitForTimeout(150)
@@ -109,21 +108,21 @@ test('play/stop con el botón y la línea de reproducción avanza', async () => 
 test('Espacio alterna play/stop aunque el botón tenga el foco', async () => {
   await playButton().focus()
   await page.keyboard.press('Space')
-  await expect(playButton()).toHaveText('■ Stop')
+  await expect(playButton()).toHaveAttribute('aria-label', 'Parar')
   await page.keyboard.press('Space')
-  await expect(playButton()).toHaveText('▶ Play')
+  await expect(playButton()).toHaveAttribute('aria-label', 'Reproducir')
 })
 
 test('al llegar al final se para y vuelve al inicio', async () => {
-  await page.getByRole('button', { name: '⏮' }).click()
+  await page.getByRole('button', { name: 'Al inicio' }).click()
   await playButton().click()
-  await expect(playButton()).toHaveText('■ Stop')
+  await expect(playButton()).toHaveAttribute('aria-label', 'Parar')
   // Las pistas duran 2 s: debe pararse sola.
-  await expect(playButton()).toHaveText('▶ Play', { timeout: 5000 })
+  await expect(playButton()).toHaveAttribute('aria-label', 'Reproducir', { timeout: 5000 })
   await expect(page.getByText('1.1', { exact: true })).toBeVisible()
   // Y se puede volver a reproducir.
   await playButton().click()
-  await expect(playButton()).toHaveText('■ Stop')
+  await expect(playButton()).toHaveAttribute('aria-label', 'Parar')
   await playButton().click()
 })
 
@@ -132,7 +131,7 @@ const positionText = (): ReturnType<Page['locator']> =>
   page.getByRole('button', { name: 'Posición (clic para ir a otra)' }).locator('span').first()
 
 test('mover la línea: arrastrar el tirador, clic en pista vacía, escribir la posición y atajos', async () => {
-  await page.getByRole('button', { name: '⏮' }).click()
+  await page.getByRole('button', { name: 'Al inicio' }).click()
   const ruler = (await page.getByTestId('ruler').boundingBox())!
   const handle = (await page.getByTestId('playhead-handle').boundingBox())!
   const px = 24 * 4 // píxeles por compás con el zoom inicial (24 por pulso, 4/4)
@@ -168,12 +167,12 @@ test('mover la línea: arrastrar el tirador, clic en pista vacía, escribir la p
   // Arrastrar mientras suena: al soltar sigue sonando.
   await page.keyboard.press('Home')
   await playButton().click()
-  await expect(playButton()).toHaveText('■ Stop')
+  await expect(playButton()).toHaveAttribute('aria-label', 'Parar')
   await page.mouse.move(ruler.x + 10, ruler.y + 5)
   await page.mouse.down()
   await page.mouse.move(ruler.x + 40, ruler.y + 5, { steps: 4 })
   await page.mouse.up()
-  await expect(playButton()).toHaveText('■ Stop')
+  await expect(playButton()).toHaveAttribute('aria-label', 'Parar')
   await playButton().click()
   await page.keyboard.press('Home')
   await expect(positionText()).toHaveText('1.1')
@@ -231,14 +230,14 @@ test('deshacer y rehacer (botones y Ctrl+Z / Ctrl+Y)', async () => {
   await expect(regions).toHaveCount(1)
   await expect(page.locator('ol li').first()).toContainText('Región eliminada')
 
-  await page.getByRole('button', { name: '↶ Deshacer' }).click()
+  await page.getByRole('button', { name: 'Deshacer', exact: true }).click()
   await expect(regions).toHaveCount(2)
   await expect(page.locator('ol li').first()).toContainText('Deshacer: Región eliminada')
 
   await page.keyboard.press('Control+y')
   await expect(regions).toHaveCount(1)
   await expect(page.locator('ol li').first()).toContainText('Rehacer: Región eliminada')
-  await expect(page.getByRole('button', { name: '↷ Rehacer' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Rehacer', exact: true })).toBeDisabled()
 })
 
 test('generar con el motor Demo añade una pista al timeline', async () => {
@@ -301,8 +300,9 @@ test('el productor (chat) mira el proyecto, pone el tempo y genera capas', async
 })
 
 test('ajustes: cualquier proveedor de LLM (Groq, personalizado)', async () => {
-  await page.getByRole('button', { name: '⚙ Ajustes' }).first().click()
+  await page.getByRole('button', { name: 'Ajustes', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Ajustes' })
+  await dialog.getByRole('tab', { name: 'Productor (IA)' }).click()
   const provider = dialog.getByLabel('Proveedor del productor')
 
   await provider.selectOption('groq')
@@ -332,8 +332,9 @@ test('ajustes: cualquier proveedor de LLM (Groq, personalizado)', async () => {
 })
 
 test('motor local sin instalar: lo indica en ajustes y en el panel manual', async () => {
-  await page.getByRole('button', { name: '⚙ Ajustes' }).first().click()
+  await page.getByRole('button', { name: 'Ajustes', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Ajustes' })
+  await dialog.getByRole('tab', { name: 'Motores de audio' }).click()
   await expect(dialog.getByText('Motor de audio: Local (tu equipo)')).toBeVisible()
   // Hay varios motores opcionales: se mira el estado dentro de la sección del motor local.
   const local = dialog.locator('section', { hasText: 'Motor de audio: Local (tu equipo)' })
@@ -438,7 +439,18 @@ test('secciones: añadir, renombrar, redimensionar, bucle y copiar con audio', a
   await expect(sec).toContainText('Estribillo')
   await expect(page.locator('ol li').first()).toContainText('Sección renombrada: Estribillo')
 
-  // Redimensionar arrastrando el borde derecho: de 8 a 1 compás.
+  // Redimensionar arrastrando el borde derecho: de 8 a 1 compás. En ventanas estrechas
+  // (el CI) la sección no cabe: se vuelve al principio y se aleja hasta que se vea entera.
+  const timeline = page.getByRole('region', { name: 'Timeline' })
+  await timeline.evaluate((el) => (el.scrollLeft = 0))
+  let zoomedOut = 0
+  for (;;) {
+    const b = (await sec.boundingBox())!
+    const view = (await timeline.boundingBox())!
+    if (b.x + b.width < view.x + view.width - 20 || zoomedOut >= 6) break
+    await page.getByRole('button', { name: 'Alejar' }).click()
+    zoomedOut++
+  }
   const box = (await sec.boundingBox())!
   const barPx = box.width / 8
   await page.mouse.move(box.x + box.width - 2, box.y + box.height / 2)
@@ -446,19 +458,20 @@ test('secciones: añadir, renombrar, redimensionar, bucle y copiar con audio', a
   await page.mouse.move(box.x + barPx + 1, box.y + box.height / 2, { steps: 5 })
   await page.mouse.up()
   await expect(page.locator('ol li').first()).toContainText('Estribillo: 1 compás')
+  for (let i = 0; i < zoomedOut; i++) await page.getByRole('button', { name: 'Acercar' }).click()
 
   // Bucle: sigue sonando pasado el final de la sección (1 compás) y no se sale de ella.
   await sec.click({ button: 'right' })
   const menu = page.getByRole('menu', { name: 'Acciones de la sección' })
   await menu.getByRole('menuitem', { name: /Repetir en bucle/ }).click()
-  await expect(sec).toContainText('🔁')
+  await expect(sec).toHaveAttribute('data-looping', 'true')
   await playButton().click()
   await page.waitForTimeout(3500) // más que la sección entera
-  await expect(playButton()).toHaveText('■ Stop')
+  await expect(playButton()).toHaveAttribute('aria-label', 'Parar')
   await playButton().click()
   await sec.click({ button: 'right' })
   await menu.getByRole('menuitem', { name: /Quitar bucle/ }).click()
-  await expect(sec).not.toContainText('🔁')
+  await expect(sec).toHaveAttribute('data-looping', 'false')
 
   // Copiar al final con su audio.
   await sec.click({ button: 'right' })
@@ -570,4 +583,73 @@ test('aviso de actualización: se puede posponer y avisa si no hay nada que inst
   await expect(banner).toContainText('No se pudo instalar: No hay ninguna actualización descargada')
   page.off('dialog', accept)
   await expect(page.getByRole('button', { name: 'Reiniciar ahora' })).toBeEnabled()
+})
+
+test('atajos: F1 abre el panel, el buscador filtra y Esc lo cierra', async () => {
+  await page.keyboard.press('F1')
+  const dialog = page.getByRole('dialog', { name: 'Atajos y gestos' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByText('Reproducir / parar')).toBeVisible()
+  await dialog.getByLabel('Buscar atajos').fill('seccion')
+  await expect(dialog.getByText('Sección siguiente')).toBeVisible()
+  await expect(dialog.getByText('Reproducir / parar')).toBeHidden()
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+  // También desde el botón de la cabecera.
+  await page.getByRole('button', { name: 'Atajos y gestos' }).click()
+  await expect(dialog).toBeVisible()
+  await page.keyboard.press('Escape')
+})
+
+test('paneles: el divisor cambia el ancho, se guarda y doble clic lo restablece; ocultar el mezclador', async () => {
+  const aside = page.getByRole('complementary', { name: 'Productor' })
+  const before = (await aside.boundingBox())!.width
+  const bar = (await page.getByTestId('splitter-aside').boundingBox())!
+  await page.mouse.move(bar.x + bar.width / 2, bar.y + 200)
+  await page.mouse.down()
+  await page.mouse.move(bar.x + 120, bar.y + 200, { steps: 6 })
+  await page.mouse.up()
+  const after = (await aside.boundingBox())!.width
+  expect(after).toBeGreaterThan(before + 100)
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('vibe-layout')!))
+  expect(saved.sizes.aside).toBe(Math.round(after))
+  await page.getByTestId('splitter-aside').dblclick()
+  await expect.poll(async () => (await aside.boundingBox())!.width).toBe(340)
+
+  // Ocultar el mezclador da su espacio al timeline.
+  const timeline = page.getByRole('region', { name: 'Timeline' })
+  const h1 = (await timeline.boundingBox())!.height
+  await page.getByRole('button', { name: 'Ocultar el mezclador' }).click()
+  await expect.poll(async () => (await timeline.boundingBox())!.height).toBeGreaterThan(h1 + 100)
+  await page.getByRole('button', { name: 'Mostrar el mezclador' }).click()
+})
+
+test('ajustes en pestañas: Voces muestra el cantante local', async () => {
+  await page.getByRole('button', { name: 'Ajustes', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Ajustes' })
+  await dialog.getByRole('tab', { name: 'Voces' }).click()
+  await expect(dialog.getByText(/Cantante local \(DiffSinger/)).toBeVisible()
+  await expect(dialog.getByText(/Mi voz/).first()).toBeVisible()
+  await expect(dialog.getByText('Motor de audio: Local (tu equipo)')).toBeHidden()
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+})
+
+test('la cabecera cabe a 1024 px de ancho', async () => {
+  const original = await app.evaluate(({ BrowserWindow }) => {
+    const w = BrowserWindow.getAllWindows()[0]
+    const [width, height] = w.getSize()
+    w.setSize(1024, 700)
+    return { width, height }
+  })
+  await expect.poll(() => page.evaluate(() => window.innerWidth)).toBeLessThanOrEqual(1024)
+  const overflow = await page.evaluate(() => {
+    const h = document.querySelector('header')!
+    return h.scrollWidth - h.clientWidth
+  })
+  expect(overflow).toBeLessThanOrEqual(0)
+  await expect(page.getByRole('button', { name: 'Exportar…' })).toBeVisible()
+  await app.evaluate(({ BrowserWindow }, s) => {
+    BrowserWindow.getAllWindows()[0].setSize(s.width, s.height)
+  }, original)
 })

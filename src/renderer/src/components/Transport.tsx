@@ -8,11 +8,28 @@ import {
   type GridResolution,
   type Jump
 } from '@shared/timeline'
+import {
+  CircleHelp,
+  Crosshair,
+  Download,
+  PanelBottom,
+  PanelLeft,
+  Play,
+  Settings,
+  SkipBack,
+  Square,
+  Upload,
+  ZoomIn,
+  ZoomOut
+} from 'lucide-react'
+import { shortcutHint } from '@shared/shortcuts'
 import { engine } from '../audio/engine'
+import { useLayout } from '../store/layout'
 import { useProject } from '../store/project'
 import { useUi } from '../store/ui'
 import { ExportDialog } from './ExportDialog'
 import { zoomAt } from './timeline-view'
+import { Button, Divider, fieldClass, IconButton } from './ui'
 
 const GRIDS: { value: GridResolution; label: string }[] = [
   { value: 'bar', label: 'Compás' },
@@ -25,9 +42,18 @@ const GRIDS: { value: GridResolution; label: string }[] = [
 export function Transport(): React.JSX.Element | null {
   const { project, setTempo, importAudio } = useProject()
   const { grid, setGrid, follow, setFollow } = useUi()
+  const {
+    showAside,
+    showMixer,
+    toggleAside,
+    toggleMixer,
+    openSettings,
+    openShortcuts,
+    exportOpen,
+    openExport
+  } = useLayout()
   // El motor avisa cuando cambia play/stop; React se re-renderiza solo entonces.
   const playing = useSyncExternalStore(engine.subscribe, engine.isPlaying)
-  const [exportOpen, setExportOpen] = useState(false)
 
   useEffect(() => {
     // Espacio = play/stop en toda la app. Se captura antes que nadie y se cancela
@@ -76,23 +102,45 @@ export function Transport(): React.JSX.Element | null {
 
   if (!project) return null
 
-  const btn = 'rounded px-3 py-1 text-sm hover:bg-line'
-
   return (
-    <div className="flex items-center gap-2">
-      <button
-        className={`${btn} w-20 bg-accent/80 font-medium hover:bg-accent`}
-        onClick={() => engine.toggle(project)}
-        title="Espacio"
-      >
-        {playing ? '■ Stop' : '▶ Play'}
-      </button>
-      <button className={btn} onClick={() => engine.seek(project, 0)} title="Al inicio (Inicio)">
-        ⏮
-      </button>
-      <PositionDisplay />
+    <div className="flex min-w-0 flex-1 items-center gap-1">
+      {/* Proyecto */}
+      <div className="mr-1 flex min-w-0 shrink items-baseline gap-2">
+        <strong className="truncate text-sm" title={project.name}>
+          {project.name}
+        </strong>
+        <span className="shrink-0 text-xs text-muted max-lg:hidden">
+          {project.key} · {project.timeSignature.join('/')}
+        </span>
+      </div>
+      <Divider />
 
-      <label className="ml-4 flex items-center gap-1 text-sm text-muted">
+      {/* Transporte */}
+      <button
+        type="button"
+        data-testid="play"
+        aria-label={playing ? 'Parar' : 'Reproducir'}
+        title={`${playing ? 'Parar' : 'Reproducir'} (${shortcutHint('play')})`}
+        onClick={() => engine.toggle(project)}
+        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-white transition hover:brightness-110"
+      >
+        {playing ? (
+          <Square size={14} fill="currentColor" />
+        ) : (
+          <Play size={15} fill="currentColor" />
+        )}
+      </button>
+      <IconButton
+        icon={SkipBack}
+        label="Al inicio"
+        hint={shortcutHint('start')}
+        onClick={() => engine.seek(project, 0)}
+      />
+      <PositionDisplay />
+      <Divider />
+
+      {/* Tempo y rejilla */}
+      <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted" title="Tempo">
         BPM
         <input
           key={project.bpm}
@@ -100,7 +148,7 @@ export function Transport(): React.JSX.Element | null {
           min={40}
           max={240}
           defaultValue={project.bpm}
-          className="w-16 rounded border border-line bg-bg px-2 py-0.5 text-white"
+          className={`${fieldClass} w-16 py-0.5`}
           onBlur={(e) => {
             const bpm = Math.round(Number(e.target.value))
             if (bpm >= 40 && bpm <= 240 && bpm !== project.bpm) {
@@ -110,13 +158,15 @@ export function Transport(): React.JSX.Element | null {
           onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
         />
       </label>
-
-      <label className="ml-2 flex items-center gap-1 text-sm text-muted">
+      <label
+        className="ml-1 flex shrink-0 items-center gap-1.5 text-xs text-muted"
+        title="A qué se ajustan las regiones y la línea al arrastrar"
+      >
         Rejilla
         <select
           value={grid}
           onChange={(e) => setGrid(e.target.value as GridResolution)}
-          className="rounded border border-line bg-bg px-1 py-0.5 text-white"
+          className={`${fieldClass} py-0.5`}
         >
           {GRIDS.map((g) => (
             <option key={g.value} value={g.value}>
@@ -125,42 +175,77 @@ export function Transport(): React.JSX.Element | null {
           ))}
         </select>
       </label>
+      <Divider />
 
-      <button className={btn} onClick={() => zoomAt(0.8, project)} title="Alejar (Ctrl + rueda)">
-        −
-      </button>
-      <button className={btn} onClick={() => zoomAt(1.25, project)} title="Acercar (Ctrl + rueda)">
-        +
-      </button>
-      <button
-        className={`${btn} ${follow ? 'text-white' : 'text-muted'}`}
-        aria-pressed={follow}
+      {/* Vista */}
+      <IconButton
+        icon={ZoomOut}
+        label="Alejar"
+        hint={shortcutHint('zoom')}
+        onClick={() => zoomAt(0.8, project)}
+      />
+      <IconButton
+        icon={ZoomIn}
+        label="Acercar"
+        hint={shortcutHint('zoom')}
+        onClick={() => zoomAt(1.25, project)}
+      />
+      <IconButton
+        icon={Crosshair}
+        label="Seguir la reproducción"
+        active={follow}
         onClick={() => setFollow(!follow)}
-        title="La vista sigue a la línea de reproducción mientras suena"
-      >
-        ⇥ Seguir
-      </button>
+      />
+      <IconButton
+        icon={PanelLeft}
+        label={showAside ? 'Ocultar el panel del productor' : 'Mostrar el panel del productor'}
+        active={showAside}
+        onClick={toggleAside}
+      />
+      <IconButton
+        icon={PanelBottom}
+        label={showMixer ? 'Ocultar el mezclador' : 'Mostrar el mezclador'}
+        active={showMixer}
+        onClick={toggleMixer}
+      />
 
-      <div className="ml-auto flex gap-2">
-        <button className={`${btn} border border-line`} onClick={importAudio}>
-          Importar audio…
-        </button>
-        <button
-          className={`${btn} border border-line disabled:opacity-50`}
-          disabled={project.tracks.length === 0}
-          onClick={() => setExportOpen(true)}
+      {/* Archivo y ayuda */}
+      <div className="ml-auto flex shrink-0 items-center gap-1 pl-2">
+        <Button
+          icon={Upload}
+          size="sm"
+          onClick={importAudio}
+          title="Importar audio…"
+          aria-label="Importar audio…"
         >
-          Exportar…
-        </button>
+          <span className="max-xl:hidden">Importar</span>
+        </Button>
+        <Button
+          icon={Download}
+          size="sm"
+          disabled={project.tracks.length === 0}
+          onClick={() => openExport(true)}
+          title="Exportar…"
+          aria-label="Exportar…"
+        >
+          <span className="max-xl:hidden">Exportar</span>
+        </Button>
+        <IconButton icon={Settings} label="Ajustes" onClick={() => openSettings()} />
+        <IconButton
+          icon={CircleHelp}
+          label="Atajos y gestos"
+          hint={shortcutHint('help')}
+          onClick={() => openShortcuts(true)}
+        />
       </div>
-      {exportOpen && <ExportDialog onClose={() => setExportOpen(false)} />}
+      {exportOpen && <ExportDialog onClose={() => openExport(false)} />}
     </div>
   )
 }
 
 const SHORTCUTS =
   'Clic para escribir adónde ir: un compás (9), compás.tiempo (9.3) o minutos:segundos (1:23).\n' +
-  'Atajos: Espacio play/stop · Inicio/Fin · ←/→ compás · Mayús+←/→ sección'
+  'Todos los atajos: F1'
 
 /**
  * Contador: compás.tiempo, minutos:segundos y duración total. Se actualiza en su

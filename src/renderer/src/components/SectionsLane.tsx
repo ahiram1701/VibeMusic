@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
+import { Copy, Repeat, Square, Trash2 } from 'lucide-react'
+import { MenuItem } from './ui'
 import type { Project, Section } from '@shared/project'
 import {
   appendSection,
@@ -131,6 +133,7 @@ function SectionBlock({
   return (
     <div
       data-testid="section"
+      data-looping={looping}
       className="group absolute top-0.5 bottom-0.5 flex items-center overflow-hidden rounded-sm text-[11px] font-medium text-white"
       style={{
         left: (section.startBar - 1) * barPx,
@@ -170,7 +173,7 @@ function SectionBlock({
         />
       ) : (
         <span className="truncate px-1.5">
-          {looping && '🔁 '}
+          {looping && <Repeat size={11} aria-hidden className="mr-1 inline" />}
           {section.name}
           <span className="ml-1 opacity-70">{bars}</span>
         </span>
@@ -240,7 +243,6 @@ function SectionMenu({
 
   const section = sectionsOf(project).find((s) => s.id === sectionId)
   if (!section) return null
-  const item = 'block w-full rounded px-3 py-1.5 text-left text-sm hover:bg-line'
   const act = (fn: () => void): void => {
     onClose()
     fn()
@@ -253,15 +255,14 @@ function SectionMenu({
       ref={ref}
       role="menu"
       aria-label="Acciones de la sección"
-      className="fixed z-50 w-56 rounded-md border border-line bg-panel p-1 shadow-xl"
+      className="fixed z-50 w-60 rounded-lg border border-line bg-panel p-1 shadow-2xl"
       style={{
         left: Math.min(x, window.innerWidth - 230),
         top: Math.min(y, window.innerHeight - 180)
       }}
     >
-      <button
-        role="menuitem"
-        className={item}
+      <MenuItem
+        icon={looping ? Square : Repeat}
         onClick={() =>
           act(() =>
             engine.setLoop(
@@ -271,11 +272,10 @@ function SectionMenu({
           )
         }
       >
-        {looping ? '⏹ Quitar bucle' : '🔁 Repetir en bucle'}
-      </button>
-      <button
-        role="menuitem"
-        className={item}
+        {looping ? 'Quitar bucle' : 'Repetir en bucle'}
+      </MenuItem>
+      <MenuItem
+        icon={Copy}
         onClick={() =>
           act(
             () =>
@@ -286,11 +286,11 @@ function SectionMenu({
           )
         }
       >
-        ⧉ Copiar al final (con su audio)
-      </button>
-      <button
-        role="menuitem"
-        className={`${item} text-red-400`}
+        Copiar al final (con su audio)
+      </MenuItem>
+      <MenuItem
+        icon={Trash2}
+        danger
         onClick={() =>
           act(() => {
             if (looping) engine.setLoop(project, null)
@@ -298,8 +298,8 @@ function SectionMenu({
           })
         }
       >
-        🗑 Eliminar sección (el audio se queda)
-      </button>
+        Eliminar sección (el audio se queda)
+      </MenuItem>
     </div>,
     document.body
   )
