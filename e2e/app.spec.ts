@@ -439,7 +439,18 @@ test('secciones: añadir, renombrar, redimensionar, bucle y copiar con audio', a
   await expect(sec).toContainText('Estribillo')
   await expect(page.locator('ol li').first()).toContainText('Sección renombrada: Estribillo')
 
-  // Redimensionar arrastrando el borde derecho: de 8 a 1 compás.
+  // Redimensionar arrastrando el borde derecho: de 8 a 1 compás. En ventanas estrechas
+  // (el CI) la sección no cabe: se vuelve al principio y se aleja hasta que se vea entera.
+  const timeline = page.getByRole('region', { name: 'Timeline' })
+  await timeline.evaluate((el) => (el.scrollLeft = 0))
+  let zoomedOut = 0
+  for (;;) {
+    const b = (await sec.boundingBox())!
+    const view = (await timeline.boundingBox())!
+    if (b.x + b.width < view.x + view.width - 20 || zoomedOut >= 6) break
+    await page.getByRole('button', { name: 'Alejar' }).click()
+    zoomedOut++
+  }
   const box = (await sec.boundingBox())!
   const barPx = box.width / 8
   await page.mouse.move(box.x + box.width - 2, box.y + box.height / 2)
@@ -447,6 +458,7 @@ test('secciones: añadir, renombrar, redimensionar, bucle y copiar con audio', a
   await page.mouse.move(box.x + barPx + 1, box.y + box.height / 2, { steps: 5 })
   await page.mouse.up()
   await expect(page.locator('ol li').first()).toContainText('Estribillo: 1 compás')
+  for (let i = 0; i < zoomedOut; i++) await page.getByRole('button', { name: 'Acercar' }).click()
 
   // Bucle: sigue sonando pasado el final de la sección (1 compás) y no se sale de ella.
   await sec.click({ button: 'right' })
