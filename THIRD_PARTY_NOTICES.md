@@ -12,6 +12,10 @@ Codificador MP3 usado al exportar. Se distribuye **sin modificar y como un archi
 sustituirse por otra versión compatible. Código fuente: https://github.com/BreezyStack/lamejs
 y https://lame.sourceforge.io. Texto de la licencia: https://www.gnu.org/licenses/lgpl-3.0.html
 
+### Lucide (`lucide-react`) — licencia ISC
+
+Iconos de la interfaz. https://lucide.dev — © Lucide Contributors.
+
 ### `@gradio/client` (Hugging Face) — licencia ISC
 
 Cliente de la API de Gradio con el que se habla con el Space de ACE-Step.
