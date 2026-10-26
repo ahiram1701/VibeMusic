@@ -22,8 +22,12 @@ interface UiState {
   regionMenu: { regionId: string; x: number; y: number } | null
   /** Aviso breve en pantalla (errores de acciones, confirmaciones). */
   toast: { text: string; tone: 'error' | 'info' } | null
+  /** La vista sigue a la línea de reproducción mientras suena. */
+  follow: boolean
   setGrid(grid: GridResolution): void
-  zoom(factor: number): void
+  /** Acerca o aleja; devuelve el factor que se aplicó de verdad (el zoom tiene topes). */
+  zoom(factor: number): number
+  setFollow(follow: boolean): void
   select(regionId: string | null): void
   openRegionMenu(regionId: string, x: number, y: number): void
   closeRegionMenu(): void
@@ -33,7 +37,7 @@ interface UiState {
 let toastTimer: ReturnType<typeof setTimeout> | undefined
 let taskCounter = 0
 
-export const useUi = create<UiState>((set) => ({
+export const useUi = create<UiState>((set, get) => ({
   tasks: [],
   startTask: (label, cancel) => {
     const id = `task_${++taskCounter}`
@@ -47,11 +51,18 @@ export const useUi = create<UiState>((set) => ({
   endTask: (id) => set((s) => ({ tasks: s.tasks.filter((t) => t.id !== id) })),
   grid: 'beat',
   pxPerBeat: 24,
+  follow: true,
   selectedRegionId: null,
   regionMenu: null,
   toast: null,
   setGrid: (grid) => set({ grid }),
-  zoom: (factor) => set((s) => ({ pxPerBeat: Math.min(200, Math.max(4, s.pxPerBeat * factor)) })),
+  zoom: (factor) => {
+    const before = get().pxPerBeat
+    const pxPerBeat = Math.min(200, Math.max(4, before * factor))
+    set({ pxPerBeat })
+    return pxPerBeat / before
+  },
+  setFollow: (follow) => set({ follow }),
   select: (selectedRegionId) => set({ selectedRegionId }),
   openRegionMenu: (regionId, x, y) =>
     set({ regionMenu: { regionId, x, y }, selectedRegionId: regionId }),

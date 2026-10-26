@@ -120,6 +120,58 @@ test('al llegar al final se para y vuelve al inicio', async () => {
   await playButton().click()
 })
 
+/** compás.tiempo del contador de la barra de transporte. */
+const positionText = (): ReturnType<Page['locator']> =>
+  page.getByRole('button', { name: 'Posición (clic para ir a otra)' }).locator('span').first()
+
+test('mover la línea: arrastrar el tirador, clic en pista vacía, escribir la posición y atajos', async () => {
+  await page.getByRole('button', { name: '⏮' }).click()
+  const ruler = (await page.getByTestId('ruler').boundingBox())!
+  const handle = (await page.getByTestId('playhead-handle').boundingBox())!
+  const px = 24 * 4 // píxeles por compás con el zoom inicial (24 por pulso, 4/4)
+
+  // Arrastrar el tirador hasta el compás 5 (se ajusta a la rejilla).
+  const x0 = await playheadX()
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(ruler.x + 4 * px + 3, ruler.y + 5, { steps: 8 })
+  await page.mouse.up()
+  await expect(positionText()).toHaveText('5.1')
+  expect(await playheadX()).toBeGreaterThan(x0 + 3 * px)
+
+  // Clic en una zona vacía de la primera pista (compás 3).
+  await page.mouse.click(ruler.x + 2 * px + 2, ruler.y + ruler.height + 30)
+  await expect(positionText()).toHaveText('3.1')
+
+  // Escribir adónde ir.
+  await page.getByRole('button', { name: 'Posición (clic para ir a otra)' }).click()
+  await page.getByLabel('Ir a la posición').fill('7')
+  await page.keyboard.press('Enter')
+  await expect(positionText()).toHaveText('7.1')
+
+  // Atajos: Inicio, → (un compás) y Fin (las pistas duran un compás).
+  await page.keyboard.press('Home')
+  await expect(positionText()).toHaveText('1.1')
+  await page.keyboard.press('ArrowRight')
+  await expect(positionText()).toHaveText('2.1')
+  await page.keyboard.press('Home')
+  await page.keyboard.press('End')
+  await expect(positionText()).toHaveText('2.1')
+
+  // Arrastrar mientras suena: al soltar sigue sonando.
+  await page.keyboard.press('Home')
+  await playButton().click()
+  await expect(playButton()).toHaveText('■ Stop')
+  await page.mouse.move(ruler.x + 10, ruler.y + 5)
+  await page.mouse.down()
+  await page.mouse.move(ruler.x + 40, ruler.y + 5, { steps: 4 })
+  await page.mouse.up()
+  await expect(playButton()).toHaveText('■ Stop')
+  await playButton().click()
+  await page.keyboard.press('Home')
+  await expect(positionText()).toHaveText('1.1')
+})
+
 test('restaurar recupera exactamente cada versión', async () => {
   const mute = page.getByRole('button', { name: 'M', exact: true }).first()
   // Clics rápidos seguidos: antes se pisaban las versiones.
