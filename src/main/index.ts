@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, shell } from 'electron'
 import { registerIpc } from './ipc'
+import { buildMenu } from './menu'
 
 // Las pruebas e2e usan su propia carpeta de datos para no tocar los ajustes reales.
 if (process.env['VIBE_USER_DATA']) app.setPath('userData', process.env['VIBE_USER_DATA'])
@@ -34,6 +35,7 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   const services = registerIpc()
+  buildMenu()
   // El motor local es un proceso aparte: se cierra con la app.
   app.on('before-quit', () => services.shutdown())
   createWindow()

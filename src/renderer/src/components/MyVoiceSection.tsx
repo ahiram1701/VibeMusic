@@ -80,7 +80,7 @@ export function MyVoiceSection(): React.JSX.Element {
                 {voices.map((v) => (
                   <li key={v.id} className="flex items-center gap-2">
                     <span className="flex-1">
-                      🎤 {v.name}
+                      {v.name}
                       {!v.hasIndex && <span className="text-muted"> (sin .index)</span>}
                     </span>
                     <button

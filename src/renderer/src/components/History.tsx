@@ -1,4 +1,6 @@
 import { useEffect } from 'react'
+import { Redo2, Undo2 } from 'lucide-react'
+import { Button } from './ui'
 import type { VersionMeta } from '@shared/project'
 import { duration, fullDate, relative, shortTime } from '@shared/time'
 import { useNow } from '../hooks/useNow'
@@ -41,33 +43,36 @@ export function History(): React.JSX.Element {
   const canRedo = history.redo.length > 0
   const nextUndo = history.undo.at(-1)?.message
   const nextRedo = history.redo.at(-1)?.message
-  const btn =
-    'rounded border border-line px-2 py-0.5 text-xs hover:bg-line disabled:cursor-not-allowed disabled:opacity-40'
 
   return (
-    <div className="flex h-[38%] min-h-40 shrink-0 flex-col border-t border-line p-3">
+    <div className="flex h-full flex-col p-3">
       <div className="mb-2 flex items-center gap-2">
         <h2 className="text-xs uppercase tracking-wide text-muted">Historial</h2>
         <div className="ml-auto flex gap-1">
-          <button
-            className={btn}
+          <Button
+            size="sm"
+            icon={Undo2}
             disabled={!canUndo}
             onClick={undo}
             title={canUndo ? `Deshacer: ${nextUndo} (Ctrl+Z)` : 'Nada que deshacer'}
           >
-            ↶ Deshacer
-          </button>
-          <button
-            className={btn}
+            Deshacer
+          </Button>
+          <Button
+            size="sm"
+            icon={Redo2}
             disabled={!canRedo}
             onClick={redo}
             title={canRedo ? `Rehacer: ${nextRedo} (Ctrl+Y)` : 'Nada que rehacer'}
           >
-            ↷ Rehacer
-          </button>
+            Rehacer
+          </Button>
         </div>
       </div>
 
+      {versions.length === 0 && (
+        <p className="text-xs text-muted">Cada cambio queda aquí: puedes volver a cualquiera.</p>
+      )}
       <ol className="min-h-0 flex-1 space-y-0.5 overflow-auto text-sm">
         {[...versions].reverse().map((v, i) => {
           const current = i === 0

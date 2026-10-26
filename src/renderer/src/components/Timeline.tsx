@@ -65,7 +65,7 @@ export function Timeline(): React.JSX.Element | null {
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== 'Delete' && e.key !== 'Backspace') return
-      if ((e.target as HTMLElement).closest('input, textarea')) return
+      if ((e.target as HTMLElement).closest('input, textarea, select')) return
       const { project } = useProject.getState()
       const id = useUi.getState().selectedRegionId
       if (!project || !id) return

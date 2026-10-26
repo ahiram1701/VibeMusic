@@ -99,7 +99,8 @@ test('tras actualizar muestra las novedades una sola vez, sin código ni la list
   // Ajustes → Actualizaciones refleja el mismo estado.
   await page.getByRole('button', { name: 'Nuevo proyecto' }).click()
   await page.getByRole('button', { name: 'Crear' }).click()
-  await page.getByRole('button', { name: '⚙ Ajustes' }).click()
+  await page.getByRole('button', { name: 'Ajustes', exact: true }).click()
+  await page.getByRole('tab', { name: 'Actualizaciones' }).click()
   const section = page.getByRole('region', { name: 'Actualizaciones' })
   await expect(section).toContainText(`Versión ${pkg.version}`)
   await expect(section).toContainText('La versión 9.9.9 está lista')
