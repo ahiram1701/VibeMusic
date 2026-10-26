@@ -16,8 +16,15 @@ import { useProject } from '../store/project'
 import { useGeneration } from '../store/generation'
 import { useUi } from '../store/ui'
 import { Waveform } from './Waveform'
+import {
+  followPlayhead,
+  HEADER_W,
+  playheadPx,
+  setTimelineContainer,
+  startScrub,
+  zoomAt
+} from './timeline-view'
 
-const HEADER_W = 160
 const LANE_H = 72
 const RULER_H = 24
 const ROLE_COLORS: Record<Track['role'], string> = {
@@ -33,6 +40,26 @@ const ROLE_COLORS: Record<Track['role'], string> = {
 export function Timeline(): React.JSX.Element | null {
   const { project, commit } = useProject()
   const { pxPerBeat, selectedRegionId, select } = useUi()
+  const rootRef = useRef<HTMLDivElement>(null)
+  const hasTimeline = !!project && (project.tracks.length > 0 || !!project.sections?.length)
+
+  // El contenedor con scroll (el <section> de la app): para seguir la línea y el zoom.
+  // Ctrl + rueda acerca o aleja manteniendo quieto lo que hay bajo el ratón.
+  useEffect(() => {
+    const section = rootRef.current?.closest('section') ?? null
+    const off = setTimelineContainer(section)
+    const onWheel = (e: WheelEvent): void => {
+      if (!e.ctrlKey) return
+      e.preventDefault()
+      const p = useProject.getState().project
+      if (p) zoomAt(e.deltaY < 0 ? 1.15 : 1 / 1.15, p, e.clientX)
+    }
+    section?.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      off()
+      section?.removeEventListener('wheel', onWheel)
+    }
+  }, [hasTimeline])
 
   // Borrar la región seleccionada con Supr / Retroceso.
   useEffect(() => {
@@ -74,13 +101,8 @@ export function Timeline(): React.JSX.Element | null {
     )
   }
 
-  const seekFromEvent = (e: React.MouseEvent<HTMLDivElement>): void => {
-    const x = e.clientX - e.currentTarget.getBoundingClientRect().left
-    engine.seek(project, beatsToSeconds(Math.max(0, x / pxPerBeat), project.bpm))
-  }
-
   return (
-    <div className="relative min-h-full" style={{ width: width + HEADER_W }}>
+    <div ref={rootRef} className="relative min-h-full" style={{ width: width + HEADER_W }}>
       {/* Secciones y regla de compases (fijas arriba al desplazarse) */}
       <div
         className="sticky top-0 z-20 flex border-b border-line bg-bg"
@@ -99,17 +121,7 @@ export function Timeline(): React.JSX.Element | null {
         style={{ height: RULER_H, top: SECTIONS_H }}
       >
         <div className="sticky left-0 z-10 shrink-0 bg-panel" style={{ width: HEADER_W }} />
-        <div className="relative cursor-pointer" style={{ width }} onClick={seekFromEvent}>
-          {Array.from({ length: totalBeats / perBar }, (_, bar) => (
-            <span
-              key={bar}
-              className="absolute top-0 h-full border-l border-line pl-1 text-[10px] text-muted"
-              style={{ left: bar * perBar * pxPerBeat }}
-            >
-              {bar + 1}
-            </span>
-          ))}
-        </div>
+        <Ruler project={project} width={width} bars={totalBeats / perBar} />
       </div>
 
       {project.tracks.map((track) => (
@@ -127,7 +139,11 @@ export function Timeline(): React.JSX.Element | null {
               width,
               backgroundImage: `repeating-linear-gradient(to right, var(--color-line) 0 1px, transparent 1px ${perBar * pxPerBeat}px)`
             }}
-            onPointerDown={() => select(null)}
+            onPointerDown={(e) => {
+              select(null)
+              // Clic (o arrastre) en una zona vacía: la línea va ahí.
+              if (e.target === e.currentTarget) startScrub(e, e.currentTarget, project)
+            }}
           >
             {track.regions.map((region) => (
               <RegionView
@@ -218,18 +234,116 @@ function RegionView({
   )
 }
 
+/**
+ * Regla de compases: clic o arrastre para mover la línea de reproducción (ajustada a
+ * la rejilla; Alt, libre), con un tirador en la línea y una guía donde está el ratón.
+ */
+function Ruler({
+  project,
+  width,
+  bars
+}: {
+  project: Project
+  width: number
+  bars: number
+}): React.JSX.Element {
+  const pxPerBeat = useUi((s) => s.pxPerBeat)
+  const grid = useUi((s) => s.grid)
+  const perBar = project.timeSignature[0]
+  const [hover, setHover] = useState<number | null>(null) // pulso bajo el ratón
+  const handle = useRef<HTMLDivElement>(null)
+
+  // El tirador sigue a la línea en su propio bucle (no re-renderiza la regla).
+  useEffect(() => {
+    let raf = 0
+    const tick = (): void => {
+      try {
+        const p = useProject.getState().project
+        if (handle.current && p) {
+          const x = playheadPx(p, useUi.getState().pxPerBeat)
+          handle.current.style.transform = `translateX(${x - 7}px)`
+          handle.current.setAttribute('aria-valuetext', formatPosition(engine.positionSec, p))
+        }
+      } finally {
+        raf = requestAnimationFrame(tick)
+      }
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [])
+
+  const beatAt = (e: React.PointerEvent<HTMLElement>, origin: HTMLElement): number => {
+    const raw = Math.max(0, (e.clientX - origin.getBoundingClientRect().left) / pxPerBeat)
+    return e.altKey ? raw : snapBeat(raw, grid, project)
+  }
+
+  return (
+    <div
+      className="relative cursor-pointer select-none"
+      style={{ width }}
+      data-testid="ruler"
+      title="Clic o arrastra para mover la línea de reproducción (Alt: sin rejilla)"
+      onPointerDown={(e) => startScrub(e, e.currentTarget, project)}
+      onPointerMove={(e) => setHover(beatAt(e, e.currentTarget))}
+      onPointerLeave={() => setHover(null)}
+    >
+      {Array.from({ length: bars }, (_, bar) => (
+        <span
+          key={bar}
+          className="pointer-events-none absolute top-0 h-full border-l border-line pl-1 text-[10px] text-muted"
+          style={{ left: bar * perBar * pxPerBeat }}
+        >
+          {bar + 1}
+        </span>
+      ))}
+      {hover !== null && (
+        <div
+          className="pointer-events-none absolute top-0 bottom-0 w-px bg-white/30"
+          style={{ left: hover * pxPerBeat }}
+        >
+          <span className="absolute top-0 left-1 rounded bg-black/70 px-1 text-[10px] text-white">
+            {formatPosition(beatsToSeconds(hover, project.bpm), project)}
+          </span>
+        </div>
+      )}
+      <div
+        ref={handle}
+        role="slider"
+        aria-label="Línea de reproducción"
+        aria-valuemin={0}
+        aria-valuenow={0}
+        data-testid="playhead-handle"
+        className="absolute top-0 left-0 z-10 flex h-full w-[14px] cursor-ew-resize justify-center"
+        title="Arrastra para moverte por la canción"
+        onPointerDown={(e) => {
+          e.stopPropagation()
+          startScrub(e, e.currentTarget.parentElement!, project)
+        }}
+      >
+        <div className="h-0 w-0 border-x-[7px] border-t-[9px] border-x-transparent border-t-white" />
+      </div>
+    </div>
+  )
+}
+
 function Playhead({ offset }: { offset: number }): React.JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     let raf = 0
+    let lastSec = -1
     const tick = (): void => {
       try {
         const { project } = useProject.getState()
         const { pxPerBeat } = useUi.getState()
         if (ref.current && project) {
-          const x = secondsToBeats(engine.positionSec, project.bpm) * pxPerBeat
+          const sec = engine.positionSec
+          const x = playheadPx(project, pxPerBeat)
           ref.current.style.transform = `translateX(${offset + x}px)`
+          // Parada, un cambio de posición es un salto (atajo, contador, sección).
+          const jumped = !engine.isPlaying() && Math.abs(sec - lastSec) > 1e-3
+          followPlayhead(x, jumped)
+          lastSec = sec
         }
       } finally {
         raf = requestAnimationFrame(tick)
