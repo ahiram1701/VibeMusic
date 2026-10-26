@@ -102,4 +102,24 @@ describe('SettingsStore', () => {
     })
     expect(pub.urls.ollama).toBe('http://192.168.1.10:11434/v1')
   })
+
+  it('recuerda los proyectos recientes: el último primero, sin repetir y como mucho 8', async () => {
+    const file = join(dir, 'settings.json')
+    const store = new SettingsStore(file, fakeCipher)
+    for (let i = 1; i <= 9; i++) await store.addRecentProject(`C:/p${i}`, `Canción ${i}`)
+    await store.addRecentProject('c:/P3/', 'Canción 3 bis')
+    const recent = await new SettingsStore(file, fakeCipher).getRecentProjects()
+    expect(recent.map((r) => r.name)).toEqual([
+      'Canción 3 bis',
+      'Canción 9',
+      'Canción 8',
+      'Canción 7',
+      'Canción 6',
+      'Canción 5',
+      'Canción 4',
+      'Canción 2'
+    ])
+    await store.removeRecentProject('C:/p9')
+    expect((await store.getRecentProjects()).map((r) => r.name)).not.toContain('Canción 9')
+  })
 })

@@ -31,7 +31,20 @@ interface SettingsFile {
   lastRunVersion?: string
   /** Notas de la versión descargada, para enseñarlas tras instalarla. */
   pendingReleaseNotes?: { version: string; notes: string }
+  /** Proyectos abiertos hace poco (el más reciente primero). */
+  recentProjects?: RecentProject[]
 }
+
+export interface RecentProject {
+  dir: string
+  name: string
+  openedAt: string
+}
+
+const MAX_RECENT = 8
+/** Misma carpeta aunque cambien mayúsculas o barras (Windows no las distingue). */
+const sameDir = (a: string, b: string): boolean =>
+  a.replace(/[\\/]+$/, '').toLowerCase() === b.replace(/[\\/]+$/, '').toLowerCase()
 
 /** Formato antiguo (antes de admitir cualquier proveedor), para migrarlo. */
 interface LegacyFields {
@@ -94,7 +107,8 @@ export class SettingsStore {
         llmUrls: urls,
         secrets,
         lastRunVersion: raw.lastRunVersion,
-        pendingReleaseNotes: raw.pendingReleaseNotes
+        pendingReleaseNotes: raw.pendingReleaseNotes,
+        recentProjects: raw.recentProjects
       }
     } catch {
       this.cache = d
@@ -212,6 +226,27 @@ export class SettingsStore {
   async setLastRunVersion(version: string): Promise<void> {
     const s = await this.load()
     if (s.lastRunVersion !== version) await this.save({ ...s, lastRunVersion: version })
+  }
+
+  async getRecentProjects(): Promise<RecentProject[]> {
+    return (await this.load()).recentProjects ?? []
+  }
+
+  /** Anota un proyecto como el más reciente (sin duplicados, como mucho 8). */
+  async addRecentProject(dir: string, name: string): Promise<void> {
+    const s = await this.load()
+    const rest = (s.recentProjects ?? []).filter((r) => !sameDir(r.dir, dir))
+    const recentProjects = [{ dir, name, openedAt: new Date().toISOString() }, ...rest].slice(
+      0,
+      MAX_RECENT
+    )
+    await this.save({ ...s, recentProjects })
+  }
+
+  async removeRecentProject(dir: string): Promise<void> {
+    const s = await this.load()
+    const recentProjects = (s.recentProjects ?? []).filter((r) => !sameDir(r.dir, dir))
+    await this.save({ ...s, recentProjects })
   }
 
   async setPendingReleaseNotes(version: string, notes: string): Promise<void> {

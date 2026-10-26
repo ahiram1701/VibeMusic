@@ -53,6 +53,8 @@ test.beforeAll(async () => {
       VIBE_USER_DATA: join(workDir, 'userdata'),
       // Carpeta del motor local propia: las pruebas no deben ver el motor del usuario.
       VIBE_ENGINE_DIR: join(workDir, 'engine'),
+      // Los proyectos nuevos se crean aquí (en vez de en Documentos/VibeMusic).
+      VIBE_PROJECTS_DIR: workDir,
       VIBE_FAKE_LLM: '1',
       // Disco lento a propósito: destapa carreras entre guardar y deshacer.
       VIBE_TEST_SAVE_DELAY_MS: '120'
@@ -70,12 +72,15 @@ test.afterAll(async () => {
 })
 
 test('crear proyecto e importar dos pistas', async () => {
-  await queueDialogs([
-    [join(workDir, 'proyecto')],
-    [join(workDir, 'drums.wav'), join(workDir, 'bass.wav')]
-  ])
+  await queueDialogs([[join(workDir, 'drums.wav'), join(workDir, 'bass.wav')]])
   await page.getByRole('button', { name: 'Nuevo proyecto' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Nuevo proyecto' })
+  await dialog.getByLabel('Nombre de la canción').fill('Mi canción: prueba')
+  // Cada proyecto en su carpeta, con un nombre válido como carpeta.
+  await expect(dialog.getByText(join(workDir, 'Mi canción prueba'))).toBeVisible()
+  await dialog.getByRole('button', { name: 'Crear' }).click()
   await expect(page.getByText('Proyecto creado')).toBeVisible()
+  await expect(page.getByText('Mi canción: prueba', { exact: true })).toBeVisible()
 
   await page.getByRole('button', { name: 'Importar audio…' }).click()
   await expect(page.getByText(/Importado drums, bass/)).toBeVisible()

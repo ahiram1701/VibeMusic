@@ -31,9 +31,11 @@ import { checkForUpdates, getUpdateStatus, installUpdate, startAutoUpdates } fro
 import { computeWhatsNew } from './whats-new'
 import {
   initProjectDir,
+  isProjectDir,
   listVersions,
-  loadProject,
   loadVersion,
+  newProjectDir,
+  openProjectDir,
   saveProject
 } from './project/store'
 import { ExportFolders, saveFileDialog, type ExportExt } from './export'
@@ -96,27 +98,48 @@ export function registerIpc(): { shutdown(): void } {
     )
   })
 
-  handle('project:create', async (name: string) => {
+  // Los proyectos van, por defecto, cada uno en su carpeta dentro de Documentos/VibeMusic.
+  // VIBE_PROJECTS_DIR la cambia (pruebas e2e).
+  const projectsDir = (): string =>
+    process.env['VIBE_PROJECTS_DIR'] ?? join(app.getPath('documents'), 'VibeMusic')
+  const opened = async (
+    dir: string,
+    project: Project
+  ): Promise<{ dir: string; project: Project }> => {
+    await settings.addRecentProject(dir, project.name)
+    return { dir, project }
+  }
+
+  handle('project:defaultParent', () => projectsDir())
+  handle('project:chooseParent', async (current: string) => {
     const res = await dialog.showOpenDialog({
-      title: 'Carpeta para el nuevo proyecto',
+      title: 'Dónde guardar el proyecto',
+      defaultPath: current,
       properties: ['openDirectory', 'createDirectory']
     })
-    if (res.canceled || !res.filePaths[0]) return null
-    const dir = res.filePaths[0]
-    const project = createProject(name)
-    await initProjectDir(dir, project)
-    return { dir, project }
+    return res.canceled || !res.filePaths[0] ? null : res.filePaths[0]
   })
-
+  handle('project:create', async (name: string, parent: string) => {
+    const dir = newProjectDir(parent, name)
+    const project = createProject(name.trim() || 'Nueva canción')
+    await initProjectDir(dir, project)
+    return opened(dir, project)
+  })
   handle('project:open', async () => {
     const res = await dialog.showOpenDialog({
-      title: 'Abrir proyecto VibeMusic',
+      title: 'Abrir un proyecto de VibeMusic (su carpeta)',
+      defaultPath: projectsDir(),
       properties: ['openDirectory']
     })
     if (res.canceled || !res.filePaths[0]) return null
     const dir = res.filePaths[0]
-    return { dir, project: await loadProject(dir) }
+    return opened(dir, await openProjectDir(dir))
   })
+  handle('project:openPath', async (dir: string) => opened(dir, await openProjectDir(dir)))
+  handle('project:recent', async () =>
+    (await settings.getRecentProjects()).filter((r) => isProjectDir(r.dir))
+  )
+  handle('project:forgetRecent', (dir: string) => settings.removeRecentProject(dir))
 
   // VIBE_TEST_SAVE_DELAY_MS simula un disco lento en las pruebas e2e.
   const saveDelay = Number(process.env['VIBE_TEST_SAVE_DELAY_MS'] ?? 0)

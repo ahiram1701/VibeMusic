@@ -38,6 +38,7 @@ test.beforeAll(async () => {
       ...process.env,
       VIBE_USER_DATA: join(workDir, 'userdata'),
       VIBE_ENGINE_DIR: join(workDir, 'engine'),
+      VIBE_PROJECTS_DIR: workDir,
       VIBE_NO_UPDATES: '1'
     }
   })
@@ -69,12 +70,13 @@ test('arranca como app instalada y lleva el motor local dentro', async () => {
 })
 
 test('crear proyecto, importar, generar con Demo y exportar a MP3', async () => {
+  // "Nuevo proyecto" lo crea en VIBE_PROJECTS_DIR, en una carpeta con su nombre.
   const project = join(workDir, 'proyecto')
   const outDir = join(workDir, 'salida')
   await mkdir(outDir)
   await app.evaluate(
     ({ dialog }, p) => {
-      const opens = [[p.project], [p.wav]]
+      const opens = [[p.wav]]
       dialog.showOpenDialog = (async () => {
         const filePaths = opens.shift() ?? []
         return { canceled: filePaths.length === 0, filePaths }
@@ -84,10 +86,12 @@ test('crear proyecto, importar, generar con Demo y exportar a MP3', async () => 
         filePath: p.mp3
       })) as typeof dialog.showSaveDialog
     },
-    { project, wav: join(workDir, 'tono.wav'), mp3: join(outDir, 'mezcla.mp3') }
+    { wav: join(workDir, 'tono.wav'), mp3: join(outDir, 'mezcla.mp3') }
   )
 
   await page.getByRole('button', { name: 'Nuevo proyecto' }).click()
+  await page.getByLabel('Nombre de la canción').fill('proyecto')
+  await page.getByRole('button', { name: 'Crear' }).click()
   await expect(page.getByText('Proyecto creado')).toBeVisible()
   await page.getByRole('button', { name: 'Importar audio…' }).click()
   await expect(page.getByText(/Importado tono/)).toBeVisible()
