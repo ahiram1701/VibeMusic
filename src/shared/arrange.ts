@@ -50,6 +50,11 @@ export type ChunkStep =
       startBar: number
       bars: number
       prompt: string
+      /**
+       * Sección ya generada que el tramo escucha en lugar de la anterior: una repetición
+       * ("Coro 2") arranca desde el final de la original para que el gancho vuelva.
+       */
+      contextFrom?: number
     }
   | { kind: 'reuse'; section: number; from: number }
 
@@ -256,39 +261,75 @@ export function chunkBars(secPerBar: number, maxSec: number, contextSec: number)
   return Math.max(1, fit)
 }
 
-/** Texto de transición al final de una sección, según cómo cambia la energía. */
-function transitionOut(from: number | null, to: number | null): string {
-  if (from !== null && to !== null && to > from) {
-    return 'ending with a drum fill and a riser building up into the next section'
-  }
-  if (from !== null && to !== null && to < from) {
-    return 'ending with a short drum fill, the next section is softer'
-  }
-  return 'ending with a short drum fill into the next section'
-}
+// --- Prompts para MusicGen ----------------------------------------------------
+// MusicGen se entrenó con descripciones cortas tipo etiquetas ("latin pop, guitar,
+// drums, 96 bpm"). Con prompts largos se diluye y, si abundan "dark", "sub bass" o
+// "reverb", colapsa en un drone grave. Tampoco entiende negaciones: "not ambient"
+// le empuja hacia lo ambiental. Por eso cada tramo lleva pocas palabras, todas
+// positivas, y el tempo.
+
+/** Palabras máximas del estilo y del arreglo dentro del prompt de un tramo. */
+export const STYLE_WORDS = 15
+export const ARRANGEMENT_WORDS = 15
 
 /**
- * Qué tiene que seguir sonando según la energía. MusicGen no entiende el número: con
- * un arreglo tranquilo ("pad", "minimal") y sin esto, genera un drone de película.
+ * Recorta un texto a `max` palabras quedándose con frases completas (separadas por
+ * comas); si la primera ya es más larga, la corta por palabras.
  */
-export function energyHint(energy: number | null): string {
-  if (energy !== null && energy <= 2) {
-    return 'laid-back groove, soft drums and bass still playing, clear melody'
+export function clampWords(text: string, max: number): string {
+  const words = (t: string): string[] => t.split(/\s+/).filter(Boolean)
+  const kept: string[] = []
+  let count = 0
+  for (const phrase of text
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean)) {
+    const n = words(phrase).length
+    if (count + n > max) {
+      if (kept.length === 0) kept.push(words(phrase).slice(0, max).join(' '))
+      break
+    }
+    kept.push(phrase)
+    count += n
   }
-  if (energy !== null && energy >= 4) return 'full band, driving drums, prominent lead melody'
-  return 'steady drum groove, bass line and melody'
+  return kept.join(', ')
 }
 
-/** Ancla de "canción normal" en cada tramo (MusicGen no admite prompt negativo). */
-export const SONG_ANCHOR = 'full song mix, steady rhythm, not ambient, not cinematic'
+/** Lo que tiene que seguir sonando según la energía (MusicGen no entiende el número). */
+export function energyHint(energy: number | null): string {
+  if (energy !== null && energy <= 2) return 'soft drums, groove'
+  if (energy !== null && energy >= 4) return 'energetic, full drums'
+  return 'steady beat'
+}
+
+/** Transición al final de una sección, según cómo cambia la energía. */
+function transitionOut(from: number | null, to: number | null): string {
+  if (from !== null && to !== null && to > from) return 'build-up and drum fill at the end'
+  return 'drum fill at the end'
+}
+
+/** Nombre de una sección sin su número: "Coro 2" → "coro". */
+const baseName = (name: string): string =>
+  name
+    .trim()
+    .toLowerCase()
+    .replace(/\s*\d+$/, '')
 
 /**
  * Pasos para componer la canción: cada sección en tramos de `bars` compases (el
  * último puede ser más corto), con transiciones automáticas en los bordes. Las
- * secciones con `reuse` copian la anterior del mismo nombre.
+ * secciones con `reuse` copian la anterior del mismo nombre; una sección que repite
+ * otra sin copiarla ("Coro 2" tras "Coro") empieza escuchando a la original, para que
+ * el gancho vuelva reconocible.
  */
-export function planChunks(spec: SongSpec, bars: number): ChunkStep[] {
+export function planChunks(
+  spec: SongSpec,
+  bars: number,
+  tempo: { bpm?: number; key?: string } = {}
+): ChunkStep[] {
   const steps: ChunkStep[] = []
+  const style = clampWords(spec.style, STYLE_WORDS)
+  const tail = [tempo.bpm ? `${Math.round(tempo.bpm)} bpm` : '', tempo.key ?? ''].filter(Boolean)
   let startBar = 1
   spec.sections.forEach((s, i) => {
     if (s.reuse) {
@@ -297,27 +338,27 @@ export function planChunks(spec: SongSpec, bars: number): ChunkStep[] {
       startBar += s.bars
       return
     }
-    const prev = spec.sections[i - 1]
     const next = spec.sections[i + 1]
+    const original = spec.sections.findIndex(
+      (o, j) => j < i && !o.reuse && baseName(o.name) === baseName(s.name)
+    )
     const count = Math.ceil(s.bars / bars)
     for (let k = 0; k < count; k++) {
       const len = Math.min(bars, s.bars - k * bars)
-      const hints: string[] = []
-      if (k === 0 && i === 0) hints.push('song intro')
-      if (k === 0 && prev?.energy && s.energy && s.energy > prev.energy) {
-        hints.push('powerful entrance, full energy from the first beat')
-      }
-      hints.push(energyHint(s.energy), SONG_ANCHOR)
+      const hints: string[] = [energyHint(s.energy), ...tail]
+      if (k === 0 && i === 0) hints.unshift('intro')
       // La transición va al final: es lo último que suena en el tramo.
-      if (k === count - 1) {
-        hints.push(next ? transitionOut(s.energy, next.energy) : 'song ending, fading out')
-      }
+      if (k === count - 1)
+        hints.push(next ? transitionOut(s.energy, next.energy) : 'fade out ending')
       steps.push({
         kind: 'generate',
         section: i,
         startBar: startBar + k * bars,
         bars: len,
-        prompt: [s.arrangement, spec.style, ...hints].join(', ')
+        prompt: [style, clampWords(s.arrangement, ARRANGEMENT_WORDS), ...hints]
+          .filter(Boolean)
+          .join(', '),
+        ...(k === 0 && original >= 0 && { contextFrom: original })
       })
     }
     startBar += s.bars
@@ -369,6 +410,25 @@ export function polishSong(p: Project, trackId: string): Project {
             }))
           }
     )
+  }
+}
+
+/** Acorta una región a `lengthSec` (p. ej. para quitar un tramo atascado), sin clic al final. */
+export function trimRegion(p: Project, regionId: string, lengthSec: number): Project {
+  return {
+    ...p,
+    tracks: p.tracks.map((t) => ({
+      ...t,
+      regions: t.regions.map((r) =>
+        r.id !== regionId
+          ? r
+          : {
+              ...r,
+              lengthSec: Math.min(r.lengthSec, lengthSec),
+              fadeOutSec: Math.min(0.01, lengthSec)
+            }
+      )
+    }))
   }
 }
 

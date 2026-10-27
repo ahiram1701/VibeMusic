@@ -14,8 +14,12 @@ import {
   reviewProject,
   sectionCoverage,
   trackBusy,
-  vocalSongRequest
+  trimRegion,
+  vocalSongRequest,
+  type ChunkStep
 } from './arrange'
+import type { CollapseOptions } from './drone'
+import { findGenre, GENRES, PROMPT_EXAMPLES } from './genres'
 import type { ProviderInfo, SingingEngine } from './generation'
 import { buildUstx, melodyForLyrics, placeMelody } from './melody'
 import { SINGER_PROVIDER, SINGER_VOICE } from './singer'
@@ -89,6 +93,11 @@ export interface ProducerHost {
     bars: number,
     opts?: { instructions?: string; prompt?: string; atBeat?: number; message?: string }
   ): Promise<{ trackId: string; regionId: string }>
+  /**
+   * Escucha una región: segundo (desde su inicio) en el que se atasca en un drone
+   * grave o en silencio, o null si suena bien (ver drone.ts).
+   */
+  inspectRegion(regionId: string, opts?: CollapseOptions): Promise<{ collapseAtSec: number | null }>
   /** Separa una región en pistas (voz, batería, bajo, otros) con el motor local. */
   separate(regionId: string): Promise<{ trackIds: string[]; stems: string[]; skipped: string[] }>
   /** "Mi voz": modelos de voz del usuario (RVC) y si el motor que los usa está instalado. */
@@ -486,6 +495,46 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
     },
     {
       def: {
+        name: 'genre_guide',
+        description:
+          'Returns how to produce a genre with this audio engine: tempo range, typical structure (sections, bars, energy), a ready "style", example "arrangement" per section type, what to avoid, and example prompts the engine understands. Call it before compose_song. Free and instant (no audio).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            genre: {
+              type: 'string',
+              description: 'Genre the user wants, e.g. "corridos tumbados", "reggaeton", "house"'
+            }
+          },
+          required: ['genre'],
+          additionalProperties: false
+        }
+      },
+      run: async (input) => {
+        const genre = str(input, 'genre')
+        const g = findGenre(genre)
+        if (!g) {
+          return {
+            found: false,
+            known_genres: GENRES.map((x) => x.id),
+            example_prompts: PROMPT_EXAMPLES,
+            hint: 'Not in the guide: describe it with the closest known genres and concrete instruments, in the same short style as the examples (use web_search if you do not know its sound).'
+          }
+        }
+        return {
+          found: true,
+          genre: g.id,
+          bpm_range: g.bpm,
+          style: g.style,
+          structure: g.structure.map(([name, bars, energy]) => ({ name, bars, energy })),
+          arrangement_examples: g.arrangements,
+          avoid: g.avoid,
+          example_prompts: PROMPT_EXAMPLES
+        }
+      }
+    },
+    {
+      def: {
         name: 'compose_song',
         description:
           'Composes a complete NEW song in one call, the way a producer records it from start to end: sets tempo and key, creates the sections and generates the music section by section, each part continuing seamlessly from the previous one, so harmony, groove and sound stay coherent and the music evolves instead of looping. Transitions are added automatically (fills and build-ups between sections, fade in and fade out). You write the arrangement of each section. Replaces previously generated audio and sections (imported audio is kept; the user can undo). Use it for any request for a new song or beat. Takes a long time: it waits until all the audio is ready.',
@@ -495,7 +544,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             style: {
               type: 'string',
               description:
-                'Shared sound of the whole song IN ENGLISH: genre, mood, instruments palette and production (e.g. "dark industrial techno, gritty analog synths, warehouse reverb"). Turn artist names into descriptions.'
+                'Shared sound of the whole song IN ENGLISH, 8-15 words: a well-known genre and 3-5 concrete instruments, like the "style" from genre_guide (e.g. "reggaeton, dembow drum pattern, 808 bass, synth plucks, latin percussion"). Turn artist names into descriptions.'
             },
             bpm: { type: 'number', minimum: 40, maximum: 240 },
             key: { type: 'string', description: 'Key such as "E minor"' },
@@ -520,7 +569,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
                   arrangement: {
                     type: 'string',
                     description:
-                      'IN ENGLISH, what plays in this section and how: which instruments are in or out, energy, what changes (e.g. "drums drop out, only pad and filtered lead, tension rising"). No tempo or key.'
+                      'IN ENGLISH, at most 12 words: which instruments play in this section and what changes (e.g. "full dembow beat, synth hook, claps and shakers"). Always name a rhythm instrument. No tempo, key or vocals.'
                   },
                   energy: {
                     type: 'integer',
@@ -532,7 +581,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
                   reuse: {
                     type: 'boolean',
                     description:
-                      'true to repeat the audio of the previous section with the same name instead of generating it again (e.g. the last chorus). Saves time. Ignored in sung songs.'
+                      'true to repeat the audio of the previous section with the same name instead of generating it again. Use it for repeated choruses and drops, like real songs do; it also saves several minutes. Ignored when the cloud engine sings the song.'
                   },
                   lyrics: {
                     type: 'string',
@@ -675,11 +724,22 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         const secPerBar = barsToSeconds(1, host.getProject())
         const bars = chunkBars(secPerBar, provider.capabilities.maxDurationSec, CONTEXT_SEC)
         const failed: { section: string; start_bar: number; error: string }[] = []
+        const repaired: { section: string; start_bar: number; bars: number }[] = []
+        const drone: { section: string; start_bar: number }[] = []
         let generated = 0
         let last: string | null = null
         // Con cantante local, el instrumental no debe traer voces propias.
-        const backing = local ? { ...spec, style: `${spec.style}, instrumental, no vocals` } : spec
-        for (const step of planChunks(backing, bars)) {
+        const backing = local ? { ...spec, style: `instrumental, ${spec.style}` } : spec
+        const tempo = host.getProject()
+        const totalBars = spec.sections.reduce((n, s) => n + s.bars, 0)
+        // Una cola: si un tramo se atasca en un drone, se recorta y lo que falta se mete
+        // delante como "reparación" (una sola vez por tramo, para no disparar el tiempo).
+        const queue: (ChunkStep & { repair?: boolean })[] = planChunks(backing, bars, {
+          bpm: tempo.bpm,
+          key: tempo.key
+        })
+        while (queue.length > 0) {
+          const step = queue.shift()!
           if (signal.aborted) throw new Error('Cancelado')
           const section = sections[step.section]
           if (step.kind === 'reuse') {
@@ -693,12 +753,18 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           }
           const atBeat = beatOfBar(planned, step.startBar)
           const span = `compases ${step.startBar}–${step.startBar + step.bars - 1}`
+          // Una repetición ("Coro 2") arranca escuchando el final de la original.
+          const from =
+            step.contextFrom !== undefined
+              ? (lastRegionIn(host.getProject(), song.id, sections[step.contextFrom])?.id ?? last)
+              : last
           // Un tramo que falla se reintenta una vez; si vuelve a fallar, el siguiente
           // continúa desde el último bueno.
+          let made: string | null = null
           for (let attempt = 1; attempt <= 2; attempt++) {
             try {
-              const r = last
-                ? await host.extend(last, step.bars, {
+              const r = from
+                ? await host.extend(from, step.bars, {
                     prompt: step.prompt,
                     atBeat,
                     message: `${section.name} (${span})`
@@ -710,7 +776,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
                     atBeat,
                     trackId: song.id
                   })
-              last = r.regionId
+              made = r.regionId
               generated++
               break
             } catch (err) {
@@ -724,6 +790,48 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
               }
             }
           }
+          if (!made) continue
+
+          // ¿Se atascó en un drone? El fundido final de la canción no cuenta.
+          const endsSong = step.startBar + step.bars - 1 >= totalBars
+          const { collapseAtSec } = await host.inspectRegion(made, {
+            ignoreTailSec: endsSong ? 2 * secPerBar : 0
+          })
+          if (collapseAtSec === null) {
+            last = made
+            continue
+          }
+          if (step.repair) {
+            // Ya era la reparación: se queda (mejor que un hueco) y se avisa.
+            drone.push({ section: section.name, start_bar: step.startBar })
+            last = made
+            continue
+          }
+          const good = Math.min(step.bars - 1, Math.floor(collapseAtSec / secPerBar))
+          if (good >= 1) {
+            await commit(
+              trimRegion(host.getProject(), made, good * secPerBar),
+              `${section.name}: recorte de un tramo atascado`
+            )
+            last = made
+          } else {
+            await commit(
+              removeRegion(host.getProject(), made),
+              `${section.name}: fuera un tramo atascado`
+            )
+          }
+          repaired.push({
+            section: section.name,
+            start_bar: step.startBar + good,
+            bars: step.bars - good
+          })
+          queue.unshift({
+            ...step,
+            startBar: step.startBar + good,
+            bars: step.bars - good,
+            contextFrom: undefined,
+            repair: true
+          })
         }
         if (generated > 0) {
           await commit(
@@ -757,6 +865,16 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           bars_per_part: bars,
           parts_generated: generated,
           ...(failed.length > 0 && { failed }),
+          ...(repaired.length > 0 && {
+            repaired,
+            repaired_note:
+              'These parts got stuck in a low drone; the stuck audio was cut and regenerated automatically.'
+          }),
+          ...(drone.length > 0 && {
+            drone,
+            drone_note:
+              'These parts still sound like a low drone after one repair. Tell the user and offer create_variation on them.'
+          }),
           sections: sectionCoverage(final)
             .filter((c) => ids.has(c.section.id))
             .map((c) => ({

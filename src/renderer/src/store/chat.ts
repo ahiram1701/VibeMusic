@@ -4,6 +4,7 @@ import { textOf, type LlmMessage, type LlmRetry } from '@shared/llm'
 import { newId } from '@shared/project'
 import { PRODUCER_SYSTEM_PROMPT } from '@shared/producer-prompt'
 import { reviewProject } from '@shared/arrange'
+import { findCollapse, toMono } from '@shared/drone'
 import { createWebTools } from '@shared/web-tools'
 import {
   AGENT_PREFIX,
@@ -103,6 +104,20 @@ const host: ProducerHost = {
     agentJob(varyRegion(regionId, { instructions, messagePrefix: AGENT_PREFIX })),
   extend: (regionId, bars, opts) =>
     agentJob(continueRegion(regionId, bars, { ...opts, messagePrefix: AGENT_PREFIX })),
+  inspectRegion: async (regionId, opts) => {
+    const { project, dir } = useProject.getState()
+    const region = project?.tracks.flatMap((t) => t.regions).find((r) => r.id === regionId)
+    const clip = region && project?.clips[region.clipId]
+    if (!region || !clip || !dir) throw new Error(`No existe la región ${regionId}`)
+    const buffer = engine.buffers.get(clip.id) ?? (await engine.loadClip(dir, clip))
+    const sr = buffer.sampleRate
+    const from = Math.floor(region.offsetSec * sr)
+    const to = Math.min(buffer.length, Math.ceil((region.offsetSec + region.lengthSec) * sr))
+    const channels = Array.from({ length: buffer.numberOfChannels }, (_, i) =>
+      buffer.getChannelData(i).subarray(from, to)
+    )
+    return { collapseAtSec: findCollapse(toMono(channels), sr, opts) }
+  },
   separate: (regionId) => separateRegion(regionId, { messagePrefix: AGENT_PREFIX }),
   myVoices: () => {
     const { status, voices } = useVoice.getState()
