@@ -629,7 +629,15 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       },
       run: async (input, signal) => {
         // Se valida todo antes de tocar nada: si falla, el LLM corrige y vuelve a llamar.
-        const spec = parseSongSpec(input)
+        const parsed = parseSongSpec(input)
+        // Igual con el sonido: si el "style" no nombra el género de la guía (un
+        // "industrial techno" para un house tumbado), se usa el de la guía.
+        const head = guide?.style.split(',')[0].trim().toLowerCase()
+        const offStyle = !!head && !parsed.style.toLowerCase().includes(head)
+        const spec = offStyle ? { ...parsed, style: guide!.style } : parsed
+        const styleNote = offStyle
+          ? `style "${parsed.style}" did not match the ${guide!.id} guide; used "${guide!.style}". Put extra flavour in the sections' arrangement instead.`
+          : null
         const asked = num(input, 'bpm', 40, 240, true)
         // Fuera del rango del género, el ritmo deja de ser ese género: se acerca al borde.
         const bpm = guide
@@ -729,6 +737,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             sung: true,
             bpm: final.bpm,
             ...(tempoNote && { tempo_note: tempoNote }),
+            ...(styleNote && { style_note: styleNote }),
             key: final.key,
             ...(error && { error }),
             sections: sectionsOf(final).map((s) => ({
@@ -912,6 +921,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           }),
           bpm: final.bpm,
           ...(tempoNote && { tempo_note: tempoNote }),
+          ...(styleNote && { style_note: styleNote }),
           key: final.key,
           bars_per_part: bars,
           parts_generated: generated,

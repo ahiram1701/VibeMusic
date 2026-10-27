@@ -535,6 +535,22 @@ describe('productor · canciones completas', () => {
     expect(res.tempo_note).toMatch(/house-tumbado/)
   })
 
+  it('compose_song usa el estilo de la guía si el del productor no nombra el género', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    await h.run('genre_guide', { genre: 'house tumbado' })
+    const res = (await h.run('compose_song', {
+      ...songInput,
+      style: 'industrial techno, distorted kick'
+    })) as { style_note?: string }
+    expect(res.style_note).toMatch(/industrial techno/)
+    expect(h.state.project.style).toMatch(/^tech house, /)
+    expect(calls[0].prompt).toMatch(/^tech house, .*guitar riff/)
+    // Si ya lo nombra, se respeta.
+    await h.run('compose_song', { ...songInput, style: 'tech house, congas, guitar' })
+    expect(h.state.project.style).toBe('tech house, congas, guitar')
+  })
+
   it('compose_song vuelve a escuchar el final más brillante si la continuación se apaga', async () => {
     const h = fakeHost(createProject('X'))
     const calls = chainable(h)
