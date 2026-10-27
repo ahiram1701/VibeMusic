@@ -19,6 +19,11 @@ export interface GenreGuide {
   arrangements: Record<string, string>
   /** Palabras o ideas que en este género llevan a MusicGen a sonar mal. */
   avoid: string
+  /**
+   * Fusión: se elige cuando la consulta nombra una palabra de cada grupo ("house" y
+   * "tumbado"), antes que el alias más largo, que daría solo uno de los dos géneros.
+   */
+  blend?: string[][]
 }
 
 export const GENRES: GenreGuide[] = [
@@ -197,6 +202,39 @@ export const GENRES: GenreGuide[] = [
       outro: 'synth hook, drums fade'
     },
     avoid: 'ambient, cinematic, dark'
+  },
+  {
+    // Tech house mexicano con actitud de corrido tumbado: la fiesta la pone el house, lo
+    // "tumbado" la guitarra y la percusión latina. Lo industrial se pide con timbres,
+    // no con la palabra (MusicGen la lleva a un drone oscuro).
+    id: 'house-tumbado',
+    aliases: ['house tumbado', 'tech house tumbado', 'techno tumbado', 'tumbado house'],
+    blend: [
+      ['house', 'tech house', 'techno', 'tecno', 'electronica', 'edm'],
+      ['tumbado', 'tumbados', 'belico', 'malandro', 'corrido', 'corridos']
+    ],
+    bpm: [124, 128],
+    style:
+      'tech house, punchy four-on-the-floor kick, rolling bassline, latin percussion, acoustic guitar riff, claps',
+    structure: [
+      ['Intro', 8, 2],
+      ['Verso', 16, 3],
+      ['Coro', 8, 5],
+      ['Verso', 16, 3],
+      ['Coro', 8, 5],
+      ['Break', 8, 3],
+      ['Coro', 8, 5],
+      ['Outro', 8, 2]
+    ],
+    arrangements: {
+      intro: 'kick and shakers, acoustic guitar riff teases the hook',
+      verso: 'kick, rolling bassline, congas, sparse guitar riff',
+      coro: 'full groove, guitar riff hook, claps, distorted synth stabs',
+      break: 'guitar riff and percussion, kick returns at end',
+      outro: 'kick, bassline and guitar riff, simpler'
+    },
+    avoid:
+      'industrial, dark, warehouse; for an industrial or malandro feel use distorted synth stabs and metallic percussion'
   },
   {
     id: 'house',
@@ -418,10 +456,13 @@ export function findGenre(query: string): GenreGuide | null {
   // Primero el alias exacto; si no, el alias más largo que aparezca en la consulta.
   const exact = GENRES.find((g) => g.id === q.replace(/ /g, '-') || g.aliases.includes(q))
   if (exact) return exact
+  const has = (a: string): boolean => ` ${q} `.includes(` ${a} `)
+  const blended = GENRES.find((g) => g.blend?.every((group) => group.some(has)))
+  if (blended) return blended
   let best: { g: GenreGuide; len: number } | null = null
   for (const g of GENRES) {
     for (const a of g.aliases) {
-      if (` ${q} `.includes(` ${a} `) && a.length > (best?.len ?? 0)) best = { g, len: a.length }
+      if (has(a) && a.length > (best?.len ?? 0)) best = { g, len: a.length }
     }
   }
   return best?.g ?? null

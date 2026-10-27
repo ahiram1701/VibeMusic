@@ -39,6 +39,9 @@ describe('guía de géneros', () => {
     expect(findGenre('trap latino')?.id).toBe('latin-trap')
     expect(findGenre('deep house')?.id).toBe('house')
     expect(findGenre('R&B')?.id).toBe('rnb')
+    // Una fusión no se queda con uno solo de los géneros.
+    expect(findGenre('house/techno bien tumbado, malandro')?.id).toBe('house-tumbado')
+    expect(findGenre('house tumbado')?.id).toBe('house-tumbado')
     expect(findGenre('polka checa')).toBeNull()
   })
 })
