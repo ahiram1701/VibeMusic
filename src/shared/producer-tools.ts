@@ -95,9 +95,13 @@ export interface ProducerHost {
   ): Promise<{ trackId: string; regionId: string }>
   /**
    * Escucha una región: segundo (desde su inicio) en el que se atasca en un drone
-   * grave o en silencio, o null si suena bien (ver drone.ts).
+   * grave o en silencio, o null si suena bien, y el brillo de sus últimos CONTEXT_SEC
+   * segundos (lo que oiría un tramo que la continúe; null si es silencio). Ver drone.ts.
    */
-  inspectRegion(regionId: string, opts?: CollapseOptions): Promise<{ collapseAtSec: number | null }>
+  inspectRegion(
+    regionId: string,
+    opts?: CollapseOptions
+  ): Promise<{ collapseAtSec: number | null; tailBrightDb?: number | null }>
   /** Separa una región en pistas (voz, batería, bajo, otros) con el motor local. */
   separate(regionId: string): Promise<{ trackIds: string[]; stems: string[]; skipped: string[] }>
   /** "Mi voz": modelos de voz del usuario (RVC) y si el motor que los usa está instalado. */
@@ -224,6 +228,12 @@ const perBar = (p: Project): number => p.timeSignature[0]
 const beatOfBar = (p: Project, bar: number): number => (bar - 1) * perBar(p)
 const barOfBeat = (p: Project, beat: number): number => beat / perBar(p) + 1
 const round2 = (n: number): number => Math.round(n * 100) / 100
+/**
+ * dB de agudos que puede perder el final de un tramo respecto al más brillante antes de
+ * dejar de continuarlo. Medido: la intro −13, un tramo sano después −19 (se sigue) y el
+ * siguiente −27 (ya se oye apagado, se vuelve a escuchar la intro).
+ */
+const DRIFT_DB = 8
 
 function findTrack(p: Project, id: string): Track {
   const t = p.tracks.find((x) => x.id === id)
@@ -738,6 +748,26 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           bpm: tempo.bpm,
           key: tempo.key
         })
+        // Brillo del final de cada región. Cada continuación sale más apagada que lo que
+        // escucha, y encadenadas la canción se hunde en graves (suena a banda sonora).
+        // Si el final que tocaría escuchar se ha apagado demasiado respecto al más
+        // brillante de la canción, el tramo continúa desde ese otro: misma canción, pero
+        // la deriva no se acumula.
+        const tails = new Map<string, number | null>()
+        const tailOf = async (id: string): Promise<number | null> => {
+          if (!tails.has(id)) tails.set(id, (await host.inspectRegion(id)).tailBrightDb ?? null)
+          return tails.get(id)!
+        }
+        const contextFor = async (from: string | null): Promise<string | null> => {
+          const own = from && (await tailOf(from))
+          if (!from || typeof own !== 'number') return from
+          let best = from
+          let bestDb = own
+          for (const [id, db] of tails) {
+            if (db !== null && db > bestDb) [best, bestDb] = [id, db]
+          }
+          return bestDb - own > DRIFT_DB ? best : from
+        }
         while (queue.length > 0) {
           const step = queue.shift()!
           if (signal.aborted) throw new Error('Cancelado')
@@ -754,10 +784,11 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           const atBeat = beatOfBar(planned, step.startBar)
           const span = `compases ${step.startBar}–${step.startBar + step.bars - 1}`
           // Una repetición ("Coro 2") arranca escuchando el final de la original.
-          const from =
+          const from = await contextFor(
             step.contextFrom !== undefined
               ? (lastRegionIn(host.getProject(), song.id, sections[step.contextFrom])?.id ?? last)
               : last
+          )
           // Un tramo que falla se reintenta una vez; si vuelve a fallar, el siguiente
           // continúa desde el último bueno.
           let made: string | null = null
@@ -794,9 +825,10 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
 
           // ¿Se atascó en un drone? El fundido final de la canción no cuenta.
           const endsSong = step.startBar + step.bars - 1 >= totalBars
-          const { collapseAtSec } = await host.inspectRegion(made, {
+          const { collapseAtSec, tailBrightDb } = await host.inspectRegion(made, {
             ignoreTailSec: endsSong ? 2 * secPerBar : 0
           })
+          tails.set(made, tailBrightDb ?? null)
           if (collapseAtSec === null) {
             last = made
             continue
@@ -807,6 +839,8 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             last = made
             continue
           }
+          // Recortada cambia su final; quitada no debe servir de contexto.
+          tails.delete(made)
           const good = Math.min(step.bars - 1, Math.floor(collapseAtSec / secPerBar))
           if (good >= 1) {
             await commit(

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { findCollapse, toMono, windowStats } from './drone'
+import { findCollapse, tailBrightness, toMono, windowStats } from './drone'
 
 const SR = 8000
 
@@ -54,5 +54,13 @@ describe('drone', () => {
 
   it('mezcla a mono promediando canales', () => {
     expect(Array.from(toMono([Float32Array.of(1, 0), Float32Array.of(0, 1)]))).toEqual([0.5, 0.5])
+  })
+
+  it('mide el brillo solo del final y sin contar el silencio', () => {
+    const bright = tailBrightness(signal([8, drone], [8, song]), SR, 8)!
+    const dark = tailBrightness(signal([8, song], [8, drone]), SR, 8)!
+    expect(bright - dark).toBeGreaterThan(15)
+    expect(tailBrightness(signal([8, song], [2, silence]), SR, 4)).toBeCloseTo(bright, 0)
+    expect(tailBrightness(signal([3, silence]), SR, 3)).toBeNull()
   })
 })

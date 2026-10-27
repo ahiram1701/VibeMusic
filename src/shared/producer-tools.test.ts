@@ -523,6 +523,23 @@ describe('productor · canciones completas', () => {
     expect(res.drone).toEqual([{ section: 'Verso', start_bar: 9 }])
   })
 
+  it('compose_song vuelve a escuchar el final más brillante si la continuación se apaga', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    // Agudos del final de cada tramo, como en una canción real que se hunde en graves.
+    const tail: Record<number, number> = { 0: -13, 32: -19, 64: -30, 96: -16 }
+    h.host.inspectRegion = async (regionId) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      return { collapseAtSec: null, tailBrightDb: tail[r.startBeat] ?? null }
+    }
+    await h.run('compose_song', songInput)
+    const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
+    const at = (beat: number): string => song.regions.find((r) => r.startBeat === beat)!.id
+    expect(calls.find((c) => c.atBeat === 64)!.from).toBe(at(32)) // −6 dB: sigue
+    expect(calls.find((c) => c.atBeat === 96)!.from).toBe(at(0)) // −17 dB: la intro
+    expect(calls.find((c) => c.atBeat === 128)!.from).toBe(at(96))
+  })
+
   it('compose_song empieza un coro repetido (sin copiar) escuchando el primero', async () => {
     const h = fakeHost(createProject('X'))
     const calls = chainable(h)

@@ -220,8 +220,27 @@ export function englishSyllables(word: string): string[] {
   return out
 }
 
-/** Palabras cantables de una frase, cada una con sus sílabas (en español o inglés). */
-export function lineSyllables(text: string, lang = 'es'): { word: string; syllables: string[] }[] {
+/**
+ * Anglicismos frecuentes en letras en español ("tumbado en el beat"): dentro de una
+ * frase en español se cantan en inglés, o el cantante diría "be-at".
+ */
+const ANGLICISMS = new Set(
+  (
+    'beat beats flow party baby crush swag trap check feeling look show cool sexy style ' +
+    'money street gang flex drip vibe vibes love girl boy tonight shot shots mood hype ' +
+    'fashion game homie homies bro cash chill crew freestyle hater haters lady nice online ' +
+    'outfit ready remix sorry team weekend yeah okay bling dance'
+  ).split(' ')
+)
+
+/**
+ * Palabras cantables de una frase, cada una con sus sílabas (en español o inglés). Los
+ * anglicismos de una frase en español llevan `lang: 'en'`: se pronuncian en inglés.
+ */
+export function lineSyllables(
+  text: string,
+  lang = 'es'
+): { word: string; syllables: string[]; lang?: string }[] {
   if (lang === 'en') {
     return text
       .split(/[^\p{L}'’`]+/u)
@@ -230,7 +249,11 @@ export function lineSyllables(text: string, lang = 'es'): { word: string; syllab
   }
   return text
     .split(/[\s\-—–]+/)
-    .map((w) => ({ word: clean(w), syllables: syllables(w) }))
+    .map((w) =>
+      ANGLICISMS.has(englishWord(w))
+        ? { word: englishWord(w), syllables: englishSyllables(w), lang: 'en' }
+        : { word: clean(w), syllables: syllables(w) }
+    )
     .filter((w) => w.syllables.length > 0)
 }
 
@@ -289,6 +312,7 @@ export function alignLine(
   const parsed = parseNotes(line.notes)
   const total = parsed.reduce((n, p) => n + p.beats, 0)
   const sung = words.flatMap((w) => w.syllables.map((_, i) => (i === 0 ? w.word : '+')))
+  const langs = words.flatMap((w) => w.syllables.map(() => w.lang ?? lang))
   const pitched = parsed.filter((p) => p.midi !== null)
   if (sung.length === 0) return { notes: [], beats: total }
   if (pitched.length < sung.length) {
@@ -324,7 +348,15 @@ export function alignLine(
   let k = 0
   for (const p of parsed) {
     if (p.midi !== null) {
-      out.push({ beat, beats: p.beats, midi: p.midi, lyric: k < sung.length ? sung[k] : '+', lang })
+      // Las notas que alargan la última sílaba siguen en su idioma.
+      const noteLang = langs[Math.min(k, langs.length - 1)]
+      out.push({
+        beat,
+        beats: p.beats,
+        midi: p.midi,
+        lyric: k < sung.length ? sung[k] : '+',
+        lang: noteLang
+      })
       k++
     }
     beat += p.beats

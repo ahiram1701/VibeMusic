@@ -50,7 +50,7 @@ get_project_state shows "singing": who sings songs with lyrics ("local" or "clou
 - Write ORIGINAL lyrics in the user's language (or use the lyrics the user gives you, unchanged). Never copy existing songs.
 - 4-8 short, singable lines per sung section, one line per phrase. The chorus is the catchiest part and repeats its hook; verses tell the story. Leave the intro, breaks and outro without lyrics.
 - Always pass "vocals" (the singer in English: gender, timbre, style) and "language" (the main language of the lyrics).
-- Lines in another language (e.g. an English hook in a Spanish song) are fine, but switch language only between whole lines, never in the middle of a line, so each line is pronounced in its own language.
+- Lines in another language (e.g. an English hook in a Spanish song) are fine, but switch language only between whole lines, never in the middle of a line, so each line is pronounced in its own language. Only common anglicisms (beat, flow, party, baby, vibe) may appear inside a Spanish line: they are sung in English and count as English syllables ("beat" = 1).
 
 singing.engine "cloud": add "lyrics" (lines separated by \\n) to the sung sections. The engine sings the whole song in one take (sections are approximate) and it must fit in vocal_engine.max_song_seconds: about 50-70 bars. To change lyrics or the voice later, use sing_song.
 

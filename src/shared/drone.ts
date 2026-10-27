@@ -108,3 +108,24 @@ export function toMono(channels: Float32Array[]): Float32Array {
   for (const ch of channels) for (let i = 0; i < out.length; i++) out[i] += ch[i] / channels.length
   return out
 }
+
+/**
+ * Brillo de los últimos `tailSec` segundos: la mediana del nivel de agudos (dB respecto
+ * al total) de los segundos que suenan, o null si todo es silencio. Al continuar, cada
+ * tramo de MusicGen sale algo más apagado que el que escucha (en una canción real se
+ * midió −13 → −19 → −27 → −33 → −40), y ese final es lo que oye el siguiente.
+ */
+export function tailBrightness(
+  samples: Float32Array,
+  sampleRate: number,
+  tailSec: number,
+  silenceDb = DEFAULTS.silenceDb
+): number | null {
+  const stats = windowStats(samples, sampleRate)
+  const tail = stats
+    .slice(Math.max(0, stats.length - Math.ceil(tailSec)))
+    .filter((w) => w.db >= silenceDb)
+    .map((w) => w.highDb)
+    .sort((a, b) => a - b)
+  return tail.length > 0 ? tail[Math.floor(tail.length / 2)] : null
+}

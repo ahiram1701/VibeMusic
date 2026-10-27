@@ -3,8 +3,8 @@ import { AgentCancelled, AgentInterrupted, runAgent, type AgentEvent } from '@sh
 import { textOf, type LlmMessage, type LlmRetry } from '@shared/llm'
 import { newId } from '@shared/project'
 import { PRODUCER_SYSTEM_PROMPT } from '@shared/producer-prompt'
-import { reviewProject } from '@shared/arrange'
-import { findCollapse, toMono } from '@shared/drone'
+import { CONTEXT_SEC, reviewProject } from '@shared/arrange'
+import { findCollapse, tailBrightness, toMono } from '@shared/drone'
 import { createWebTools } from '@shared/web-tools'
 import {
   AGENT_PREFIX,
@@ -116,7 +116,11 @@ const host: ProducerHost = {
     const channels = Array.from({ length: buffer.numberOfChannels }, (_, i) =>
       buffer.getChannelData(i).subarray(from, to)
     )
-    return { collapseAtSec: findCollapse(toMono(channels), sr, opts) }
+    const mono = toMono(channels)
+    return {
+      collapseAtSec: findCollapse(mono, sr, opts),
+      tailBrightDb: tailBrightness(mono, sr, CONTEXT_SEC)
+    }
   },
   separate: (regionId) => separateRegion(regionId, { messagePrefix: AGENT_PREFIX }),
   myVoices: () => {
