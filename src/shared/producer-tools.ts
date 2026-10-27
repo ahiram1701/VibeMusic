@@ -19,7 +19,7 @@ import {
   type ChunkStep
 } from './arrange'
 import type { CollapseOptions } from './drone'
-import { findGenre, GENRES, PROMPT_EXAMPLES } from './genres'
+import { findGenre, GENRES, PROMPT_EXAMPLES, type GenreGuide } from './genres'
 import type { ProviderInfo, SingingEngine } from './generation'
 import { buildUstx, melodyForLyrics, placeMelody } from './melody'
 import { SINGER_PROVIDER, SINGER_VOICE } from './singer'
@@ -398,6 +398,9 @@ export function describeProject(p: Project, host: ProducerHost): unknown {
 export function createProducerTools(host: ProducerHost): AgentTool[] {
   const commit = (next: Project, message: string): Promise<void> =>
     host.commit(next, AGENT_PREFIX + message)
+  // Última guía de género consultada: el LLM copia la estructura pero a menudo se
+  // inventa el tempo (108 BPM para un tech house), así que compose_song lo ajusta.
+  let guide: GenreGuide | null = null
 
   const readyProvider = (): ProviderInfo => {
     const provider = host.audioProvider()
@@ -523,6 +526,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       run: async (input) => {
         const genre = str(input, 'genre')
         const g = findGenre(genre)
+        guide = g
         if (!g) {
           return {
             found: false,
@@ -626,7 +630,18 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       run: async (input, signal) => {
         // Se valida todo antes de tocar nada: si falla, el LLM corrige y vuelve a llamar.
         const spec = parseSongSpec(input)
-        const bpm = num(input, 'bpm', 40, 240, true)
+        const asked = num(input, 'bpm', 40, 240, true)
+        // Fuera del rango del género, el ritmo deja de ser ese género: se acerca al borde.
+        const bpm = guide
+          ? Math.min(
+              guide.bpm[1],
+              Math.max(guide.bpm[0], asked ?? (guide.bpm[0] + guide.bpm[1]) / 2)
+            )
+          : asked
+        const tempoNote =
+          guide && asked !== undefined && Math.round(asked) !== Math.round(bpm!)
+            ? `bpm ${asked} is outside the ${guide.id} range ${guide.bpm.join('-')}; used ${Math.round(bpm!)}. Use set_tempo_key only if the user asks for another tempo.`
+            : null
         const key = str(input, 'key', true)
         const p = host.getProject()
         // Con letra, o la canta entera el motor de la nube (de una vez), o se graba el
@@ -713,6 +728,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             ok: error === null,
             sung: true,
             bpm: final.bpm,
+            ...(tempoNote && { tempo_note: tempoNote }),
             key: final.key,
             ...(error && { error }),
             sections: sectionsOf(final).map((s) => ({
@@ -895,6 +911,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             vocal_hint: 'The instrumental is saved; fix the melody and call sing_melody.'
           }),
           bpm: final.bpm,
+          ...(tempoNote && { tempo_note: tempoNote }),
           key: final.key,
           bars_per_part: bars,
           parts_generated: generated,

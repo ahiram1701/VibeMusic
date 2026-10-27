@@ -234,7 +234,7 @@ export const GENRES: GenreGuide[] = [
       outro: 'kick, bassline and guitar riff, simpler'
     },
     avoid:
-      'industrial, dark, warehouse; for an industrial or malandro feel use distorted synth stabs and metallic percussion'
+      'industrial, dark, warehouse; dembow and reggaeton (they pull it to a slower reggaeton beat); for an industrial or malandro feel use distorted synth stabs and metallic percussion'
   },
   {
     id: 'house',

@@ -523,6 +523,18 @@ describe('productor · canciones completas', () => {
     expect(res.drone).toEqual([{ section: 'Verso', start_bar: 9 }])
   })
 
+  it('compose_song lleva el tempo al rango del género consultado', async () => {
+    const h = fakeHost(createProject('X'))
+    chainable(h)
+    await h.run('genre_guide', { genre: 'house/techno bien tumbado' })
+    const res = (await h.run('compose_song', { ...songInput, bpm: 108 })) as {
+      bpm: number
+      tempo_note?: string
+    }
+    expect(res.bpm).toBe(124)
+    expect(res.tempo_note).toMatch(/house-tumbado/)
+  })
+
   it('compose_song vuelve a escuchar el final más brillante si la continuación se apaga', async () => {
     const h = fakeHost(createProject('X'))
     const calls = chainable(h)
