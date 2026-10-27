@@ -262,10 +262,25 @@ function transitionOut(from: number | null, to: number | null): string {
     return 'ending with a drum fill and a riser building up into the next section'
   }
   if (from !== null && to !== null && to < from) {
-    return 'winding down at the end, transitioning into a calmer next section'
+    return 'ending with a short drum fill, the next section is softer'
   }
   return 'ending with a short drum fill into the next section'
 }
+
+/**
+ * Qué tiene que seguir sonando según la energía. MusicGen no entiende el número: con
+ * un arreglo tranquilo ("pad", "minimal") y sin esto, genera un drone de película.
+ */
+export function energyHint(energy: number | null): string {
+  if (energy !== null && energy <= 2) {
+    return 'laid-back groove, soft drums and bass still playing, clear melody'
+  }
+  if (energy !== null && energy >= 4) return 'full band, driving drums, prominent lead melody'
+  return 'steady drum groove, bass line and melody'
+}
+
+/** Ancla de "canción normal" en cada tramo (MusicGen no admite prompt negativo). */
+export const SONG_ANCHOR = 'full song mix, steady rhythm, not ambient, not cinematic'
 
 /**
  * Pasos para componer la canción: cada sección en tramos de `bars` compases (el
@@ -292,6 +307,8 @@ export function planChunks(spec: SongSpec, bars: number): ChunkStep[] {
       if (k === 0 && prev?.energy && s.energy && s.energy > prev.energy) {
         hints.push('powerful entrance, full energy from the first beat')
       }
+      hints.push(energyHint(s.energy), SONG_ANCHOR)
+      // La transición va al final: es lo último que suena en el tramo.
       if (k === count - 1) {
         hints.push(next ? transitionOut(s.energy, next.energy) : 'song ending, fading out')
       }

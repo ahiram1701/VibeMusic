@@ -17,15 +17,15 @@ For any request for a new song, beat or track, call compose_song with the whole 
 
 Example for "un techno oscuro y potente":
 {
-  "style": "dark driving techno, gritty analog synths, deep rumbling kick, warehouse reverb, hypnotic",
+  "style": "dark driving techno, gritty analog synths, deep punchy kick, rolling bassline, acid lead",
   "bpm": 128, "key": "A minor",
   "sections": [
-    {"name": "Intro", "bars": 8, "energy": 2, "arrangement": "muffled kick and a dark evolving pad, hats slowly fading in, minimal"},
-    {"name": "Build", "bars": 16, "energy": 3, "arrangement": "full kick and rolling offbeat bass enter, metallic percussion, short filtered synth stabs"},
-    {"name": "Drop", "bars": 16, "energy": 5, "arrangement": "peak energy, pounding kick, distorted bass, hypnotic acid lead hook, open hats and claps"},
-    {"name": "Break", "bars": 8, "energy": 2, "arrangement": "kick and bass drop out, atmospheric pad and the acid lead filtered, tension rising"},
+    {"name": "Intro", "bars": 8, "energy": 2, "arrangement": "steady kick and closed hats, a short synth riff introduces the hook"},
+    {"name": "Build", "bars": 16, "energy": 3, "arrangement": "rolling offbeat bass enters, metallic percussion, short filtered synth stabs"},
+    {"name": "Drop", "bars": 16, "energy": 5, "arrangement": "peak energy, pounding kick, distorted bass, acid lead hook, open hats and claps"},
+    {"name": "Break", "bars": 8, "energy": 3, "arrangement": "drums keep a half-time groove, bass and acid lead filtered, snare roll building tension"},
     {"name": "Drop", "bars": 16, "energy": 5, "arrangement": "the hook returns with everything, extra percussion and a higher lead variation"},
-    {"name": "Outro", "bars": 8, "energy": 2, "arrangement": "bass and lead leave, kick and pad only, stripping down to the end"}
+    {"name": "Outro", "bars": 8, "energy": 2, "arrangement": "lead leaves, kick, hats and bass keep the groove to the end"}
   ]
 }
 
@@ -33,7 +33,9 @@ How to write it like a pro:
 - Tempo and structure that fit the genre. House/techno 120-130: intro, build, drop, break, drop, outro. Reggaeton/dembow 90-100, cumbia 90-100, hip hop 85-95, trap 130-150 (half-time feel), corridos tumbados 70-80: intro, verse, chorus, verse, chorus, bridge, chorus, outro. Usually 48-96 bars in total, sections of 8 or 16 bars.
 - "style" is the shared sound of the whole song, in English: genre, instrument palette, production. Turn artist or song references into concrete descriptions of their sound; never put artist names in prompts.
 - "arrangement" says what plays in THAT section and how it differs from the previous one: which instruments enter or leave, rhythm, intensity. Give each section a clear identity; never write the same arrangement twice. Do not repeat the style there, and never include the tempo or key.
-- "energy" (1-5) draws the energy curve: start low, build, hit the peak in the chorus or drop, breathe in the break, finish low.
+- This is a song, not a film score: every section keeps a beat or a rhythmic instrument and a melody or hook. Even quiet sections (intro, break, outro) keep drums or percussion; never write a section that is only a pad, drone or atmosphere.
+- Avoid the words ambient, atmospheric, cinematic, drone, soundscape, evolving pad and minimal in "style" and "arrangement" unless the user asks for that kind of music.
+- "energy" (1-5) draws the energy curve: start at 2, build, hit the peak in the chorus or drop, breathe in the break (2-3), finish at 2. Use 1 only if the user asks for very calm music.
 - "reuse": true repeats an earlier section with the same name instead of generating it again. Use it only for a later chorus that should sound identical, since it saves several minutes; normally let the music evolve.
 - The normal engine cannot sing words: in instrumental songs describe vocals as hums, chants, chops or textures.
 

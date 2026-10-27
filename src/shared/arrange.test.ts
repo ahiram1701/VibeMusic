@@ -143,13 +143,22 @@ describe('planChunks', () => {
   it('añade transiciones según la curva de energía', () => {
     const [intro, coro1, coro2, brk] = generated(planChunks(parseSongSpec(song()), 8))
     expect(intro.prompt).toBe(
-      'kick and pad, dark techno, song intro, ending with a drum fill and a riser building up into the next section'
+      'kick and pad, dark techno, song intro, laid-back groove, soft drums and bass still playing, clear melody, full song mix, steady rhythm, not ambient, not cinematic, ending with a drum fill and a riser building up into the next section'
     )
     expect(coro1.prompt).toMatch(/^everything, acid lead, dark techno, powerful entrance/)
-    expect(coro1.prompt).not.toMatch(/ending|winding/) // a mitad de sección no hay transición
-    expect(coro2.prompt).toMatch(/winding down at the end/)
+    expect(coro1.prompt).not.toMatch(/ending/) // a mitad de sección no hay transición
+    expect(coro2.prompt).toMatch(/short drum fill, the next section is softer$/)
     // Break → Coro repetido (sin energía propia): transición neutra.
     expect(brk.prompt).toMatch(/short drum fill into the next section$/)
+  })
+
+  it('cada tramo pide ritmo y melodía según la energía, también los tranquilos', () => {
+    const [, coro1, , brk] = generated(planChunks(parseSongSpec(song()), 8))
+    expect(brk.prompt).toMatch(/^pad only, dark techno, laid-back groove, soft drums and bass/)
+    expect(coro1.prompt).toMatch(/full band, driving drums, prominent lead melody/)
+    for (const step of [coro1, brk]) {
+      expect(step.prompt).toMatch(/full song mix, steady rhythm, not ambient, not cinematic/)
+    }
   })
 
   it('el último tramo de la canción termina en fundido', () => {
