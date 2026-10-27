@@ -110,9 +110,9 @@ export interface Section {
   lyrics?: string
   /**
    * Melodía de la letra para el cantante local: una frase por línea con sus notas
-   * ("A4:0.5 B4 …", ver shared/melody.ts).
+   * ("A4:0.5 B4 …", ver shared/melody.ts) y, si se indicó, su idioma.
    */
-  melody?: { text: string; notes: string }[]
+  melody?: { text: string; notes: string; lang?: string }[]
 }
 
 export interface VersionMeta {

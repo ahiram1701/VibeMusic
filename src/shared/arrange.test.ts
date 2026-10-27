@@ -356,4 +356,22 @@ describe('letra', () => {
     })
     expect(() => vocalSongRequest({ ...p, sections: [p.sections[1]] })).toThrow(/no tiene letra/)
   })
+
+  it('vocalSongRequest no fija el idioma si la letra mezcla español e inglés', () => {
+    const p = {
+      ...createProject('X'),
+      style: 'reggaeton',
+      vocals: 'male vocal',
+      lyricsLanguage: 'es',
+      sections: [
+        { id: 'a', name: 'Verso', startBar: 1, bars: 8, lyrics: 'ven a bailar conmigo' },
+        { id: 'b', name: 'Coro', startBar: 9, bars: 8, lyrics: "baby don't stop tonight" }
+      ]
+    }
+    const req = vocalSongRequest(p)
+    expect(req.language).toBeUndefined()
+    expect(req.prompt).toBe(
+      'reggaeton, male vocal, bilingual Spanish and English lyrics, English lines sung with native English pronunciation'
+    )
+  })
 })

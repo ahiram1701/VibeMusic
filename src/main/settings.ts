@@ -15,8 +15,8 @@ export interface SecretCipher {
   decrypt(data: Buffer): string
 }
 
-/** 'replicateToken', 'hfToken' o `llm:<id del proveedor>`. */
-export type SecretName = 'replicateToken' | 'hfToken' | `llm:${string}`
+/** 'replicateToken', 'hfToken', 'ollamaWebKey' o `llm:<id del proveedor>`. */
+export type SecretName = 'replicateToken' | 'hfToken' | 'ollamaWebKey' | `llm:${string}`
 
 export const llmSecret = (providerId: string): SecretName => `llm:${providerId}`
 
@@ -27,6 +27,8 @@ interface SettingsFile {
   llmProvider: LlmProviderId
   llmModels: Record<string, string>
   llmUrls: Record<string, string>
+  /** El productor puede buscar en internet y leer páginas. */
+  webAccess: boolean
   secrets: Record<string, string>
   /** Última versión de la app que se abrió (para enseñar las novedades una vez). */
   lastRunVersion?: string
@@ -76,6 +78,7 @@ export class SettingsStore {
       llmProvider: 'anthropic',
       llmModels: Object.fromEntries(LLM_PROVIDERS.map((p) => [p.id, p.defaultModel])),
       llmUrls: {},
+      webAccess: true,
       secrets: {}
     }
   }
@@ -108,6 +111,7 @@ export class SettingsStore {
           ...Object.fromEntries(Object.entries(raw.llmModels ?? {}).filter(([, m]) => m))
         },
         llmUrls: urls,
+        webAccess: raw.webAccess ?? d.webAccess,
         secrets,
         lastRunVersion: raw.lastRunVersion,
         pendingReleaseNotes: raw.pendingReleaseNotes,
@@ -133,6 +137,7 @@ export class SettingsStore {
       hasHfToken: !!s.secrets.hfToken,
       singingEngine: s.singingEngine,
       localModel: s.localModel,
+      web: { enabled: s.webAccess, hasOllamaKey: !!s.secrets.ollamaWebKey },
       llm: {
         provider: s.llmProvider,
         models: s.llmModels,
@@ -157,6 +162,14 @@ export class SettingsStore {
       throw new Error(`Motor de canto desconocido: ${engine}`)
     }
     await this.save({ ...(await this.load()), singingEngine: engine })
+  }
+
+  async setWebAccess(enabled: boolean): Promise<void> {
+    await this.save({ ...(await this.load()), webAccess: !!enabled })
+  }
+
+  async webAccess(): Promise<boolean> {
+    return (await this.load()).webAccess
   }
 
   async setLocalModel(id: string): Promise<void> {

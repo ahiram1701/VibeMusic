@@ -8,6 +8,7 @@ import {
   type Track,
   type TrackRole
 } from './project'
+import { lyricsLanguages } from './lyrics-language'
 import { sectionsOf } from './sections'
 
 // Arreglo automático. El productor escribe el arreglo (qué suena y con qué energía en
@@ -36,7 +37,7 @@ export interface SongSpec {
     /** Letra cantada en esta sección; null si es instrumental. */
     lyrics: string | null
     /** Melodía de la letra para el cantante local (una entrada por frase), o null. */
-    melody: { text: string; notes: string }[] | null
+    melody: { text: string; notes: string; lang?: string }[] | null
   }[]
 }
 
@@ -134,7 +135,7 @@ export function parseSongSpec(input: Input): SongSpec {
 export function parseMelodyLines(
   raw: unknown,
   section: string
-): { text: string; notes: string }[] | null {
+): { text: string; notes: string; lang?: string }[] | null {
   const value = parseJsonish(raw)
   if (value === undefined || value === null || (Array.isArray(value) && value.length === 0)) {
     return null
@@ -151,7 +152,8 @@ export function parseMelodyLines(
     if (!text || !notes) {
       throw new Error(`Sección "${section}", frase ${i + 1}: falta "text" o "notes"`)
     }
-    return { text, notes }
+    const lang = typeof it.lang === 'string' ? it.lang.trim().toLowerCase() : ''
+    return { text, notes, ...(/^[a-z]{2}$/.test(lang) && { lang }) }
   })
 }
 
@@ -205,6 +207,8 @@ export function hasLyrics(sections: { lyrics?: string | null }[]): boolean {
   return sections.some((s) => !!s.lyrics?.trim())
 }
 
+const languageName = (code: string): string => ({ es: 'Spanish', en: 'English' })[code] ?? code
+
 /**
  * Lo que hay que pedir al motor para cantar la canción del proyecto entera, de una
  * vez: descripción del sonido y la voz, la letra con sus etiquetas y cuántos compases
@@ -219,11 +223,23 @@ export function vocalSongRequest(p: Project): {
   const sections = sectionsOf(p)
   if (!hasLyrics(sections)) throw new Error('La canción no tiene letra')
   const bars = Math.max(...sections.map((s) => s.startBar + s.bars - 1))
-  const prompt = [p.style?.trim(), p.vocals?.trim()].filter(Boolean).join(', ')
+  const lyrics = formatLyrics(sections)
+  // Con la letra mezclando español e inglés no se fija el idioma: fijarlo obliga al
+  // motor a pronunciarlo todo así ("baby" a la española). Se le describe la mezcla.
+  const langs = p.lyricsLanguage ? lyricsLanguages(lyrics, p.lyricsLanguage) : []
+  const mixed = langs.length > 1
+  const prompt = [
+    p.style?.trim(),
+    p.vocals?.trim(),
+    mixed &&
+      `bilingual ${langs.map(languageName).join(' and ')} lyrics, English lines sung with native English pronunciation`
+  ]
+    .filter(Boolean)
+    .join(', ')
   return {
     prompt: prompt || 'song with vocals',
-    lyrics: formatLyrics(sections),
-    ...(p.lyricsLanguage && { language: p.lyricsLanguage }),
+    lyrics,
+    ...(p.lyricsLanguage && !mixed && { language: p.lyricsLanguage }),
     bars
   }
 }

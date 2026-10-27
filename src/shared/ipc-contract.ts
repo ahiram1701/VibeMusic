@@ -12,6 +12,7 @@ import type { StemResult } from './stems'
 import type { GenerationSpec, Project, VersionMeta } from './project'
 import type { UpdateStatus, WhatsNew } from './update'
 import type { VoiceConvertOptions, VoiceEngineStatus, VoiceModel } from './voice'
+import type { WebPage, WebResult } from './web'
 
 export type KeyCheck = { ok: true; info: string } | { ok: false; error: string }
 
@@ -147,6 +148,11 @@ export interface VibeApi {
     clearHfToken(): Promise<void>
     setDefaultProvider(id: ProviderId): Promise<void>
     setSingingEngine(engine: SingingEngine): Promise<void>
+    /** Deja (o no) que el productor busque en internet. */
+    setWebAccess(enabled: boolean): Promise<void>
+    /** Comprueba la clave de Ollama con una búsqueda y, si vale, la guarda cifrada. */
+    setOllamaWebKey(key: string): Promise<KeyCheck>
+    clearOllamaWebKey(): Promise<void>
     setLocalModel(id: string): Promise<void>
     setLlm(patch: {
       provider?: LlmProviderId
@@ -158,6 +164,12 @@ export interface VibeApi {
     clearLlmKey(provider: LlmProviderId): Promise<void>
     /** Prueba la conexión con la configuración guardada del proveedor. */
     testLlm(provider: LlmProviderId): Promise<KeyCheck>
+  }
+  web: {
+    /** Busca en internet (DuckDuckGo, o Ollama si hay clave). */
+    search(query: string): Promise<WebResult[]>
+    /** Lee el texto de una página pública (recortado). */
+    read(url: string): Promise<WebPage>
   }
   export: {
     /** Guarda un archivo donde elija el usuario. Devuelve la ruta o null si cancela. */
@@ -222,6 +234,11 @@ export type IpcChannel =
   | 'singer:render'
   | 'singer:cancel'
   | 'settings:setSingingEngine'
+  | 'settings:setWebAccess'
+  | 'settings:setOllamaWebKey'
+  | 'settings:clearOllamaWebKey'
+  | 'web:search'
+  | 'web:read'
   | 'voice:status'
   | 'voice:install'
   | 'voice:uninstall'

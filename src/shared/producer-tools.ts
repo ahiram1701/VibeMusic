@@ -103,6 +103,13 @@ export interface ProducerHost {
 }
 
 const ROLES: TrackRole[] = ['drums', 'bass', 'chords', 'melody', 'vocal', 'fx', 'full']
+
+/** Idioma de una frase de la melodía (el cantante local pronuncia cada frase en el suyo). */
+const LINE_LANG_SCHEMA = {
+  type: 'string',
+  description:
+    'ISO 639-1 code of this phrase when it differs from the song language (e.g. "en" for an English line in a Spanish song). Omit otherwise.'
+}
 /** Prefijo de los cambios hechos por el agente en el historial. */
 export const AGENT_PREFIX = '🤖 '
 
@@ -255,7 +262,8 @@ export async function singLocally(
   }))
   const notes = placeMelody(sections, perBar(p), {
     strict: opts.strict,
-    range: SINGER_VOICE.range
+    range: SINGER_VOICE.range,
+    language: p.lyricsLanguage ?? 'es'
   })
   if (notes.length === 0) {
     throw new Error(
@@ -539,7 +547,8 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
                       type: 'object',
                       properties: {
                         text: { type: 'string' },
-                        notes: { type: 'string' }
+                        notes: { type: 'string' },
+                        lang: LINE_LANG_SCHEMA
                       },
                       required: ['text', 'notes'],
                       additionalProperties: false
@@ -588,7 +597,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
               return placed
             }),
             perBar(p),
-            { strict: true, range: SINGER_VOICE.range }
+            { strict: true, range: SINGER_VOICE.range, language: spec.language ?? undefined }
           )
         }
         if (cloud) {
@@ -781,7 +790,11 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
                     type: 'array',
                     items: {
                       type: 'object',
-                      properties: { text: { type: 'string' }, notes: { type: 'string' } },
+                      properties: {
+                        text: { type: 'string' },
+                        notes: { type: 'string' },
+                        lang: LINE_LANG_SCHEMA
+                      },
                       required: ['text', 'notes'],
                       additionalProperties: false
                     }
@@ -811,7 +824,11 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           })
         }
         // Se valida antes de guardar: si falla, el LLM corrige la melodía.
-        placeMelody(sectionsOf(p), perBar(p), { strict: true, range: SINGER_VOICE.range })
+        placeMelody(sectionsOf(p), perBar(p), {
+          strict: true,
+          range: SINGER_VOICE.range,
+          language: p.lyricsLanguage ?? undefined
+        })
         if (p !== host.getProject()) await commit(p, 'melodía actualizada')
         const r = await singLocally(host, { strict: true, message: AGENT_PREFIX + 'voz cantada' })
         return { ok: true, track_id: r.trackId, region_id: r.regionId, notes: r.notes }

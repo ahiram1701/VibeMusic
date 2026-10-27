@@ -3,10 +3,14 @@
 // reparten en las notas y se genera el proyecto de OpenUtau (.ustx) que se renderiza.
 // Todo es puro (sin E/S) para poder probarlo sin la app.
 
+import { lineLanguage } from './lyrics-language'
+
 /** Una frase de la letra con su melodía: "A4:0.5 B4:0.5 C5:1 R:1 …" (nota:pulsos). */
 export interface MelodyLine {
   text: string
   notes: string
+  /** Idioma de la frase ("en", "es"…) si el productor lo indica; si no, se adivina. */
+  lang?: string
 }
 
 /** Nota ya colocada: en pulsos (negras) desde el inicio de la canción. */
@@ -17,6 +21,8 @@ export interface SungNote {
   midi: number
   /** Palabra en su primera sílaba; "+" en las siguientes (así lo entiende OpenUtau). */
   lyric: string
+  /** Idioma con el que se pronuncia (cada idioma va en su pista del .ustx). */
+  lang?: string
 }
 
 // --- Sílabas (español) -----------------------------------------------------------
@@ -116,8 +122,112 @@ export function syllables(word: string): string[] {
   return out
 }
 
-/** Palabras cantables de una frase, cada una con sus sílabas. */
-export function lineSyllables(text: string): { word: string; syllables: string[] }[] {
+// --- Sílabas (inglés) ------------------------------------------------------------
+// El fonemizador inglés de OpenUtau busca cada palabra en su diccionario: basta con
+// saber cuántas notas ocupa (las sílabas que se oyen, no las vocales escritas).
+
+/** Palabras en las que contar grupos de vocales falla. */
+const ENGLISH_EXCEPTIONS: Record<string, string[]> = {
+  every: ['ev', 'ery'],
+  everything: ['ev', 'ery', 'thing'],
+  everyone: ['ev', 'ery', 'one'],
+  everybody: ['ev', 'ery', 'bo', 'dy'],
+  someone: ['some', 'one'],
+  somebody: ['some', 'bo', 'dy'],
+  something: ['some', 'thing'],
+  sometimes: ['some', 'times'],
+  maybe: ['may', 'be'],
+  fire: ['fire'],
+  desire: ['de', 'sire'],
+  our: ['our'],
+  hour: ['hour'],
+  hours: ['hours'],
+  heaven: ['hea', 'ven'],
+  different: ['dif', 'frent'],
+  beautiful: ['beau', 'ti', 'ful'],
+  people: ['peo', 'ple'],
+  real: ['real'],
+  idea: ['i', 'de', 'a'],
+  lion: ['li', 'on'],
+  quiet: ['qui', 'et'],
+  science: ['sci', 'ence'],
+  create: ['cre', 'ate'],
+  queen: ['queen']
+}
+
+const EN_VOWELS = /[aeiouy]+/g
+
+/** Normaliza una palabra inglesa: minúsculas, solo letras y el apóstrofo ("Don’t" → "don't"). */
+function englishWord(word: string): string {
+  return word
+    .toLowerCase()
+    .replace(/[’`]/g, "'")
+    .replace(/[^a-z']/g, '')
+    .replace(/^'+|'+$/g, '')
+}
+
+/**
+ * Sílabas que se oyen de una palabra en inglés ("tonight" → to·night, "time" → time,
+ * "loved" → loved). Aproximado: grupos de vocales, sin la e muda final ni la de -ed/-es.
+ */
+export function englishSyllables(word: string): string[] {
+  const w = englishWord(word)
+  if (!/[a-z]/.test(w)) return []
+  const base = w.replace(/'(s|d|ll|re|ve|m|t)$/, '')
+  if (ENGLISH_EXCEPTIONS[base]) return ENGLISH_EXCEPTIONS[base]
+  // Grupos de vocales (la "y" inicial es consonante: "you", "yeah").
+  const groups: { start: number; end: number }[] = []
+  for (const m of base.matchAll(EN_VOWELS)) {
+    let start = m.index
+    let text = m[0]
+    if (start === 0 && text[0] === 'y') {
+      start++
+      text = text.slice(1)
+      if (!text) continue
+    }
+    // "going", "being", "saying": la i de -ing es otra sílaba.
+    if (text.length > 1 && text.endsWith('i') && base.slice(start + text.length) === 'ng') {
+      groups.push({ start, end: start + text.length - 1 })
+      groups.push({ start: start + text.length - 1, end: start + text.length })
+      continue
+    }
+    groups.push({ start, end: start + text.length })
+  }
+  if (groups.length > 1) {
+    const last = groups[groups.length - 1]
+    const tail = base.slice(last.start)
+    const before = base[last.start - 1] ?? ''
+    const silent =
+      // e muda: "time", "love", "fire" (pero no "little", "free", "the")
+      (tail === 'e' && !/[aeiouy]/.test(before) && !base.endsWith('le')) ||
+      // -ed que no suena: "loved" (pero "wanted", "needed")
+      (tail === 'ed' && !/[td]/.test(before)) ||
+      // -es que no suena: "times" (pero "kisses", "places")
+      (tail === 'es' && !/[sxzc]|[cs]h|g/.test(base.slice(last.start - 2, last.start)))
+    if (silent) groups.pop()
+  }
+  if (groups.length <= 1) return [w]
+  // Se corta antes de la última consonante entre dos grupos ("ba·by", "danc·ing").
+  const out: string[] = []
+  let from = 0
+  for (let k = 1; k < groups.length; k++) {
+    const gap = groups[k].start - groups[k - 1].end
+    const cut = gap === 0 ? groups[k].start : groups[k].start - 1
+    out.push(w.slice(from, cut))
+    from = cut
+  }
+  out.push(w.slice(from))
+  return out
+}
+
+/** Palabras cantables de una frase, cada una con sus sílabas (en español o inglés). */
+export function lineSyllables(text: string, lang = 'es'): { word: string; syllables: string[] }[] {
+  if (lang === 'en') {
+    return text
+      .split(/[^\p{L}'’`]+/u)
+      .map((w) => ({ word: englishWord(w), syllables: englishSyllables(w) }))
+      .filter((w) => w.syllables.length > 0)
+  }
   return text
     .split(/[\s\-—–]+/)
     .map((w) => ({ word: clean(w), syllables: syllables(w) }))
@@ -172,9 +282,10 @@ export function parseNotes(notes: string): ParsedNote[] {
 export function alignLine(
   line: MelodyLine,
   startBeat: number,
-  opts: { strict: boolean }
+  opts: { strict: boolean; language?: string }
 ): { notes: SungNote[]; beats: number } {
-  const words = lineSyllables(line.text)
+  const lang = line.lang ?? lineLanguage(line.text, opts.language ?? 'es')
+  const words = lineSyllables(line.text, lang)
   const parsed = parseNotes(line.notes)
   const total = parsed.reduce((n, p) => n + p.beats, 0)
   const sung = words.flatMap((w) => w.syllables.map((_, i) => (i === 0 ? w.word : '+')))
@@ -182,8 +293,9 @@ export function alignLine(
   if (sung.length === 0) return { notes: [], beats: total }
   if (pitched.length < sung.length) {
     // Cantando, las vocales que se tocan se unen en una sílaba (sinalefa, sinéresis):
-    // una melodía con menos notas es correcta mientras no baje de ese mínimo.
-    const fewest = sung.length - vowelJoins(words)
+    // una melodía con menos notas es correcta mientras no baje de ese mínimo. En inglés
+    // las sílabas se cuentan de forma aproximada: se admite una nota menos por frase.
+    const fewest = sung.length - (lang === 'es' ? vowelJoins(words) : 1)
     if (opts.strict && pitched.length < fewest) {
       const split = words.map((w) => w.syllables.join('-')).join(' ')
       throw new Error(
@@ -201,14 +313,18 @@ export function alignLine(
       const half = many[i].beats / 2
       many.splice(i, 1, { ...many[i], beats: half }, { ...many[i], beats: half })
     }
-    return alignLine({ text: line.text, notes: many.map(noteText).join(' ') }, startBeat, opts)
+    return alignLine(
+      { text: line.text, notes: many.map(noteText).join(' '), lang },
+      startBeat,
+      opts
+    )
   }
   const out: SungNote[] = []
   let beat = startBeat
   let k = 0
   for (const p of parsed) {
     if (p.midi !== null) {
-      out.push({ beat, beats: p.beats, midi: p.midi, lyric: k < sung.length ? sung[k] : '+' })
+      out.push({ beat, beats: p.beats, midi: p.midi, lyric: k < sung.length ? sung[k] : '+', lang })
       k++
     }
     beat += p.beats
@@ -251,7 +367,7 @@ function noteText(p: ParsedNote): string {
 export function placeMelody(
   sections: { name: string; startBar: number; bars: number; melody?: MelodyLine[] }[],
   beatsPerBar: number,
-  opts: { strict: boolean; range?: [number, number] }
+  opts: { strict: boolean; range?: [number, number]; language?: string }
 ): SungNote[] {
   const notes: SungNote[] = []
   for (const s of sections) {
@@ -298,7 +414,11 @@ export function melodyForLyrics(
     .map((l) => l.trim())
     .filter(Boolean)
   if (!lines.length || !melody?.length) return null
-  return lines.map((text, i) => ({ text, notes: (melody[i] ?? melody[melody.length - 1]).notes }))
+  return lines.map((text, i) => {
+    const line = melody[i] ?? melody[melody.length - 1]
+    // El idioma indicado vale mientras la frase no cambie; si se editó, se adivina.
+    return { text, notes: line.notes, ...(line.lang && line.text === text && { lang: line.lang }) }
+  })
 }
 
 // --- Proyecto de OpenUtau (.ustx) -------------------------------------------------
@@ -318,7 +438,11 @@ export const SINGER_LANGUAGES = Object.keys(PHONEMIZERS)
 
 const yamlString = (s: string): string => `'${s.replace(/'/g, "''")}'`
 
-/** Proyecto .ustx con una pista de voz: lo que renderiza OpenUtau. */
+/**
+ * Proyecto .ustx que renderiza OpenUtau: una pista de voz por idioma (el fonemizador
+ * es de la pista), todas con el mismo cantante. OpenUtau las mezcla al renderizar,
+ * así que las frases en inglés de una canción en español se pronuncian en inglés.
+ */
 export function buildUstx(opts: {
   singer: string
   language: string
@@ -326,7 +450,10 @@ export function buildUstx(opts: {
   beatsPerBar: number
   notes: SungNote[]
 }): string {
-  const phonemizer = PHONEMIZERS[opts.language] ?? PHONEMIZERS.es
+  const main = PHONEMIZERS[opts.language] ? opts.language : 'es'
+  const langOf = (n: SungNote): string => (n.lang && PHONEMIZERS[n.lang] ? n.lang : main)
+  const langs = [main, ...new Set(opts.notes.map(langOf).filter((l) => l !== main))]
+  const name = (lang: string): string => (lang === main ? 'Voz' : `Voz (${lang})`)
   const lines = [
     'name: VibeMusic',
     "ustx_version: '0.6'",
@@ -341,36 +468,39 @@ export function buildUstx(opts: {
     'tempos:',
     '- position: 0',
     `  bpm: ${opts.bpm}`,
-    'tracks:',
-    `- singer: ${yamlString(opts.singer)}`,
-    `  phonemizer: ${phonemizer}`,
-    '  renderer_settings:',
-    '    renderer: DIFFSINGER',
-    '  track_name: Voz',
-    '  volume: 0',
-    '  pan: 0',
-    'voice_parts:',
-    '- name: Voz',
-    '  track_no: 0',
-    '  position: 0',
-    '  notes:'
+    'tracks:'
   ]
-  for (const n of opts.notes) {
+  for (const lang of langs) {
     lines.push(
-      `  - position: ${Math.round(n.beat * RESOLUTION)}`,
-      `    duration: ${Math.max(1, Math.round(n.beats * RESOLUTION))}`,
-      `    tone: ${n.midi}`,
-      `    lyric: ${yamlString(n.lyric)}`,
-      '    pitch:',
-      '      data:',
-      '      - {x: -40, y: 0, shape: io}',
-      '      - {x: 40, y: 0, shape: io}',
-      '      snap_first: true',
-      '    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0, vol_link: 0}',
-      '    phoneme_expressions: []',
-      '    phoneme_overrides: []'
+      `- singer: ${yamlString(opts.singer)}`,
+      `  phonemizer: ${PHONEMIZERS[lang]}`,
+      '  renderer_settings:',
+      '    renderer: DIFFSINGER',
+      `  track_name: ${name(lang)}`,
+      '  volume: 0',
+      '  pan: 0'
     )
   }
+  lines.push('voice_parts:')
+  langs.forEach((lang, trackNo) => {
+    lines.push(`- name: ${name(lang)}`, `  track_no: ${trackNo}`, '  position: 0', '  notes:')
+    for (const n of opts.notes.filter((n) => langOf(n) === lang)) {
+      lines.push(
+        `  - position: ${Math.round(n.beat * RESOLUTION)}`,
+        `    duration: ${Math.max(1, Math.round(n.beats * RESOLUTION))}`,
+        `    tone: ${n.midi}`,
+        `    lyric: ${yamlString(n.lyric)}`,
+        '    pitch:',
+        '      data:',
+        '      - {x: -40, y: 0, shape: io}',
+        '      - {x: 40, y: 0, shape: io}',
+        '      snap_first: true',
+        '    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0, vol_link: 0}',
+        '    phoneme_expressions: []',
+        '    phoneme_overrides: []'
+      )
+    }
+  })
   return lines.join('\n') + '\n'
 }
 

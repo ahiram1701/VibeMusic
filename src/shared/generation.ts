@@ -66,5 +66,7 @@ export interface AppSettings {
   singingEngine: SingingEngine
   /** Modelo del motor local (ver LOCAL_MODELS). */
   localModel: string
+  /** Internet para el productor: si puede buscar y si hay clave de Ollama (más estable). */
+  web: { enabled: boolean; hasOllamaKey: boolean }
   llm: LlmSettings
 }
