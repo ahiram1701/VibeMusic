@@ -284,22 +284,18 @@ async function finalize(jobId: string): Promise<void> {
       sampleRate: sr
     })
 
-    // Se lee el proyecto *ahora* (no al empezar): el usuario pudo editar mientras tanto.
-    const project = useProject.getState().project!
-    const replaced =
-      placement.replaceRegionId &&
-      project.tracks.find((t) => t.regions.some((r) => r.id === placement.replaceRegionId))
-    const target =
-      replaced || (placement.trackId && project.tracks.find((t) => t.id === placement.trackId))
     // El tramo al que continúa: misma pista, mismo clip de partida y termina donde
     // empieza este. Se iguala el volumen del pre-roll a su final y se le funde la salida.
+    const snapshot = useProject.getState().project!
     const prev =
-      leadIn > 0 && target
-        ? target.regions.find(
-            (r) =>
-              r.clipId === job.spec.conditioning?.clipId &&
-              Math.abs(r.startBeat + (r.lengthSec * project.bpm) / 60 - placement.atBeat) < 0.05
-          )
+      leadIn > 0
+        ? snapshot.tracks
+            .find((t) => t.id === placement.trackId)
+            ?.regions.find(
+              (r) =>
+                r.clipId === job.spec.conditioning?.clipId &&
+                Math.abs(r.startBeat + (r.lengthSec * snapshot.bpm) / 60 - placement.atBeat) < 0.05
+            )
         : undefined
     const prevBuffer = prev && engine.buffers.get(prev.clipId)
     if (prev && prevBuffer) {
@@ -323,6 +319,14 @@ async function finalize(jobId: string): Promise<void> {
     channels.forEach((ch, i) => buffer.copyToChannel(ch as Float32Array<ArrayBuffer>, i))
     engine.buffers.set(clipId, buffer)
 
+    // Se lee el proyecto *ahora*, tras las esperas: el usuario pudo editar mientras
+    // tanto, y otra generación pudo terminar y añadir su región.
+    const project = useProject.getState().project!
+    const replaced =
+      placement.replaceRegionId &&
+      project.tracks.find((t) => t.regions.some((r) => r.id === placement.replaceRegionId))
+    const target =
+      replaced || (placement.trackId && project.tracks.find((t) => t.id === placement.trackId))
     const region: Region = {
       id: newId('rgn'),
       clipId,
