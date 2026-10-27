@@ -4,6 +4,7 @@ import type { ProviderId } from '@shared/generation'
 import { useGeneration } from '../store/generation'
 import { useLayout, type SettingsTab } from '../store/layout'
 import { LlmSettingsSection } from './LlmSettingsSection'
+import { WebAccessSection } from './WebAccessSection'
 import { LocalEngineSection } from './LocalEngineSection'
 import { MyVoiceSection } from './MyVoiceSection'
 import { SingerSection } from './SingerSection'
@@ -61,7 +62,12 @@ export function SettingsDialog({
           ))}
         </nav>
         <div className="min-w-0 flex-1 space-y-8 p-5" role="tabpanel">
-          {tab === 'llm' && <LlmSettingsSection />}
+          {tab === 'llm' && (
+            <>
+              <LlmSettingsSection />
+              <WebAccessSection />
+            </>
+          )}
           {tab === 'audio' && (
             <>
               <DefaultEngineSection />

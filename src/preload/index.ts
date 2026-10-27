@@ -163,11 +163,18 @@ const api: VibeApi = {
     clearHfToken: () => invoke('settings:clearHfToken'),
     setDefaultProvider: (id) => invoke('settings:setDefaultProvider', id),
     setSingingEngine: (engine) => invoke('settings:setSingingEngine', engine),
+    setWebAccess: (enabled) => invoke('settings:setWebAccess', enabled),
+    setOllamaWebKey: (key) => invoke('settings:setOllamaWebKey', key),
+    clearOllamaWebKey: () => invoke('settings:clearOllamaWebKey'),
     setLocalModel: (id) => invoke('settings:setLocalModel', id),
     setLlm: (patch) => invoke('settings:setLlm', patch),
     setLlmKey: (provider, key) => invoke('settings:setLlmKey', provider, key),
     clearLlmKey: (provider) => invoke('settings:clearLlmKey', provider),
     testLlm: (provider) => invoke('settings:testLlm', provider)
+  },
+  web: {
+    search: (query) => invoke('web:search', query),
+    read: (url) => invoke('web:read', url)
   },
   export: {
     saveFile: (bytes, name, ext) => invoke('export:saveFile', bytes, name, ext),

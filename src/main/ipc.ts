@@ -33,6 +33,7 @@ import { LlmService } from './llm/service'
 import { log, logDir } from './log'
 import { KeepAwake } from './power'
 import { llmSecret, SettingsStore } from './settings'
+import { createWebSearch } from './web/search'
 import { SidecarManager } from './sidecar/manager'
 import { StemsService } from './stems'
 import { VoiceEngine } from './voice/engine'
@@ -294,6 +295,34 @@ export function registerIpc(): { shutdown(): void } {
   })
   handle('singer:cancel', (requestId: string) => singer.cancel(requestId))
   handle('settings:setSingingEngine', (engine: SingingEngine) => settings.setSingingEngine(engine))
+
+  // Internet para el productor (sus herramientas web_search y read_page).
+  const web = createWebSearch({ getOllamaKey: () => settings.getSecret('ollamaWebKey') })
+  const webAllowed = async (): Promise<void> => {
+    if (!(await settings.webAccess())) {
+      throw new Error('El acceso a internet del productor está desactivado en Ajustes.')
+    }
+  }
+  handle('web:search', async (query: string) => {
+    await webAllowed()
+    return web.search(query)
+  })
+  handle('web:read', async (url: string) => {
+    await webAllowed()
+    return web.read(url)
+  })
+  handle('settings:setWebAccess', (enabled: boolean) => settings.setWebAccess(enabled))
+  handle('settings:setOllamaWebKey', (key: string) =>
+    check(async () => {
+      const trimmed = key.trim()
+      // Se prueba con una búsqueda de verdad antes de guardarla.
+      const probe = createWebSearch({ getOllamaKey: async () => trimmed })
+      await probe.search('music')
+      await settings.setSecret('ollamaWebKey', trimmed)
+      return 'Clave de Ollama guardada'
+    })
+  )
+  handle('settings:clearOllamaWebKey', () => settings.setSecret('ollamaWebKey', null))
 
   const stems = new StemsService(sidecar)
   ipcMain.handle('stems:separate', (event, requestId: string, dir: string, clipFile: string) =>

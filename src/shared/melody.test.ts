@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   alignLine,
   buildUstx,
+  englishSyllables,
   lineSyllables,
+  melodyForLyrics,
   melodyEndBeat,
   noteToMidi,
   parseNotes,
@@ -38,6 +40,69 @@ describe('sílabas en español', () => {
     expect(lineSyllables('Ven a bailar, mi amor').map((w) => w.syllables.length)).toEqual([
       1, 1, 2, 1, 2
     ])
+  })
+})
+
+describe('sílabas en inglés', () => {
+  it.each([
+    ['time', 1],
+    ['love', 1],
+    ['loved', 1],
+    ['wanted', 2],
+    ['baby', 2],
+    ['tonight', 2],
+    ["don't", 1],
+    ['Don’t', 1],
+    ['fire', 1],
+    ['every', 2],
+    ['dancing', 2],
+    ['going', 2],
+    ['beautiful', 3],
+    ['little', 2],
+    ['free', 1],
+    ['the', 1],
+    ['you', 1],
+    ['yeah', 1],
+    ['times', 1],
+    ['kisses', 2],
+    ['forever', 3],
+    ['alive', 2]
+  ])('%s → %i', (word, n) => {
+    expect(englishSyllables(word)).toHaveLength(n)
+  })
+
+  it('una frase en inglés conserva los apóstrofos y cuenta las sílabas que se oyen', () => {
+    expect(lineSyllables("Baby, don't stop the time", 'en')).toEqual([
+      { word: 'baby', syllables: ['ba', 'by'] },
+      { word: "don't", syllables: ["don't"] },
+      { word: 'stop', syllables: ['stop'] },
+      { word: 'the', syllables: ['the'] },
+      { word: 'time', syllables: ['time'] }
+    ])
+  })
+
+  it('reparte una frase inglesa: la palabra en su primera nota y "+" en las demás', () => {
+    const { notes } = alignLine({ text: 'baby tonight', notes: 'A4 B4 C5 D5' }, 0, {
+      strict: true,
+      language: 'es'
+    })
+    expect(notes.map((n) => [n.lyric, n.lang])).toEqual([
+      ['baby', 'en'],
+      ['+', 'en'],
+      ['tonight', 'en'],
+      ['+', 'en']
+    ])
+  })
+
+  it('el idioma indicado en la frase manda sobre el adivinado', () => {
+    const { notes } = alignLine({ text: 'no no', notes: 'A4 B4', lang: 'en' }, 0, { strict: true })
+    expect(notes.every((n) => n.lang === 'en')).toBe(true)
+  })
+
+  it('al editar la letra a mano se olvida el idioma de la frase antigua', () => {
+    const melody = [{ text: 'baby tonight', notes: 'A4 B4 C5 D5', lang: 'en' }]
+    expect(melodyForLyrics('baby tonight', melody)?.[0].lang).toBe('en')
+    expect(melodyForLyrics('ven conmigo', melody)?.[0].lang).toBeUndefined()
   })
 })
 
@@ -163,5 +228,39 @@ describe('colocar la melodía y generar el .ustx', () => {
     expect(ustx).toContain('bpm: 96')
     expect(ustx).toContain("  - position: 3840\n    duration: 480\n    tone: 69\n    lyric: 'bajo'")
     expect(ustx.match(/ {2}- position:/g)).toHaveLength(9) // notas (sin contar el tempo)
+    expect(ustx.match(/- singer:/g)).toHaveLength(1) // un solo idioma: una pista
+  })
+
+  it('pone las frases en inglés en otra pista con el fonemizador inglés', () => {
+    const ustx = buildUstx({
+      singer: 'Hanami',
+      language: 'es',
+      bpm: 96,
+      beatsPerBar: 4,
+      notes: placeMelody(
+        [
+          {
+            name: 'Coro',
+            startBar: 1,
+            bars: 4,
+            melody: [
+              { text: 'ven a bailar', notes: 'A4 B4 C5 B4' },
+              { text: 'baby tonight', notes: 'A4 B4 C5 D5' }
+            ]
+          }
+        ],
+        4,
+        { strict: true, language: 'es' }
+      )
+    })
+    expect(ustx.match(/- singer: 'Hanami'/g)).toHaveLength(2)
+    expect(ustx).toContain('phonemizer: OpenUtau.Core.DiffSinger.DiffSingerSpanishPhonemizer')
+    expect(ustx).toContain('phonemizer: OpenUtau.Core.DiffSinger.DiffSingerEnglishPhonemizer')
+    const [es, en] = ustx.split('voice_parts:')[1].split('- name: ').slice(1)
+    expect(es).toMatch(/^Voz\n {2}track_no: 0/)
+    expect(es).toContain("lyric: 'bailar'")
+    expect(en).toMatch(/^Voz \(en\)\n {2}track_no: 1/)
+    expect(en).toContain("lyric: 'baby'")
+    expect(en).not.toContain("lyric: 'ven'")
   })
 })

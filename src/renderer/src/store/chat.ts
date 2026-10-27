@@ -4,6 +4,7 @@ import { textOf, type LlmMessage, type LlmRetry } from '@shared/llm'
 import { newId } from '@shared/project'
 import { PRODUCER_SYSTEM_PROMPT } from '@shared/producer-prompt'
 import { reviewProject } from '@shared/arrange'
+import { createWebTools } from '@shared/web-tools'
 import {
   AGENT_PREFIX,
   createProducerTools,
@@ -210,9 +211,12 @@ async function run(history: LlmMessage[], userText?: string): Promise<void> {
   const onEvent = (e: AgentEvent): void => set((s) => ({ items: applyEvent(s.items, e) }))
 
   try {
+    // Las herramientas de internet se crean en cada turno (llevan su límite de consultas)
+    // y solo si el usuario lo permite en Ajustes.
+    const webOn = useGeneration.getState().settings?.web.enabled ?? false
     const next = await runAgent({
       system: PRODUCER_SYSTEM_PROMPT,
-      tools,
+      tools: webOn ? [...tools, ...createWebTools(window.vibe.web)] : tools,
       history,
       userText,
       signal: ctrl.signal,
