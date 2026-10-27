@@ -18,7 +18,7 @@ import {
   vocalSongRequest,
   type ChunkStep
 } from './arrange'
-import type { CollapseOptions } from './drone'
+import type { CollapseOptions, WindowStats } from './drone'
 import { findGenre, GENRES, PROMPT_EXAMPLES, type GenreGuide } from './genres'
 import type { ProviderInfo, SingingEngine } from './generation'
 import { buildUstx, melodyForLyrics, placeMelody } from './melody'
@@ -42,6 +42,7 @@ import { barsToSeconds } from './prompt'
 import { MAX_GAIN_DB, MIN_GAIN_DB, withDefaultMix } from './mixer'
 import { copySection, copySectionInto, sectionsOf, setSections, updateSection } from './sections'
 import { projectEndSec } from './timeline'
+import { reviewSong, type RegionSound, type SongReview } from './review'
 
 // Herramientas del agente productor. Hablan con la app a través de `ProducerHost`,
 // así se pueden probar sin interfaz. Trabajan en compases (1 = primer compás),
@@ -50,6 +51,11 @@ import { projectEndSec } from './timeline'
 
 export interface ProducerHost {
   getProject(): Project
+  /**
+   * Lo que ha escrito el usuario en el chat, del mensaje más reciente al más antiguo.
+   * El género de la canción sale de sus palabras, no de la consulta que haga el LLM.
+   */
+  userMessages?(): string[]
   commit(next: Project, message: string): Promise<void>
   /** Cambia tempo/tonalidad estirando el audio generado; devuelve cuántos clips se ajustaron. */
   setTempo(
@@ -101,7 +107,12 @@ export interface ProducerHost {
   inspectRegion(
     regionId: string,
     opts?: CollapseOptions
-  ): Promise<{ collapseAtSec: number | null; tailBrightDb?: number | null }>
+  ): Promise<{
+    collapseAtSec: number | null
+    tailBrightDb?: number | null
+    /** Primer y último segundo y media de la región (para revisar la canción). */
+    sound?: { head: WindowStats; tail: WindowStats; mean: WindowStats } | null
+  }>
   /** Separa una región en pistas (voz, batería, bajo, otros) con el motor local. */
   separate(regionId: string): Promise<{ trackIds: string[]; stems: string[]; skipped: string[] }>
   /** "Mi voz": modelos de voz del usuario (RVC) y si el motor que los usa está instalado. */
@@ -402,6 +413,30 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
   // inventa el tempo (108 BPM para un tech house), así que compose_song lo ajusta.
   let guide: GenreGuide | null = null
 
+  /** Escucha una pista entera: medidas por sección y por unión (ver review.ts). */
+  const reviewTrack = async (trackId: string): Promise<SongReview & { note: string }> => {
+    const p = host.getProject()
+    const regions: RegionSound[] = []
+    for (const r of p.tracks.find((t) => t.id === trackId)?.regions ?? []) {
+      const { sound } = await host.inspectRegion(r.id)
+      if (sound) {
+        regions.push({
+          startBeat: r.startBeat,
+          endBeat: r.startBeat + secondsToBeats(r.lengthSec, p.bpm),
+          ...sound
+        })
+      }
+    }
+    const review = reviewSong(sectionsOf(p), regions, perBar(p))
+    return {
+      ...review,
+      note:
+        review.issues.length === 0
+          ? 'Listened to the whole song: no abrupt joins, the energy curve is audible and no section sounds dull.'
+          : 'Problems a listener would hear. Tell the user about them in plain words and offer the fix (create_variation of that section, or extend_region from the region before it); do not regenerate without asking.'
+    }
+  }
+
   const readyProvider = (): ProviderInfo => {
     const provider = host.audioProvider()
     if (!provider?.ready) {
@@ -525,7 +560,14 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       },
       run: async (input) => {
         const genre = str(input, 'genre')
-        const g = findGenre(genre)
+        // Si el usuario pidió una fusión ("house/techno bien tumbado"), manda esa guía
+        // aunque el LLM pregunte solo por una parte ("techno"). Decide el mensaje más
+        // reciente que nombre algún género.
+        const asked = host
+          .userMessages?.()
+          .map((m) => findGenre(m))
+          .find((x) => x !== null)
+        const g = asked?.blend ? asked : findGenre(genre)
         guide = g
         if (!g) {
           return {
@@ -713,7 +755,14 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           spec.sections.map((s) => {
             const startBar = nextBar
             nextBar += s.bars
-            return { name: s.name, startBar, bars: s.bars, lyrics: s.lyrics, melody: s.melody }
+            return {
+              name: s.name,
+              startBar,
+              bars: s.bars,
+              lyrics: s.lyrics,
+              melody: s.melody,
+              energy: s.energy ?? undefined
+            }
           })
         )
         await commit(
@@ -783,9 +832,12 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           if (!tails.has(id)) tails.set(id, (await host.inspectRegion(id)).tailBrightDb ?? null)
           return tails.get(id)!
         }
-        const contextFor = async (from: string | null): Promise<string | null> => {
+        const contextFor = async (
+          from: string | null,
+          mayJump: boolean
+        ): Promise<string | null> => {
           const own = from && (await tailOf(from))
-          if (!from || typeof own !== 'number') return from
+          if (!from || !mayJump || typeof own !== 'number') return from
           let best = from
           let bestDb = own
           for (const [id, db] of tails) {
@@ -808,12 +860,9 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           }
           const atBeat = beatOfBar(planned, step.startBar)
           const span = `compases ${step.startBar}–${step.startBar + step.bars - 1}`
-          // Una repetición ("Coro 2") arranca escuchando el final de la original.
-          const from = await contextFor(
-            step.contextFrom !== undefined
-              ? (lastRegionIn(host.getProject(), song.id, sections[step.contextFrom])?.id ?? last)
-              : last
-          )
+          // Solo al empezar una sección (o al reparar un atasco) puede escuchar otra
+          // parte más brillante: ahí un cambio suena a propósito; a mitad, a corte.
+          const from = await contextFor(last, step.startBar === section.startBar || !!step.repair)
           // Un tramo que falla se reintenta una vez; si vuelve a fallar, el siguiente
           // continúa desde el último bueno.
           let made: string | null = null
@@ -888,7 +937,6 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             ...step,
             startBar: step.startBar + good,
             bars: step.bars - good,
-            contextFrom: undefined,
             repair: true
           })
         }
@@ -910,6 +958,8 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           }
         }
 
+        // Antes de dar la canción por hecha, se escucha el instrumental entero.
+        const review = generated > 0 ? await reviewTrack(song.id) : null
         const final = host.getProject()
         const ids = new Set(sections.map((s) => s.id))
         return {
@@ -945,8 +995,26 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
               bars: c.section.bars,
               has_music: c.layers.length > 0
             })),
-          check: reviewProject(final) ?? 'Every section has music.'
+          check: reviewProject(final) ?? 'Every section has music.',
+          ...(review && { review })
         }
+      }
+    },
+    {
+      def: {
+        name: 'review_song',
+        description:
+          'Listens to the finished instrumental: loudness and brightness of every section, and problems a listener would hear (abrupt joins between parts, a chorus or drop that is not louder than the calmer sections, a dull section). compose_song already includes it; call it after changing parts of a song. Free and fast (no audio is generated).',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+      },
+      run: async () => {
+        const p = host.getProject()
+        // La pista de la canción: la de tipo "full" con más audio generado.
+        const song = p.tracks
+          .filter((t) => t.role === 'full' && t.regions.some((r) => p.clips[r.clipId]?.spec))
+          .sort((a, b) => b.regions.length - a.regions.length)[0]
+        if (!song) throw new Error('No hay ninguna canción generada que revisar')
+        return reviewTrack(song.id)
       }
     },
     {

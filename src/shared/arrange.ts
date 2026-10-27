@@ -50,11 +50,6 @@ export type ChunkStep =
       startBar: number
       bars: number
       prompt: string
-      /**
-       * Sección ya generada que el tramo escucha en lugar de la anterior: una repetición
-       * ("Coro 2") arranca desde el final de la original para que el gancho vuelva.
-       */
-      contextFrom?: number
     }
   | { kind: 'reuse'; section: number; from: number }
 
@@ -308,19 +303,12 @@ function transitionOut(from: number | null, to: number | null): string {
   return 'drum fill at the end'
 }
 
-/** Nombre de una sección sin su número: "Coro 2" → "coro". */
-const baseName = (name: string): string =>
-  name
-    .trim()
-    .toLowerCase()
-    .replace(/\s*\d+$/, '')
-
 /**
  * Pasos para componer la canción: cada sección en tramos de `bars` compases (el
  * último puede ser más corto), con transiciones automáticas en los bordes. Las
- * secciones con `reuse` copian la anterior del mismo nombre; una sección que repite
- * otra sin copiarla ("Coro 2" tras "Coro") empieza escuchando a la original, para que
- * el gancho vuelva reconocible.
+ * secciones con `reuse` copian la anterior del mismo nombre. Todo tramo generado
+ * continúa al que suena antes que él: escuchar otra parte de la canción daría un
+ * cambio en seco en la unión.
  */
 export function planChunks(
   spec: SongSpec,
@@ -339,9 +327,6 @@ export function planChunks(
       return
     }
     const next = spec.sections[i + 1]
-    const original = spec.sections.findIndex(
-      (o, j) => j < i && !o.reuse && baseName(o.name) === baseName(s.name)
-    )
     const count = Math.ceil(s.bars / bars)
     for (let k = 0; k < count; k++) {
       const len = Math.min(bars, s.bars - k * bars)
@@ -357,8 +342,7 @@ export function planChunks(
         bars: len,
         prompt: [style, clampWords(s.arrangement, ARRANGEMENT_WORDS), ...hints]
           .filter(Boolean)
-          .join(', '),
-        ...(k === 0 && original >= 0 && { contextFrom: original })
+          .join(', ')
       })
     }
     startBar += s.bars
@@ -368,6 +352,17 @@ export function planChunks(
 
 /** Segundos de audio previo que escucha el motor al continuar (ver audio/excerpt.ts). */
 export const CONTEXT_SEC = 8
+
+/**
+ * Pre-roll de cada continuación: el tramo nuevo empieza un pulso antes, repitiendo el
+ * final del anterior, y se funden. Sin él, cada unión cambia de timbre en seco.
+ */
+export const XFADE_BEATS = 1
+
+/** Segundos de fundido cruzado entre tramos encadenados a este tempo (mínimo 0,25 s). */
+export function crossfadeSeconds(bpm: number): number {
+  return Math.max(0.25, (XFADE_BEATS * 60) / bpm)
+}
 
 /** La última región de la pista que empieza dentro de la sección. */
 export function lastRegionIn(p: Project, trackId: string, s: Section): Region | undefined {

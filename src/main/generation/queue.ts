@@ -106,7 +106,7 @@ export class GenerationQueue extends EventEmitter<{ update: [GenerationJob] }> {
     try {
       const rawDir = join(job.dir, 'clips', 'raw')
       await mkdir(rawDir, { recursive: true })
-      const { path, trimStartSec } = await provider.generate(job.spec, {
+      const { path, trimStartSec, leadInSec } = await provider.generate(job.spec, {
         signal: controller.signal,
         outBase: join(rawDir, job.id),
         conditioningPath: job.spec.conditioning
@@ -117,7 +117,14 @@ export class GenerationQueue extends EventEmitter<{ update: [GenerationJob] }> {
         }
       })
       const rawFile = relative(job.dir, path).split('\\').join('/')
-      this.patch(job, { status: 'done', progress: 1, stage: 'Listo', rawFile, trimStartSec })
+      this.patch(job, {
+        status: 'done',
+        progress: 1,
+        stage: 'Listo',
+        rawFile,
+        trimStartSec,
+        leadInSec
+      })
     } catch (err) {
       if (err instanceof CancelledError || controller.signal.aborted) {
         this.patch(job, { status: 'cancelled', stage: 'Cancelado' })

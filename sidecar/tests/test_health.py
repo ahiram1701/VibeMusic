@@ -74,6 +74,24 @@ def test_continuation_receives_prompt_audio() -> None:
     assert engine.last_prompt_audio.samples.shape == (2, 16000)
 
 
+def test_continuation_returns_lead_in_for_crossfade() -> None:
+    client = TestClient(create_app(FakeEngine()))
+    prompt = Audio(samples=np.zeros((2, 32000), dtype=np.float32), sample_rate=32000)
+    b64 = base64.b64encode(encode_wav(prompt)).decode()
+    job = client.post(
+        "/jobs", json={"prompt": "x", "seconds": 2, "audio_b64": b64, "keep_lead_sec": 0.5}
+    ).json()
+    done = wait_for(client, job["id"], "done")
+    assert done["lead_in_sec"] == 0.5
+    with wave.open(io.BytesIO(client.get(f"/jobs/{job['id']}/audio").content)) as w:
+        assert w.getnframes() == 32000 * 2 + 16000
+    # Nunca más que la propia partida.
+    job = client.post(
+        "/jobs", json={"prompt": "x", "seconds": 2, "audio_b64": b64, "keep_lead_sec": 3}
+    ).json()
+    assert wait_for(client, job["id"], "done")["lead_in_sec"] == 1.0
+
+
 def test_continuation_limits() -> None:
     client = TestClient(create_app(FakeEngine()))
     long = Audio(samples=np.zeros((1, 32000 * 25), dtype=np.float32), sample_rate=32000)

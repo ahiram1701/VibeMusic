@@ -29,6 +29,8 @@ export interface GenerationSpec {
    * del clip original, guardado como WAV mono en el proyecto.
    */
   conditioning?: { clipId: string; file: string; seconds: number }
+  /** Al continuar: segundos de la partida que se piden delante para fundir con ella. */
+  crossfadeSec?: number
   mode: GenerationMode
   /**
    * Letra cantada (canción completa con voz), con etiquetas de sección como
@@ -63,6 +65,12 @@ export interface Region {
   lengthSec: number
   fadeInSec: number
   fadeOutSec: number
+  /**
+   * Segundos del clip, justo antes de `offsetSec`, que suenan antes de `startBeat`
+   * entrando en fundido: un tramo que continúa a otro se funde con el final de este.
+   * Los límites de la región (startBeat, lengthSec) no los incluyen.
+   */
+  leadInSec?: number
 }
 
 export interface Track {
@@ -113,6 +121,8 @@ export interface Section {
    * ("A4:0.5 B4 …", ver shared/melody.ts) y, si se indicó, su idioma.
    */
   melody?: { text: string; notes: string; lang?: string }[]
+  /** Energía planificada (1-5) al componer: la revisión comprueba que se oiga. */
+  energy?: number
 }
 
 export interface VersionMeta {

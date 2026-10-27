@@ -171,24 +171,6 @@ describe('planChunks', () => {
     expect(clampWords('one two three four five six', 3)).toBe('one two three')
   })
 
-  it('una sección repetida sin copiar escucha a la original', () => {
-    const steps = generated(
-      planChunks(
-        parseSongSpec(
-          song({
-            sections: [
-              { name: 'Coro', bars: 8, arrangement: 'hook' },
-              { name: 'Verso', bars: 8, arrangement: 'groove' },
-              { name: 'Coro 2', bars: 16, arrangement: 'hook again' }
-            ]
-          })
-        ),
-        8
-      )
-    )
-    expect(steps.map((s) => s.contextFrom)).toEqual([undefined, undefined, 0, undefined])
-  })
-
   it('el último tramo de la canción termina en fundido', () => {
     const steps = generated(
       planChunks(parseSongSpec(song({ sections: [{ name: 'A', bars: 8, arrangement: 'x' }] })), 8)

@@ -94,7 +94,8 @@ export function planRetempo(project: Project, bpm: number): RetempoPlan {
         offsetSec: r.offsetSec * scale,
         lengthSec: r.lengthSec * scale,
         fadeInSec: r.fadeInSec * scale,
-        fadeOutSec: r.fadeOutSec * scale
+        fadeOutSec: r.fadeOutSec * scale,
+        ...(r.leadInSec !== undefined && { leadInSec: r.leadInSec * scale })
       }
     })
   }))

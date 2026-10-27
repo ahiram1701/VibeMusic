@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { conformAudio } from '@shared/conform'
+import { conformAudio, seamGainDb } from '@shared/conform'
 import type { AppSettings, GenerationJob, ProviderId, ProviderInfo } from '@shared/generation'
 import {
   createTrack,
@@ -57,6 +57,8 @@ export interface GenerateInput {
   /** Variación/continuación: se parte de un clip existente. */
   mode?: GenerationSpec['mode']
   conditioning?: GenerationSpec['conditioning']
+  /** Al continuar: segundos de pre-roll para fundirse con el tramo de partida. */
+  crossfadeSec?: number
   parentClipId?: string
   /** Canción con voz: letra con etiquetas de sección e idioma. */
   lyrics?: string
@@ -171,6 +173,7 @@ export const useGeneration = create<GenerationState>((set, get) => ({
       durationSec: barsToSeconds(input.bars, project),
       mode: input.mode ?? 'text',
       ...(input.conditioning && { conditioning: input.conditioning }),
+      ...(input.conditioning && input.crossfadeSec && { crossfadeSec: input.crossfadeSec }),
       ...(input.lyrics && { lyrics: input.lyrics }),
       ...(input.lyricsLanguage && { lyricsLanguage: input.lyricsLanguage }),
       // Siempre guardamos una semilla: así cualquier clip se puede volver a generar igual.
@@ -272,10 +275,45 @@ async function finalize(jobId: string): Promise<void> {
     const skip = Math.round((job.trimStartSec ?? 0) * decoded.sampleRate)
     const fresh = skip > 0 ? source.map((ch) => ch.subarray(Math.min(skip, ch.length))) : source
     const stereo = fresh.length === 1 ? [fresh[0], fresh[0]] : fresh.slice(0, 2)
+    // Pre-roll: el principio repite el final del tramo del que se partió y suena antes
+    // de la región, fundiéndose con él (ver Region.leadInSec).
+    const sr = decoded.sampleRate
+    const leadIn = Math.min(job.leadInSec ?? 0, job.spec.durationSec / 2)
     const channels = conformAudio(stereo, {
-      targetSec: job.spec.durationSec,
-      sampleRate: decoded.sampleRate
+      targetSec: job.spec.durationSec + leadIn,
+      sampleRate: sr
     })
+
+    // Se lee el proyecto *ahora* (no al empezar): el usuario pudo editar mientras tanto.
+    const project = useProject.getState().project!
+    const replaced =
+      placement.replaceRegionId &&
+      project.tracks.find((t) => t.regions.some((r) => r.id === placement.replaceRegionId))
+    const target =
+      replaced || (placement.trackId && project.tracks.find((t) => t.id === placement.trackId))
+    // El tramo al que continúa: misma pista, mismo clip de partida y termina donde
+    // empieza este. Se iguala el volumen del pre-roll a su final y se le funde la salida.
+    const prev =
+      leadIn > 0 && target
+        ? target.regions.find(
+            (r) =>
+              r.clipId === job.spec.conditioning?.clipId &&
+              Math.abs(r.startBeat + (r.lengthSec * project.bpm) / 60 - placement.atBeat) < 0.05
+          )
+        : undefined
+    const prevBuffer = prev && engine.buffers.get(prev.clipId)
+    if (prev && prevBuffer) {
+      const end = Math.round((prev.offsetSec + prev.lengthSec) * prevBuffer.sampleRate)
+      const from = Math.max(0, end - Math.round(leadIn * prevBuffer.sampleRate))
+      const tail = Array.from({ length: prevBuffer.numberOfChannels }, (_, i) =>
+        prevBuffer.getChannelData(i).subarray(from, end)
+      )
+      const head = channels.map((ch) => ch.subarray(0, Math.round(leadIn * sr)))
+      let peak = 0
+      for (const ch of channels) for (const x of ch) peak = Math.max(peak, Math.abs(x))
+      const gain = Math.pow(10, seamGainDb(head, tail, peak) / 20)
+      for (const ch of channels) for (let i = 0; i < ch.length; i++) ch[i] *= gain
+    }
 
     const clipId = newId('clp')
     const file = `clips/${clipId}.wav`
@@ -285,22 +323,16 @@ async function finalize(jobId: string): Promise<void> {
     channels.forEach((ch, i) => buffer.copyToChannel(ch as Float32Array<ArrayBuffer>, i))
     engine.buffers.set(clipId, buffer)
 
-    // Se lee el proyecto *ahora* (no al empezar): el usuario pudo editar mientras tanto.
-    const project = useProject.getState().project!
     const region: Region = {
       id: newId('rgn'),
       clipId,
       startBeat: placement.atBeat,
-      offsetSec: 0,
-      lengthSec: buffer.duration,
+      offsetSec: leadIn,
+      lengthSec: buffer.duration - leadIn,
       fadeInSec: 0,
-      fadeOutSec: 0
+      fadeOutSec: 0,
+      ...(leadIn > 0 && { leadInSec: leadIn })
     }
-    const replaced =
-      placement.replaceRegionId &&
-      project.tracks.find((t) => t.regions.some((r) => r.id === placement.replaceRegionId))
-    const target =
-      replaced || (placement.trackId && project.tracks.find((t) => t.id === placement.trackId))
     const label = ROLE_LABELS[job.spec.role]
     const newTrack = target
       ? null
@@ -326,7 +358,16 @@ async function finalize(jobId: string): Promise<void> {
             t.id === target.id
               ? {
                   ...t,
-                  regions: [...t.regions.filter((r) => r.id !== placement.replaceRegionId), region]
+                  regions: [
+                    ...t.regions
+                      .filter((r) => r.id !== placement.replaceRegionId)
+                      .map((r) =>
+                        r.id === prev?.id && leadIn > 0
+                          ? { ...r, fadeOutSec: Math.max(r.fadeOutSec, leadIn) }
+                          : r
+                      ),
+                    region
+                  ]
                 }
               : t
           )

@@ -4,7 +4,7 @@ import { textOf, type LlmMessage, type LlmRetry } from '@shared/llm'
 import { newId } from '@shared/project'
 import { PRODUCER_SYSTEM_PROMPT } from '@shared/producer-prompt'
 import { CONTEXT_SEC, reviewProject } from '@shared/arrange'
-import { findCollapse, tailBrightness, toMono } from '@shared/drone'
+import { findCollapse, soundSummary, tailBrightness, toMono } from '@shared/drone'
 import { createWebTools } from '@shared/web-tools'
 import {
   AGENT_PREFIX,
@@ -65,6 +65,11 @@ let currentRequest: string | null = null
 
 /** Conecta las herramientas del agente con la app real. */
 const host: ProducerHost = {
+  userMessages: () =>
+    useChat
+      .getState()
+      .items.flatMap((i) => (i.kind === 'user' ? [i.text] : []))
+      .reverse(),
   getProject: () => {
     const p = useProject.getState().project
     if (!p) throw new Error('No hay ningún proyecto abierto')
@@ -119,7 +124,8 @@ const host: ProducerHost = {
     const mono = toMono(channels)
     return {
       collapseAtSec: findCollapse(mono, sr, opts),
-      tailBrightDb: tailBrightness(mono, sr, CONTEXT_SEC)
+      tailBrightDb: tailBrightness(mono, sr, CONTEXT_SEC),
+      sound: soundSummary(mono, sr)
     }
   },
   separate: (regionId) => separateRegion(regionId, { messagePrefix: AGENT_PREFIX }),

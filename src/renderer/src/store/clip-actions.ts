@@ -11,6 +11,7 @@ import {
   type Track
 } from '@shared/project'
 import { barsToSeconds } from '@shared/prompt'
+import { crossfadeSeconds } from '@shared/arrange'
 import { engine } from '../audio/engine'
 import { makeExcerpt, MAX_EXCERPT_SEC } from '../audio/excerpt'
 import { useGeneration } from './generation'
@@ -148,6 +149,7 @@ export async function continueRegion(
     parentClipId: clip.id,
     mode: 'continue',
     conditioning: { clipId: clip.id, file, seconds: excerpt.seconds },
+    crossfadeSec: Math.min(crossfadeSeconds(project.bpm), excerpt.seconds),
     messagePrefix: opts.messagePrefix,
     message:
       opts.message ??

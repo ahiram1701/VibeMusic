@@ -523,6 +523,20 @@ describe('productor · canciones completas', () => {
     expect(res.drone).toEqual([{ section: 'Verso', start_bar: 9 }])
   })
 
+  it('genre_guide sigue la fusión que pidió el usuario aunque el LLM pregunte por una parte', async () => {
+    const h = fakeHost(createProject('X'))
+    h.host.userMessages = () => [
+      'quiero un house/techno bien tumbado al estilo de Victor Mendivil, con letra'
+    ]
+    const g = (await h.run('genre_guide', { genre: 'techno' })) as { genre: string }
+    expect(g.genre).toBe('house-tumbado')
+    // Sin fusión en sus palabras, manda la consulta.
+    h.host.userMessages = () => ['algo tranquilo', 'un reggaeton']
+    expect(((await h.run('genre_guide', { genre: 'techno' })) as { genre: string }).genre).toBe(
+      'techno'
+    )
+  })
+
   it('compose_song lleva el tempo al rango del género consultado', async () => {
     const h = fakeHost(createProject('X'))
     chainable(h)
@@ -551,6 +565,41 @@ describe('productor · canciones completas', () => {
     expect(h.state.project.style).toBe('tech house, congas, guitar')
   })
 
+  it('compose_song escucha la canción al final y avisa si el coro no sube', async () => {
+    const h = fakeHost(createProject('X'))
+    chainable(h)
+    h.host.inspectRegion = async (regionId) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      // El Coro (energía 5) suena más bajo que el verso.
+      const s = { db: r.startBeat >= 96 ? -20 : -14, highDb: -15 }
+      return { collapseAtSec: null, sound: { head: s, tail: s, mean: s } }
+    }
+    const res = (await h.run('compose_song', songInput)) as {
+      review: { issues: { type: string; section: string }[]; sections: unknown[] }
+    }
+    expect(res.review.sections.length).toBeGreaterThan(0)
+    expect(res.review.issues).toContainEqual(
+      expect.objectContaining({ type: 'flat_energy', section: 'Coro' })
+    )
+    const again = (await h.run('review_song')) as { issues: unknown[] }
+    expect(again.issues).toEqual(res.review.issues)
+  })
+
+  it('compose_song no salta a otra parte a mitad de sección aunque se apague', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    const tail: Record<number, number> = { 0: -13, 32: -30 }
+    h.host.inspectRegion = async (regionId) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      return { collapseAtSec: null, tailBrightDb: tail[r.startBeat] ?? null }
+    }
+    await h.run('compose_song', songInput)
+    const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
+    // Beat 64 sigue dentro del Verso: continúa el tramo anterior (sin corte).
+    const at32 = song.regions.find((r) => r.startBeat === 32)!.id
+    expect(calls.find((c) => c.atBeat === 64)!.from).toBe(at32)
+  })
+
   it('compose_song vuelve a escuchar el final más brillante si la continuación se apaga', async () => {
     const h = fakeHost(createProject('X'))
     const calls = chainable(h)
@@ -568,7 +617,7 @@ describe('productor · canciones completas', () => {
     expect(calls.find((c) => c.atBeat === 128)!.from).toBe(at(96))
   })
 
-  it('compose_song empieza un coro repetido (sin copiar) escuchando el primero', async () => {
+  it('compose_song continúa un coro repetido sin copiar desde lo que suena antes', async () => {
     const h = fakeHost(createProject('X'))
     const calls = chainable(h)
     await h.run('compose_song', {
@@ -580,8 +629,9 @@ describe('productor · canciones completas', () => {
       ]
     })
     const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
-    const chorus1 = song.regions.find((r) => r.startBeat === 0)!
-    expect(calls.find((c) => c.atBeat === 64)!.from).toBe(chorus1.id)
+    const verse = song.regions.find((r) => r.startBeat === 32)!
+    // Escuchar el primer coro daría un cambio en seco tras el verso.
+    expect(calls.find((c) => c.atBeat === 64)!.from).toBe(verse.id)
   })
 
   it('compose_song graba la canción como una sola pieza: tramos encadenados de principio a fin', async () => {

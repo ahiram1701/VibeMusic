@@ -25,7 +25,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
-from engine import DEFAULT_MODEL, MAX_SECONDS, MODELS, Audio, Cancelled, Engine
+from engine import DEFAULT_MODEL, MAX_SECONDS, MODELS, Audio, Cancelled, Engine, kept_samples
 from separator import Separator, Stem
 
 VERSION = "0.3.0"
@@ -64,6 +64,9 @@ class Job:
     seed: int | None = None
     model: str = DEFAULT_MODEL
     prompt_audio: Audio | None = None
+    # Segundos de la partida que se devuelven delante (fundido cruzado en la app).
+    keep_lead_sec: float = 0
+    lead_in_sec: float = 0
     # separar
     input_path: str = ""
     output_dir: str = ""
@@ -84,6 +87,8 @@ class Job:
             "stage": self.stage,
             "error": self.error,
         }
+        if self.lead_in_sec > 0:
+            data["lead_in_sec"] = self.lead_in_sec
         if self.stems is not None:
             data["stems"] = [{"name": s.name, "path": s.path, "rms": s.rms} for s in self.stems]
         return data
@@ -122,8 +127,17 @@ class JobRunner:
                     job.stems = self.separator.separate(job.input_path, job.output_dir, on_progress)
                 else:
                     audio = self.engine.generate(
-                        job.prompt, job.seconds, job.seed, job.model, on_progress, job.prompt_audio
+                        job.prompt,
+                        job.seconds,
+                        job.seed,
+                        job.model,
+                        on_progress,
+                        job.prompt_audio,
+                        keep_lead_sec=job.keep_lead_sec,
                     )
+                    if job.prompt_audio is not None:
+                        sr = job.prompt_audio.sample_rate
+                        job.lead_in_sec = kept_samples(job.keep_lead_sec, job.prompt_audio, sr) / sr
                     job.prompt_audio = None  # ya no hace falta
                     job.wav = encode_wav(audio)
                 job.status, job.progress, job.stage = "done", 1.0, "Listo"
@@ -140,6 +154,8 @@ class JobRequest(BaseModel):
     model: str = DEFAULT_MODEL
     # WAV (PCM 16 bits) en base64 para continuar un audio; como máximo ~10 s.
     audio_b64: str | None = Field(default=None, max_length=4_000_000)
+    # Segundos del final de la partida que se devuelven delante del audio nuevo.
+    keep_lead_sec: float = Field(default=0, ge=0, le=4)
 
 
 class SeparationRequest(BaseModel):
@@ -189,6 +205,7 @@ def create_app(engine: Engine, separator: Separator | None = None) -> FastAPI:
             seed=req.seed,
             model=req.model,
             prompt_audio=prompt_audio,
+            keep_lead_sec=req.keep_lead_sec,
         )
         runner.submit(job)
         return job.public()

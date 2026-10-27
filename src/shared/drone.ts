@@ -39,9 +39,13 @@ const DEFAULTS: Required<CollapseOptions> = {
 const SPLIT_HZ = 1000
 const POLES = 3
 
-/** Volumen y nivel de agudos de cada segundo completo del audio. */
-export function windowStats(samples: Float32Array, sampleRate: number): WindowStats[] {
-  const win = Math.max(1, Math.round(sampleRate))
+/** Volumen y nivel de agudos de cada ventana completa (1 s por defecto) del audio. */
+export function windowStats(
+  samples: Float32Array,
+  sampleRate: number,
+  windowSec = 1
+): WindowStats[] {
+  const win = Math.max(1, Math.round(sampleRate * windowSec))
   const rc = 1 / (2 * Math.PI * SPLIT_HZ)
   const alpha = rc / (rc + 1 / sampleRate)
   const prevX = new Float64Array(POLES)
@@ -128,4 +132,35 @@ export function tailBrightness(
     .map((w) => w.highDb)
     .sort((a, b) => a - b)
   return tail.length > 0 ? tail[Math.floor(tail.length / 2)] : null
+}
+
+/** Ventana de los bordes: un cambio en seco en una unión dura menos de medio segundo. */
+const EDGE_SEC = 0.25
+
+/**
+ * Primer y último cuarto de segundo de un audio (lo que se oye en sus uniones) y su
+ * media en potencia, o null si dura menos de un segundo.
+ */
+export function soundSummary(
+  samples: Float32Array,
+  sampleRate: number
+): { head: WindowStats; tail: WindowStats; mean: WindowStats } | null {
+  const stats = windowStats(samples, sampleRate)
+  if (stats.length === 0) return null
+  let power = 0
+  let high = 0
+  for (const s of stats) {
+    const p = Math.pow(10, s.db / 10)
+    power += p
+    high += p * Math.pow(10, s.highDb / 10)
+  }
+  const edge = windowStats(samples, sampleRate, EDGE_SEC)
+  return {
+    head: edge[0],
+    tail: edge[edge.length - 1],
+    mean: {
+      db: 10 * Math.log10(power / stats.length + 1e-24),
+      highDb: 10 * Math.log10(high / (power + 1e-24) + 1e-12)
+    }
+  }
 }

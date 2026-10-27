@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { findCollapse, tailBrightness, toMono, windowStats } from './drone'
+import { findCollapse, soundSummary, tailBrightness, toMono, windowStats } from './drone'
 
 const SR = 8000
 
@@ -62,5 +62,13 @@ describe('drone', () => {
     expect(bright - dark).toBeGreaterThan(15)
     expect(tailBrightness(signal([8, song], [2, silence]), SR, 4)).toBeCloseTo(bright, 0)
     expect(tailBrightness(signal([3, silence]), SR, 3)).toBeNull()
+  })
+
+  it('resume el principio, el final y la media de un audio', () => {
+    const sum = soundSummary(signal([2, song], [2, drone]), SR)!
+    expect(sum.head.highDb).toBeGreaterThan(-25)
+    expect(sum.tail.highDb).toBeLessThan(-40)
+    expect(sum.mean.highDb).toBeGreaterThan(sum.tail.highDb)
+    expect(soundSummary(new Float32Array(10), SR)).toBeNull()
   })
 })

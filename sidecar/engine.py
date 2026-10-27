@@ -52,6 +52,7 @@ class Engine(Protocol):
         model: str,
         on_progress: ProgressFn,
         prompt_audio: Audio | None = None,
+        keep_lead_sec: float = 0,
     ) -> Audio: ...
 
 
@@ -62,6 +63,14 @@ def _resample(wave: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
     n = round(len(wave) * dst_rate / src_rate)
     x = np.linspace(0, len(wave) - 1, n)
     return np.interp(x, np.arange(len(wave)), wave).astype(np.float32)
+
+
+def kept_samples(keep_lead_sec: float, prompt_audio: Audio | None, sample_rate: int) -> int:
+    """Muestras de la partida que se devuelven delante del audio nuevo (nunca más que ella)."""
+    if prompt_audio is None or keep_lead_sec <= 0:
+        return 0
+    lead_sec = prompt_audio.samples.shape[-1] / prompt_audio.sample_rate
+    return round(min(keep_lead_sec, lead_sec) * sample_rate)
 
 
 def prompt_wave(audio: Audio, sample_rate: int, channels: int) -> np.ndarray:
@@ -142,8 +151,13 @@ class MusicGenEngine:
         model: str,
         on_progress: ProgressFn,
         prompt_audio: Audio | None = None,
+        keep_lead_sec: float = 0,
     ) -> Audio:
-        """Genera `seconds` de audio nuevo. Con `prompt_audio`, continúa ese audio."""
+        """
+        Genera `seconds` de audio nuevo. Con `prompt_audio`, continúa ese audio y, con
+        `keep_lead_sec`, devuelve delante los últimos segundos de la partida tal como
+        los decodifica el modelo: la app los usa para un fundido cruzado sin costura.
+        """
         import torch
         from transformers import LogitsProcessor, LogitsProcessorList
 
@@ -194,8 +208,10 @@ class MusicGenEngine:
                 logits_processor=LogitsProcessorList([Progress()]),
             )
         samples = out[0].float().cpu().numpy()  # (canales, muestras)
-        # MusicGen devuelve el audio de partida seguido de la continuación: solo lo nuevo.
-        samples = samples[:, lead:]
+        # MusicGen devuelve el audio de partida seguido de la continuación: lo nuevo y,
+        # si se pide, un poco de la partida para fundir.
+        keep = min(lead, kept_samples(keep_lead_sec, prompt_audio, sr))
+        samples = samples[:, lead - keep :]
         return Audio(samples=np.clip(samples, -1, 1).astype(np.float32), sample_rate=sr)
 
 
@@ -216,6 +232,7 @@ class FakeEngine:
         model: str,
         on_progress: ProgressFn,
         prompt_audio: Audio | None = None,
+        keep_lead_sec: float = 0,
     ) -> Audio:
         import time
 
@@ -225,6 +242,7 @@ class FakeEngine:
             on_progress(i / 10, "Generando…")
             time.sleep(self.delay / 10)
         sr = 32000
-        t = np.arange(int(seconds * sr)) / sr
+        keep = kept_samples(keep_lead_sec, prompt_audio, sr)
+        t = np.arange(int(seconds * sr) + keep) / sr
         tone = (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
         return Audio(samples=tone[np.newaxis, :], sample_rate=sr)
