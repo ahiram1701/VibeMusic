@@ -7,13 +7,21 @@ import type { ContentBlock, LlmMessage, LlmRequest, LlmResponse, ToolDef } from 
 
 export interface AgentTool {
   def: ToolDef
-  /** Devuelve un resultado serializable. Si lanza, el error se le devuelve al LLM. */
-  run(input: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
+  /**
+   * Devuelve un resultado serializable. Si lanza, el error se le devuelve al LLM.
+   * `progress` muestra al usuario en qué va una herramienta larga ("Parte 3 de 10…").
+   */
+  run(
+    input: Record<string, unknown>,
+    signal: AbortSignal,
+    progress?: (text: string) => void
+  ): Promise<unknown>
 }
 
 export type AgentEvent =
   | { type: 'text'; text: string }
   | { type: 'tool_start'; id: string; name: string; input: Record<string, unknown> }
+  | { type: 'tool_progress'; id: string; text: string }
   | { type: 'tool_end'; id: string; result: string; isError: boolean }
   | { type: 'limit' }
   | { type: 'review'; text: string }
@@ -124,7 +132,9 @@ export async function runAgent(opts: RunAgentOptions): Promise<LlmMessage[]> {
           if (signal.aborted) throw new AgentCancelled()
           const tool = byName.get(call.name)
           if (!tool) throw new Error(`Herramienta desconocida: ${call.name}`)
-          const result = await tool.run(call.input ?? {}, signal)
+          const result = await tool.run(call.input ?? {}, signal, (text) =>
+            onEvent({ type: 'tool_progress', id: call.id, text })
+          )
           content = typeof result === 'string' ? result : JSON.stringify(result)
         } catch (err) {
           if (err instanceof AgentCancelled || signal.aborted) throw new AgentCancelled()

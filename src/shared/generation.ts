@@ -53,6 +53,8 @@ export interface GenerationJob {
    * el fragmento de partida seguido de la continuación).
    */
   trimStartSec?: number
+  /** Segundos del principio (ya recortado) que repiten el final de la partida, para fundir. */
+  leadInSec?: number
   createdAt: number
 }
 

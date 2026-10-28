@@ -1,7 +1,7 @@
 import type { Clip, Project } from '@shared/project'
-import { beatsToSeconds } from '@shared/project'
 import { dbToGain, isTrackAudible } from '@shared/mixer'
 import { projectEndSec } from '@shared/timeline'
+import { regionPlayback } from '@shared/playback'
 
 export const SAMPLE_RATE = 48000
 
@@ -54,19 +54,17 @@ function buildGraph(
     for (const region of track.regions) {
       const buffer = buffers.get(region.clipId)
       if (!buffer) continue
-      const startSec = beatsToSeconds(region.startBeat, project.bpm)
-      const endSec = startSec + region.lengthSec
-      if (endSec <= fromSec) continue
-
-      // Si empezamos a mitad de la región, saltamos esa parte del clip.
-      const skip = Math.max(0, fromSec - startSec)
-      const when = now + Math.max(0, startSec - fromSec)
-      const duration = region.lengthSec - skip
+      // Con pre-roll (leadInSec) empieza un poco antes, fundiéndose con la anterior; si
+      // empezamos a mitad de la región, saltamos esa parte del clip.
+      const play = regionPlayback(region, project.bpm, fromSec)
+      if (!play) continue
+      const when = now + (play.startSec - fromSec)
+      const duration = play.durationSec
 
       const fade = ctx.createGain()
-      if (region.fadeInSec > 0 && skip === 0) {
+      if (play.fadeInSec > 0) {
         fade.gain.setValueAtTime(0, when)
-        fade.gain.linearRampToValueAtTime(1, when + region.fadeInSec)
+        fade.gain.linearRampToValueAtTime(1, when + play.fadeInSec)
       }
       if (region.fadeOutSec > 0) {
         fade.gain.setValueAtTime(1, when + duration - region.fadeOutSec)
@@ -77,7 +75,7 @@ function buildGraph(
       const src = ctx.createBufferSource()
       src.buffer = buffer
       src.connect(fade)
-      src.start(when, region.offsetSec + skip, duration)
+      src.start(when, play.clipSec, duration)
       sources.push(src)
     }
   }

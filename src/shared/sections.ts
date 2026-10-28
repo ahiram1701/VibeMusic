@@ -75,6 +75,7 @@ export function setSections(
     sparse?: boolean
     lyrics?: string | null
     melody?: Section['melody'] | null
+    energy?: number
   }[]
 ): Project {
   return withSections(
@@ -86,7 +87,8 @@ export function setSections(
       bars: s.bars,
       ...(s.sparse && { sparse: true }),
       ...(s.lyrics?.trim() && { lyrics: s.lyrics.trim() }),
-      ...(s.melody?.length && { melody: s.melody })
+      ...(s.melody?.length && { melody: s.melody }),
+      ...(s.energy !== undefined && { energy: s.energy })
     }))
   )
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   chunkBars,
+  clampWords,
   fillSections,
   lastRegionIn,
   layerPrompt,
@@ -140,23 +141,41 @@ describe('planChunks', () => {
     ])
   })
 
-  it('añade transiciones según la curva de energía', () => {
-    const [intro, coro1, coro2, brk] = generated(planChunks(parseSongSpec(song()), 8))
-    expect(intro.prompt).toBe(
-      'kick and pad, dark techno, song intro, ending with a drum fill and a riser building up into the next section'
+  it('prompts cortos tipo etiquetas: estilo, arreglo, energía, tempo y transición', () => {
+    const [intro, coro1, coro2, brk] = generated(
+      planChunks(parseSongSpec(song()), 8, { bpm: 128, key: 'A minor' })
     )
-    expect(coro1.prompt).toMatch(/^everything, acid lead, dark techno, powerful entrance/)
-    expect(coro1.prompt).not.toMatch(/ending|winding/) // a mitad de sección no hay transición
-    expect(coro2.prompt).toMatch(/winding down at the end/)
-    // Break → Coro repetido (sin energía propia): transición neutra.
-    expect(brk.prompt).toMatch(/short drum fill into the next section$/)
+    expect(intro.prompt).toBe(
+      'dark techno, kick and pad, intro, soft drums, groove, 128 bpm, A minor, build-up and drum fill at the end'
+    )
+    expect(coro1.prompt).toBe(
+      'dark techno, everything, acid lead, energetic, full drums, 128 bpm, A minor'
+    ) // a mitad de sección no hay transición
+    expect(coro2.prompt).toMatch(/energetic, full drums, 128 bpm, A minor, drum fill at the end$/)
+    expect(brk.prompt).toMatch(/^dark techno, pad only, soft drums, groove/)
+  })
+
+  it('recorta estilos y arreglos largos por frases y nunca usa negaciones', () => {
+    const long = Array.from({ length: 12 }, (_, i) => `word${i} sound${i}`).join(', ')
+    const [step] = generated(
+      planChunks(
+        parseSongSpec(song({ style: long, sections: [{ name: 'A', bars: 8, arrangement: long }] })),
+        8,
+        { bpm: 96 }
+      )
+    )
+    expect(step.prompt.split(/\s+/).length).toBeLessThanOrEqual(40)
+    expect(step.prompt).toMatch(/^word0 sound0, word1 sound1/)
+    expect(step.prompt).toMatch(/96 bpm/)
+    expect(step.prompt).not.toMatch(/\bnot\b|\bno\b/)
+    expect(clampWords('one two three four five six', 3)).toBe('one two three')
   })
 
   it('el último tramo de la canción termina en fundido', () => {
     const steps = generated(
       planChunks(parseSongSpec(song({ sections: [{ name: 'A', bars: 8, arrangement: 'x' }] })), 8)
     )
-    expect(steps.at(-1)!.prompt).toMatch(/song ending, fading out$/)
+    expect(steps.at(-1)!.prompt).toMatch(/fade out ending$/)
   })
 })
 

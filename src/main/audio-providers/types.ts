@@ -16,6 +16,8 @@ export interface GenerateResult {
   path: string
   /** Segundos del principio que no son audio nuevo (el fragmento de partida). */
   trimStartSec?: number
+  /** Tras recortar: segundos de la partida que se dejan delante para el fundido cruzado. */
+  leadInSec?: number
 }
 
 /**

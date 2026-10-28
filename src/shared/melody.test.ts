@@ -99,6 +99,21 @@ describe('sílabas en inglés', () => {
     expect(notes.every((n) => n.lang === 'en')).toBe(true)
   })
 
+  it('un anglicismo en una frase en español se canta en inglés ("beat" = una sílaba)', () => {
+    const { notes } = alignLine({ text: 'tumbado en el beat', notes: 'C5 D5 C5 A4 C5 A4:1.5' }, 0, {
+      strict: true,
+      language: 'es'
+    })
+    expect(notes.map((n) => [n.lyric, n.lang])).toEqual([
+      ['tumbado', 'es'],
+      ['+', 'es'],
+      ['+', 'es'],
+      ['en', 'es'],
+      ['el', 'es'],
+      ['beat', 'en']
+    ])
+  })
+
   it('al editar la letra a mano se olvida el idioma de la frase antigua', () => {
     const melody = [{ text: 'baby tonight', notes: 'A4 B4 C5 D5', lang: 'en' }]
     expect(melodyForLyrics('baby tonight', melody)?.[0].lang).toBe('en')

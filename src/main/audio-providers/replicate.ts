@@ -148,8 +148,14 @@ export function createReplicateProvider(
         throwIfAborted(ctx.signal)
         const path = `${ctx.outBase}.wav`
         await writeFile(path, new Uint8Array(await audio.arrayBuffer()))
-        // MusicGen devuelve el fragmento de partida seguido de la continuación.
-        return { path, trimStartSec: lead || undefined }
+        // MusicGen devuelve el fragmento de partida seguido de la continuación: se deja
+        // el final de la partida delante si se pide para fundir.
+        const keep = Math.min(lead, spec.crossfadeSec ?? 0)
+        return {
+          path,
+          trimStartSec: lead - keep || undefined,
+          ...(keep > 0 && { leadInSec: keep })
+        }
       } finally {
         ctx.signal.removeEventListener('abort', cancelRemote)
       }

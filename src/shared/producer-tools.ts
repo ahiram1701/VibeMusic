@@ -14,8 +14,12 @@ import {
   reviewProject,
   sectionCoverage,
   trackBusy,
-  vocalSongRequest
+  trimRegion,
+  vocalSongRequest,
+  type ChunkStep
 } from './arrange'
+import { hasStartGap, type CollapseOptions, type SoundSummary } from './drone'
+import { findGenre, GENRES, PROMPT_EXAMPLES, type GenreGuide } from './genres'
 import type { ProviderInfo, SingingEngine } from './generation'
 import { buildUstx, melodyForLyrics, placeMelody } from './melody'
 import { SINGER_PROVIDER, SINGER_VOICE } from './singer'
@@ -38,6 +42,7 @@ import { barsToSeconds } from './prompt'
 import { MAX_GAIN_DB, MIN_GAIN_DB, withDefaultMix } from './mixer'
 import { copySection, copySectionInto, sectionsOf, setSections, updateSection } from './sections'
 import { projectEndSec } from './timeline'
+import { reviewSong, type RegionSound, type SongReview } from './review'
 
 // Herramientas del agente productor. Hablan con la app a través de `ProducerHost`,
 // así se pueden probar sin interfaz. Trabajan en compases (1 = primer compás),
@@ -46,6 +51,11 @@ import { projectEndSec } from './timeline'
 
 export interface ProducerHost {
   getProject(): Project
+  /**
+   * Lo que ha escrito el usuario en el chat, del mensaje más reciente al más antiguo.
+   * El género de la canción sale de sus palabras, no de la consulta que haga el LLM.
+   */
+  userMessages?(): string[]
   commit(next: Project, message: string): Promise<void>
   /** Cambia tempo/tonalidad estirando el audio generado; devuelve cuántos clips se ajustaron. */
   setTempo(
@@ -87,8 +97,27 @@ export interface ProducerHost {
   extend(
     regionId: string,
     bars: number,
-    opts?: { instructions?: string; prompt?: string; atBeat?: number; message?: string }
+    opts?: {
+      instructions?: string
+      prompt?: string
+      atBeat?: number
+      message?: string
+      /** Fundirse con el final de la región (por defecto sí). */
+      crossfade?: boolean
+    }
   ): Promise<{ trackId: string; regionId: string }>
+  /**
+   * Escucha una región: segundo (desde su inicio) en el que se atasca (drone grave,
+   * silencio, siseo o se vacía), o null si suena bien. Ver drone.ts.
+   */
+  inspectRegion(
+    regionId: string,
+    opts?: CollapseOptions
+  ): Promise<{
+    collapseAtSec: number | null
+    /** Primer y último segundo y media de la región (para revisar la canción). */
+    sound?: SoundSummary | null
+  }>
   /** Separa una región en pistas (voz, batería, bajo, otros) con el motor local. */
   separate(regionId: string): Promise<{ trackIds: string[]; stems: string[]; skipped: string[] }>
   /** "Mi voz": modelos de voz del usuario (RVC) y si el motor que los usa está instalado. */
@@ -376,9 +405,231 @@ export function describeProject(p: Project, host: ProducerHost): unknown {
 
 // --- Herramientas ------------------------------------------------------------
 
+/** Tramos a grabar en una pista (ver recordChunks). */
+interface ChunkRun {
+  steps: ChunkStep[]
+  /** Secciones a las que apuntan los pasos (`step.section` es su índice). */
+  sections: Section[]
+  trackId: string
+  /** Compases de la canción: el último tramo puede terminar en fundido. */
+  totalBars: number
+  signal: AbortSignal
+  progress?: (text: string) => void
+}
+
+interface ChunkReport {
+  generated: number
+  failed: { section: string; start_bar: number; error: string }[]
+  repaired: { section: string; start_bar: number; bars: number }[]
+  drone: { section: string; start_bar: number }[]
+}
+
+/** Pista de la canción: la de tipo "full" con más audio generado. */
+function songTrackOf(p: Project): Track | undefined {
+  return p.tracks
+    .filter((t) => t.role === 'full' && t.regions.some((r) => p.clips[r.clipId]?.spec))
+    .sort((a, b) => b.regions.length - a.regions.length)[0]
+}
+
+/** Región de la pista que termina en `beat` (la que suena justo antes de ahí). */
+function regionEndingAt(p: Project, trackId: string, beat: number): Region | undefined {
+  return p.tracks
+    .find((t) => t.id === trackId)
+    ?.regions.find((r) => Math.abs(r.startBeat + secondsToBeats(r.lengthSec, p.bpm) - beat) < 0.05)
+}
+
 export function createProducerTools(host: ProducerHost): AgentTool[] {
   const commit = (next: Project, message: string): Promise<void> =>
     host.commit(next, AGENT_PREFIX + message)
+  // Última guía de género consultada: el LLM copia la estructura pero a menudo se
+  // inventa el tempo (108 BPM para un tech house), así que compose_song lo ajusta.
+  let guide: GenreGuide | null = null
+
+  /**
+   * Graba tramos en orden. Cada uno continúa la región que suena justo antes (el
+   * motor escucha sus últimos segundos y se funde con ella), así que no puede ir en
+   * paralelo; cada tramo se guarda al terminar. Tras cada uno se escucha: si se atasca
+   * (drone grave, siseo estático o un hueco al empezar) se recorta o se quita, y lo
+   * que falta se regenera una vez.
+   */
+  const recordChunks = async (run: ChunkRun): Promise<ChunkReport> => {
+    const { sections, trackId, signal } = run
+    const secPerBar = barsToSeconds(1, host.getProject())
+    const failed: ChunkReport['failed'] = []
+    const repaired: ChunkReport['repaired'] = []
+    const drone: ChunkReport['drone'] = []
+    let generated = 0
+    let last: string | null = null
+    // Final de cada región: su volumen (para ver un hueco tras la unión) y si está sana
+    // (sin atasco), que es lo que oye el tramo que la continúa.
+    type Tail = { db: number | null; ok: boolean }
+    const tails = new Map<string, Tail>()
+    const tailOf = async (id: string): Promise<Tail> => {
+      if (!tails.has(id)) {
+        const r = await host.inspectRegion(id)
+        tails.set(id, { db: r.sound?.tail.db ?? null, ok: r.collapseAtSec === null })
+      }
+      return tails.get(id)!
+    }
+    // Para reparar: escuchar un final atascado volvería a atascarse, así que se parte de
+    // la última región sana de antes. Solo aquí: en un tramo normal sería un corte.
+    const repairContext = async (from: string | null, atBeat: number): Promise<string | null> => {
+      if (!from || (await tailOf(from)).ok) return from
+      const regions = host.getProject().tracks.flatMap((t) => t.regions)
+      let best = from
+      let bestBeat = -1
+      for (const [id, t] of tails) {
+        const beat = regions.find((r) => r.id === id)?.startBeat ?? -1
+        if (t.ok && beat < atBeat && beat > bestBeat) [best, bestBeat] = [id, beat]
+      }
+      return best
+    }
+    const queue: (ChunkStep & { repair?: boolean })[] = [...run.steps]
+    const total = queue.filter((s) => s.kind === 'generate').length
+    const started = Date.now()
+    let finished = 0
+    while (queue.length > 0) {
+      const step = queue.shift()!
+      if (signal.aborted) throw new Error('Cancelado')
+      const section = sections[step.section]
+      if (step.kind === 'reuse') {
+        const src = sections[step.from]
+        await commit(
+          copySectionInto(host.getProject(), src.id, section.id),
+          `${section.name}: repite ${src.name}`
+        )
+        last = lastRegionIn(host.getProject(), trackId, section)?.id ?? last
+        continue
+      }
+      const p = host.getProject()
+      const atBeat = beatOfBar(p, step.startBar)
+      const span = `compases ${step.startBar}–${step.startBar + step.bars - 1}`
+      // Lo que suena justo antes (en una canción nueva, el último tramo grabado).
+      const before = regionEndingAt(p, trackId, atBeat)?.id ?? last
+      const from = step.repair ? await repairContext(before, atBeat) : before
+      if (step.repair) {
+        run.progress?.(`Reparando ${section.name} (${span})`)
+      } else {
+        const perPart = finished > 0 ? (Date.now() - started) / finished : 0
+        const left = Math.max(1, Math.round((perPart * (total - finished)) / 60_000))
+        const eta = finished > 0 ? ` · quedan ~${left} min` : ''
+        run.progress?.(`Parte ${finished + 1} de ${total} · ${section.name} (${span})${eta}`)
+      }
+      // Un tramo que falla se reintenta una vez; si vuelve a fallar, el siguiente
+      // continúa desde el último bueno.
+      let made: string | null = null
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const r = from
+            ? await host.extend(from, step.bars, {
+                prompt: step.prompt,
+                atBeat,
+                message: `${section.name} (${span})`,
+                // Fundirse con audio de otra parte de la canción sonaría raro.
+                crossfade: from === before
+              })
+            : await host.generate({
+                prompt: step.prompt,
+                role: 'full',
+                bars: step.bars,
+                atBeat,
+                trackId
+              })
+          made = r.regionId
+          generated++
+          break
+        } catch (err) {
+          if (signal.aborted) throw err
+          if (attempt === 2) {
+            failed.push({
+              section: section.name,
+              start_bar: step.startBar,
+              error: err instanceof Error ? err.message : String(err)
+            })
+          }
+        }
+      }
+      if (!step.repair) finished++
+      if (!made) continue
+
+      // ¿Se atascó? El fundido final de la canción no cuenta, ni que un tramo que empieza
+      // de cero (la intro) arranque solo con platillos: ahí aún no hay nada que se vacíe.
+      const endsSong = step.startBar + step.bars - 1 >= run.totalBars
+      const inspected = await host.inspectRegion(made, {
+        ignoreTailSec: endsSong ? 2 * secPerBar : 0,
+        ...(from ? {} : { thinDb: -Infinity })
+      })
+      // Un hueco justo tras la unión (el modelo se calla tras el fundido) es un atasco
+      // desde el principio.
+      const prevDb = from && from === before ? (await tailOf(from)).db : null
+      const gap =
+        prevDb !== null && !!inspected.sound && hasStartGap(inspected.sound.opening, prevDb)
+      const collapseAtSec = gap ? 0 : inspected.collapseAtSec
+      tails.set(made, { db: inspected.sound?.tail.db ?? null, ok: collapseAtSec === null })
+      if (collapseAtSec === null) {
+        last = made
+        continue
+      }
+      if (step.repair) {
+        // Ya era la reparación: se queda (mejor que un hueco) y se avisa.
+        drone.push({ section: section.name, start_bar: step.startBar })
+        last = made
+        continue
+      }
+      // Recortada cambia su final; quitada no debe servir de contexto.
+      tails.delete(made)
+      const good = Math.min(step.bars - 1, Math.floor(collapseAtSec / secPerBar))
+      if (good >= 1) {
+        await commit(
+          trimRegion(host.getProject(), made, good * secPerBar),
+          `${section.name}: recorte de un tramo atascado`
+        )
+        last = made
+      } else {
+        await commit(
+          removeRegion(host.getProject(), made),
+          `${section.name}: fuera un tramo ${gap ? 'que empezaba con un hueco' : 'atascado'}`
+        )
+      }
+      repaired.push({
+        section: section.name,
+        start_bar: step.startBar + good,
+        bars: step.bars - good
+      })
+      queue.unshift({
+        ...step,
+        startBar: step.startBar + good,
+        bars: step.bars - good,
+        repair: true
+      })
+    }
+    return { generated, failed, repaired, drone }
+  }
+
+  /** Escucha una pista entera: medidas por sección y por unión (ver review.ts). */
+  const reviewTrack = async (trackId: string): Promise<SongReview & { note: string }> => {
+    const p = host.getProject()
+    const regions: RegionSound[] = []
+    for (const r of p.tracks.find((t) => t.id === trackId)?.regions ?? []) {
+      const { sound } = await host.inspectRegion(r.id)
+      if (sound) {
+        regions.push({
+          startBeat: r.startBeat,
+          endBeat: r.startBeat + secondsToBeats(r.lengthSec, p.bpm),
+          lengthSec: r.lengthSec,
+          ...sound
+        })
+      }
+    }
+    const review = reviewSong(sectionsOf(p), regions, perBar(p))
+    return {
+      ...review,
+      note:
+        review.issues.length === 0
+          ? 'Listened to the whole song: no abrupt joins, the energy curve is audible and no section sounds dull.'
+          : 'Problems a listener would hear. Tell the user about them in plain words and offer the fix (redo_sections with those sections); do not regenerate without asking.'
+    }
+  }
 
   const readyProvider = (): ProviderInfo => {
     const provider = host.audioProvider()
@@ -486,6 +737,54 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
     },
     {
       def: {
+        name: 'genre_guide',
+        description:
+          'Returns how to produce a genre with this audio engine: tempo range, typical structure (sections, bars, energy), a ready "style", example "arrangement" per section type, what to avoid, and example prompts the engine understands. Call it before compose_song. Free and instant (no audio).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            genre: {
+              type: 'string',
+              description: 'Genre the user wants, e.g. "corridos tumbados", "reggaeton", "house"'
+            }
+          },
+          required: ['genre'],
+          additionalProperties: false
+        }
+      },
+      run: async (input) => {
+        const genre = str(input, 'genre')
+        // Si el usuario pidió una fusión ("house/techno bien tumbado"), manda esa guía
+        // aunque el LLM pregunte solo por una parte ("techno"). Decide el mensaje más
+        // reciente que nombre algún género.
+        const asked = host
+          .userMessages?.()
+          .map((m) => findGenre(m))
+          .find((x) => x !== null)
+        const g = asked?.blend ? asked : findGenre(genre)
+        guide = g
+        if (!g) {
+          return {
+            found: false,
+            known_genres: GENRES.map((x) => x.id),
+            example_prompts: PROMPT_EXAMPLES,
+            hint: 'Not in the guide: describe it with the closest known genres and concrete instruments, in the same short style as the examples (use web_search if you do not know its sound).'
+          }
+        }
+        return {
+          found: true,
+          genre: g.id,
+          bpm_range: g.bpm,
+          style: g.style,
+          structure: g.structure.map(([name, bars, energy]) => ({ name, bars, energy })),
+          arrangement_examples: g.arrangements,
+          avoid: g.avoid,
+          example_prompts: PROMPT_EXAMPLES
+        }
+      }
+    },
+    {
+      def: {
         name: 'compose_song',
         description:
           'Composes a complete NEW song in one call, the way a producer records it from start to end: sets tempo and key, creates the sections and generates the music section by section, each part continuing seamlessly from the previous one, so harmony, groove and sound stay coherent and the music evolves instead of looping. Transitions are added automatically (fills and build-ups between sections, fade in and fade out). You write the arrangement of each section. Replaces previously generated audio and sections (imported audio is kept; the user can undo). Use it for any request for a new song or beat. Takes a long time: it waits until all the audio is ready.',
@@ -495,7 +794,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             style: {
               type: 'string',
               description:
-                'Shared sound of the whole song IN ENGLISH: genre, mood, instruments palette and production (e.g. "dark industrial techno, gritty analog synths, warehouse reverb"). Turn artist names into descriptions.'
+                'Shared sound of the whole song IN ENGLISH, 8-15 words: a well-known genre and 3-5 concrete instruments, like the "style" from genre_guide (e.g. "reggaeton, dembow drum pattern, 808 bass, synth plucks, latin percussion"). Turn artist names into descriptions.'
             },
             bpm: { type: 'number', minimum: 40, maximum: 240 },
             key: { type: 'string', description: 'Key such as "E minor"' },
@@ -520,7 +819,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
                   arrangement: {
                     type: 'string',
                     description:
-                      'IN ENGLISH, what plays in this section and how: which instruments are in or out, energy, what changes (e.g. "drums drop out, only pad and filtered lead, tension rising"). No tempo or key.'
+                      'IN ENGLISH, at most 12 words: which instruments play in this section and what changes (e.g. "full dembow beat, synth hook, claps and shakers"). Always name a rhythm instrument. No tempo, key or vocals.'
                   },
                   energy: {
                     type: 'integer',
@@ -532,7 +831,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
                   reuse: {
                     type: 'boolean',
                     description:
-                      'true to repeat the audio of the previous section with the same name instead of generating it again (e.g. the last chorus). Saves time. Ignored in sung songs.'
+                      'true to repeat the audio of the previous section with the same name instead of generating it again. Use it for repeated choruses and drops, like real songs do; it also saves several minutes. Ignored when the cloud engine sings the song.'
                   },
                   lyrics: {
                     type: 'string',
@@ -564,10 +863,29 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           additionalProperties: false
         }
       },
-      run: async (input, signal) => {
+      run: async (input, signal, progress) => {
         // Se valida todo antes de tocar nada: si falla, el LLM corrige y vuelve a llamar.
-        const spec = parseSongSpec(input)
-        const bpm = num(input, 'bpm', 40, 240, true)
+        const parsed = parseSongSpec(input)
+        // Igual con el sonido: si el "style" no nombra el género de la guía (un
+        // "industrial techno" para un house tumbado), se usa el de la guía.
+        const head = guide?.style.split(',')[0].trim().toLowerCase()
+        const offStyle = !!head && !parsed.style.toLowerCase().includes(head)
+        const spec = offStyle ? { ...parsed, style: guide!.style } : parsed
+        const styleNote = offStyle
+          ? `style "${parsed.style}" did not match the ${guide!.id} guide; used "${guide!.style}". Put extra flavour in the sections' arrangement instead.`
+          : null
+        const asked = num(input, 'bpm', 40, 240, true)
+        // Fuera del rango del género, el ritmo deja de ser ese género: se acerca al borde.
+        const bpm = guide
+          ? Math.min(
+              guide.bpm[1],
+              Math.max(guide.bpm[0], asked ?? (guide.bpm[0] + guide.bpm[1]) / 2)
+            )
+          : asked
+        const tempoNote =
+          guide && asked !== undefined && Math.round(asked) !== Math.round(bpm!)
+            ? `bpm ${asked} is outside the ${guide.id} range ${guide.bpm.join('-')}; used ${Math.round(bpm!)}. Use set_tempo_key only if the user asks for another tempo.`
+            : null
         const key = str(input, 'key', true)
         const p = host.getProject()
         // Con letra, o la canta entera el motor de la nube (de una vez), o se graba el
@@ -631,7 +949,14 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           spec.sections.map((s) => {
             const startBar = nextBar
             nextBar += s.bars
-            return { name: s.name, startBar, bars: s.bars, lyrics: s.lyrics, melody: s.melody }
+            return {
+              name: s.name,
+              startBar,
+              bars: s.bars,
+              lyrics: s.lyrics,
+              melody: s.melody,
+              energy: s.energy ?? undefined
+            }
           })
         )
         await commit(
@@ -654,6 +979,8 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             ok: error === null,
             sung: true,
             bpm: final.bpm,
+            ...(tempoNote && { tempo_note: tempoNote }),
+            ...(styleNote && { style_note: styleNote }),
             key: final.key,
             ...(error && { error }),
             sections: sectionsOf(final).map((s) => ({
@@ -669,62 +996,19 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           }
         }
 
-        // Tramo a tramo y en orden: cada uno continúa al anterior (el motor escucha sus
-        // últimos segundos), así que no puede ir en paralelo. Cada tramo se guarda al
-        // terminar: la canción crece y, si algo se corta, lo hecho se queda.
         const secPerBar = barsToSeconds(1, host.getProject())
         const bars = chunkBars(secPerBar, provider.capabilities.maxDurationSec, CONTEXT_SEC)
-        const failed: { section: string; start_bar: number; error: string }[] = []
-        let generated = 0
-        let last: string | null = null
         // Con cantante local, el instrumental no debe traer voces propias.
-        const backing = local ? { ...spec, style: `${spec.style}, instrumental, no vocals` } : spec
-        for (const step of planChunks(backing, bars)) {
-          if (signal.aborted) throw new Error('Cancelado')
-          const section = sections[step.section]
-          if (step.kind === 'reuse') {
-            const src = sections[step.from]
-            await commit(
-              copySectionInto(host.getProject(), src.id, section.id),
-              `${section.name}: repite ${src.name}`
-            )
-            last = lastRegionIn(host.getProject(), song.id, section)?.id ?? last
-            continue
-          }
-          const atBeat = beatOfBar(planned, step.startBar)
-          const span = `compases ${step.startBar}–${step.startBar + step.bars - 1}`
-          // Un tramo que falla se reintenta una vez; si vuelve a fallar, el siguiente
-          // continúa desde el último bueno.
-          for (let attempt = 1; attempt <= 2; attempt++) {
-            try {
-              const r = last
-                ? await host.extend(last, step.bars, {
-                    prompt: step.prompt,
-                    atBeat,
-                    message: `${section.name} (${span})`
-                  })
-                : await host.generate({
-                    prompt: step.prompt,
-                    role: 'full',
-                    bars: step.bars,
-                    atBeat,
-                    trackId: song.id
-                  })
-              last = r.regionId
-              generated++
-              break
-            } catch (err) {
-              if (signal.aborted) throw err
-              if (attempt === 2) {
-                failed.push({
-                  section: section.name,
-                  start_bar: step.startBar,
-                  error: err instanceof Error ? err.message : String(err)
-                })
-              }
-            }
-          }
-        }
+        const backing = local ? { ...spec, style: `instrumental, ${spec.style}` } : spec
+        const tempo = host.getProject()
+        const { generated, failed, repaired, drone } = await recordChunks({
+          steps: planChunks(backing, bars, { bpm: tempo.bpm, key: tempo.key }),
+          sections,
+          trackId: song.id,
+          totalBars: spec.sections.reduce((n, s) => n + s.bars, 0),
+          signal,
+          progress
+        })
         if (generated > 0) {
           await commit(
             polishSong(host.getProject(), song.id),
@@ -743,6 +1027,8 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           }
         }
 
+        // Antes de dar la canción por hecha, se escucha el instrumental entero.
+        const review = generated > 0 ? await reviewTrack(song.id) : null
         const final = host.getProject()
         const ids = new Set(sections.map((s) => s.id))
         return {
@@ -753,10 +1039,22 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             vocal_hint: 'The instrumental is saved; fix the melody and call sing_melody.'
           }),
           bpm: final.bpm,
+          ...(tempoNote && { tempo_note: tempoNote }),
+          ...(styleNote && { style_note: styleNote }),
           key: final.key,
           bars_per_part: bars,
           parts_generated: generated,
           ...(failed.length > 0 && { failed }),
+          ...(repaired.length > 0 && {
+            repaired,
+            repaired_note:
+              'These parts got stuck (a low drone, static hiss or the music thinning out to a faint hi-hat); the stuck audio was cut and regenerated automatically.'
+          }),
+          ...(drone.length > 0 && {
+            drone,
+            drone_note:
+              'These parts still sound like a low drone after one repair. Tell the user and offer create_variation on them.'
+          }),
           sections: sectionCoverage(final)
             .filter((c) => ids.has(c.section.id))
             .map((c) => ({
@@ -766,7 +1064,134 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
               bars: c.section.bars,
               has_music: c.layers.length > 0
             })),
-          check: reviewProject(final) ?? 'Every section has music.'
+          check: reviewProject(final) ?? 'Every section has music.',
+          ...(review && { review })
+        }
+      }
+    },
+    {
+      def: {
+        name: 'review_song',
+        description:
+          'Listens to the finished instrumental: loudness and brightness of every section, and problems a listener would hear (abrupt joins between parts, a chorus or drop that is not louder than the calmer sections, a dull section). compose_song already includes it; call it after changing parts of a song. Free and fast (no audio is generated).',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+      },
+      run: async () => {
+        const song = songTrackOf(host.getProject())
+        if (!song) throw new Error('No hay ninguna canción generada que revisar')
+        return reviewTrack(song.id)
+      }
+    },
+    {
+      def: {
+        name: 'redo_sections',
+        description:
+          "Records again whole sections of the finished song (typically the ones review_song or compose_song's review flag), keeping the rest. Each new part continues the music right before it and blends into it, with the same automatic repair as compose_song, and the song is reviewed again at the end. Much cheaper than composing the song again, but each part still takes about 6-7 minutes on this computer: tell the user how long before calling it.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            section_ids: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Ids of the sections to record again (from get_project_state).'
+            }
+          },
+          required: ['section_ids'],
+          additionalProperties: false
+        }
+      },
+      run: async (input, signal, progress) => {
+        const ids = input.section_ids
+        if (!Array.isArray(ids) || ids.length === 0 || ids.some((x) => typeof x !== 'string')) {
+          throw new Error('section_ids debe ser una lista de ids de sección')
+        }
+        const p = host.getProject()
+        const song = songTrackOf(p)
+        if (!song) throw new Error('No hay ninguna canción generada que rehacer')
+        const provider = readyProvider()
+        if (!provider.capabilities.supportsContinue) {
+          throw new Error(`${provider.label} no sabe continuar audio; elige otro motor en Ajustes.`)
+        }
+        const all = sectionsOf(p)
+        const targets = all.filter((s) => ids.includes(s.id))
+        const unknown = (ids as string[]).filter((id) => !all.some((s) => s.id === id))
+        if (unknown.length > 0) throw new Error(`Secciones desconocidas: ${unknown.join(', ')}`)
+
+        const bars = chunkBars(
+          barsToSeconds(1, p),
+          provider.capabilities.maxDurationSec,
+          CONTEXT_SEC
+        )
+        const steps: ChunkStep[] = []
+        const doomed = new Set<string>()
+        for (const s of targets) {
+          const a = beatOfBar(p, s.startBar)
+          const b = beatOfBar(p, s.startBar + s.bars)
+          const old = song.regions
+            .filter((r) => r.startBeat >= a - 0.01 && r.startBeat < b - 0.01)
+            .sort((x, y) => x.startBeat - y.startBeat)
+          old.forEach((r) => doomed.add(r.id))
+          // Cada parte nueva repite la descripción de la que sustituye.
+          const prompts = old.flatMap((r) => p.clips[r.clipId]?.spec?.prompt ?? [])
+          const fallback = [p.style, s.name.toLowerCase()].filter(Boolean).join(', ')
+          for (let k = 0; k * bars < s.bars; k++) {
+            steps.push({
+              kind: 'generate',
+              section: all.indexOf(s),
+              startBar: s.startBar + k * bars,
+              bars: Math.min(bars, s.bars - k * bars),
+              prompt: prompts[k] ?? prompts.at(-1) ?? fallback
+            })
+          }
+        }
+
+        // Fuera el audio viejo. Una región que sigue a una sección rehecha entraba
+        // fundiéndose con ese audio viejo: pierde el pre-roll.
+        const ends = targets.map((s) => beatOfBar(p, s.startBar + s.bars))
+        let next = p
+        for (const id of doomed) next = removeRegion(next, id)
+        next = {
+          ...next,
+          tracks: next.tracks.map((t) =>
+            t.id !== song.id
+              ? t
+              : {
+                  ...t,
+                  regions: t.regions.map((r) =>
+                    r.leadInSec && ends.some((e) => Math.abs(e - r.startBeat) < 0.05)
+                      ? { ...r, leadInSec: undefined, fadeInSec: 0.01 }
+                      : r
+                  )
+                }
+          )
+        }
+        await commit(next, `rehacer: ${targets.map((s) => s.name).join(', ')}`)
+
+        const report = await recordChunks({
+          steps,
+          sections: all,
+          trackId: song.id,
+          totalBars: Math.max(...all.map((s) => s.startBar + s.bars - 1)),
+          signal,
+          progress
+        })
+        if (report.generated > 0) {
+          await commit(
+            polishSong(host.getProject(), song.id),
+            'pulido: fundidos de entrada y salida'
+          )
+        }
+        return {
+          ok: report.failed.length === 0,
+          redone: targets.map((s) => s.name),
+          parts_generated: report.generated,
+          ...(report.failed.length > 0 && { failed: report.failed }),
+          ...(report.repaired.length > 0 && { repaired: report.repaired }),
+          ...(report.drone.length > 0 && {
+            drone: report.drone,
+            drone_note: 'These parts still sound stuck after one repair. Tell the user.'
+          }),
+          ...(report.generated > 0 && { review: await reviewTrack(song.id) })
         }
       }
     },

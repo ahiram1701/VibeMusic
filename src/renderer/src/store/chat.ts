@@ -2,8 +2,10 @@ import { create } from 'zustand'
 import { AgentCancelled, AgentInterrupted, runAgent, type AgentEvent } from '@shared/agent'
 import { textOf, type LlmMessage, type LlmRetry } from '@shared/llm'
 import { newId } from '@shared/project'
+import { CHAT_FILE, parseSavedChat, serializeChat } from '@shared/chat-log'
 import { PRODUCER_SYSTEM_PROMPT } from '@shared/producer-prompt'
 import { reviewProject } from '@shared/arrange'
+import { findCollapse, soundSummary, toMono } from '@shared/drone'
 import { createWebTools } from '@shared/web-tools'
 import {
   AGENT_PREFIX,
@@ -16,6 +18,7 @@ import { engine } from '../audio/engine'
 import { continueRegion, convertVoiceRegion, separateRegion, varyRegion } from './clip-actions'
 import { useGeneration, vocalProvider, waitForJob } from './generation'
 import { useProject } from './project'
+import { keepAcrossHmr } from './hot'
 import { useVoice } from './voice'
 import { renderSungVocal, useSinger } from './singer'
 
@@ -31,6 +34,8 @@ export type ChatItem = { at: number } & (
       status: 'running' | 'ok' | 'error'
       result?: string
       endedAt?: number
+      /** En qué va una herramienta larga ("Parte 3 de 10 · Coro…"). */
+      progress?: string
     }
   | { id: string; kind: 'notice'; text: string; tone: 'error' | 'info' }
 )
@@ -64,6 +69,11 @@ let currentRequest: string | null = null
 
 /** Conecta las herramientas del agente con la app real. */
 const host: ProducerHost = {
+  userMessages: () =>
+    useChat
+      .getState()
+      .items.flatMap((i) => (i.kind === 'user' ? [i.text] : []))
+      .reverse(),
   getProject: () => {
     const p = useProject.getState().project
     if (!p) throw new Error('No hay ningún proyecto abierto')
@@ -103,6 +113,24 @@ const host: ProducerHost = {
     agentJob(varyRegion(regionId, { instructions, messagePrefix: AGENT_PREFIX })),
   extend: (regionId, bars, opts) =>
     agentJob(continueRegion(regionId, bars, { ...opts, messagePrefix: AGENT_PREFIX })),
+  inspectRegion: async (regionId, opts) => {
+    const { project, dir } = useProject.getState()
+    const region = project?.tracks.flatMap((t) => t.regions).find((r) => r.id === regionId)
+    const clip = region && project?.clips[region.clipId]
+    if (!region || !clip || !dir) throw new Error(`No existe la región ${regionId}`)
+    const buffer = engine.buffers.get(clip.id) ?? (await engine.loadClip(dir, clip))
+    const sr = buffer.sampleRate
+    const from = Math.floor(region.offsetSec * sr)
+    const to = Math.min(buffer.length, Math.ceil((region.offsetSec + region.lengthSec) * sr))
+    const channels = Array.from({ length: buffer.numberOfChannels }, (_, i) =>
+      buffer.getChannelData(i).subarray(from, to)
+    )
+    const mono = toMono(channels)
+    return {
+      collapseAtSec: findCollapse(mono, sr, opts),
+      sound: soundSummary(mono, sr)
+    }
+  },
   separate: (regionId) => separateRegion(regionId, { messagePrefix: AGENT_PREFIX }),
   myVoices: () => {
     const { status, voices } = useVoice.getState()
@@ -148,55 +176,57 @@ export async function singFromEditor(): Promise<void> {
   await sing.run({}, new AbortController().signal)
 }
 
-export const useChat = create<ChatState>((set, get) => ({
-  items: [],
-  history: [],
-  running: false,
-  resumable: false,
-  thinkingSince: null,
-  retry: null,
+export const useChat = keepAcrossHmr('useChat', () =>
+  create<ChatState>((set, get) => ({
+    items: [],
+    history: [],
+    running: false,
+    resumable: false,
+    thinkingSince: null,
+    retry: null,
 
-  async send(text) {
-    const trimmed = text.trim()
-    if (!trimmed || get().running) return
-    set((s) => ({
-      items: [...s.items, { id: newId('msg'), at: Date.now(), kind: 'user', text: trimmed }]
-    }))
-    const { resumable, history } = get()
-    if (resumable && RESUME_WORDS.test(trimmed)) return run(history)
-    const last = history.at(-1)
-    if (resumable && last?.role === 'user') {
-      // El turno cortado espera respuesta: la indicación nueva se suma a ese mensaje
-      // (dos mensajes de usuario seguidos confunden a algunos proveedores).
-      return run([
-        ...history.slice(0, -1),
-        { ...last, content: [...last.content, { type: 'text', text: trimmed }] }
-      ])
+    async send(text) {
+      const trimmed = text.trim()
+      if (!trimmed || get().running) return
+      set((s) => ({
+        items: [...s.items, { id: newId('msg'), at: Date.now(), kind: 'user', text: trimmed }]
+      }))
+      const { resumable, history } = get()
+      if (resumable && RESUME_WORDS.test(trimmed)) return run(history)
+      const last = history.at(-1)
+      if (resumable && last?.role === 'user') {
+        // El turno cortado espera respuesta: la indicación nueva se suma a ese mensaje
+        // (dos mensajes de usuario seguidos confunden a algunos proveedores).
+        return run([
+          ...history.slice(0, -1),
+          { ...last, content: [...last.content, { type: 'text', text: trimmed }] }
+        ])
+      }
+      return run(history, trimmed)
+    },
+
+    async resume() {
+      if (get().running || !get().resumable) return
+      set((s) => ({
+        items: [
+          ...s.items,
+          { id: newId('msg'), at: Date.now(), kind: 'notice', tone: 'info', text: 'Reanudando…' }
+        ]
+      }))
+      return run(get().history)
+    },
+
+    stop() {
+      controller?.abort()
+      if (currentRequest) void window.vibe.llm.cancel(currentRequest)
+    },
+
+    reset() {
+      get().stop()
+      set({ items: [], history: [], resumable: false, retry: null })
     }
-    return run(history, trimmed)
-  },
-
-  async resume() {
-    if (get().running || !get().resumable) return
-    set((s) => ({
-      items: [
-        ...s.items,
-        { id: newId('msg'), at: Date.now(), kind: 'notice', tone: 'info', text: 'Reanudando…' }
-      ]
-    }))
-    return run(get().history)
-  },
-
-  stop() {
-    controller?.abort()
-    if (currentRequest) void window.vibe.llm.cancel(currentRequest)
-  },
-
-  reset() {
-    get().stop()
-    set({ items: [], history: [], resumable: false, retry: null })
-  }
-}))
+  }))
+)
 
 /** Ejecuta un turno del productor (o reanuda uno cortado si no hay `userText`). */
 async function run(history: LlmMessage[], userText?: string): Promise<void> {
@@ -307,6 +337,8 @@ function applyEvent(items: ChatItem[], e: AgentEvent): ChatItem[] {
         ...items,
         { id: e.id, at: Date.now(), kind: 'tool', name: e.name, input: e.input, status: 'running' }
       ]
+    case 'tool_progress':
+      return items.map((i) => (i.kind === 'tool' && i.id === e.id ? { ...i, progress: e.text } : i))
     case 'tool_end':
       return items.map((i) =>
         i.kind === 'tool' && i.id === e.id
@@ -358,7 +390,52 @@ export function cleanError(err: unknown): string {
   return raw.replace(/^Error invoking remote method '[^']+': (\w*Error: )?/, '')
 }
 
-// Cambiar de proyecto empieza una conversación nueva.
-useProject.subscribe((s, prev) => {
-  if (s.dir !== prev.dir) useChat.getState().reset()
+// La conversación se guarda en el proyecto (chat.json) y se recupera al abrirlo: se
+// sigue viendo aunque la ventana se recargue a mitad de una canción.
+let chatDir: string | null = null
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+
+function saveChat(): void {
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = null
+  const { items, history } = useChat.getState()
+  // Vacía solo justo tras cambiar de proyecto: no se pisa el chat guardado.
+  if (!chatDir || (items.length === 0 && history.length === 0)) return
+  const bytes = new TextEncoder().encode(serializeChat(items, history))
+  window.vibe.clips.write(chatDir, CHAT_FILE, bytes).catch((err) => {
+    console.error('No se pudo guardar la conversación', err)
+  })
+}
+
+async function loadChat(dir: string): Promise<void> {
+  let text: string
+  try {
+    text = new TextDecoder().decode(await window.vibe.clips.read(dir, CHAT_FILE))
+  } catch {
+    return // proyecto sin conversación guardada
+  }
+  const saved = parseSavedChat<ChatItem>(text)
+  if (saved && chatDir === dir && !useChat.getState().running) useChat.setState(saved)
+}
+
+function openChat(dir: string | null): void {
+  saveChat() // la del proyecto anterior, si quedaba algo por guardar
+  useChat.getState().reset()
+  chatDir = dir
+  if (dir) void loadChat(dir)
+}
+
+// Una sola vez (también con HMR): cambiar de proyecto cambia de conversación, y cada
+// cambio en el chat se guarda al cabo de un segundo.
+keepAcrossHmr('chat:persist', () => {
+  useProject.subscribe((s, prev) => {
+    if (s.dir !== prev.dir) openChat(s.dir)
+  })
+  useChat.subscribe((s, prev) => {
+    if (s.items === prev.items && s.history === prev.history) return
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(saveChat, 1000)
+  })
+  openChat(useProject.getState().dir)
+  return true
 })

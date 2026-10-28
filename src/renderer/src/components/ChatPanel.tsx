@@ -282,6 +282,9 @@ function ChatRow({ item, now }: { item: ChatItem; now: number }): React.JSX.Elem
               {item.endedAt ? duration(item.endedAt - item.at) : stopwatch(now - item.at)}
             </span>
           </div>
+          {item.status === 'running' && item.progress && (
+            <p className="mt-1 text-muted">{item.progress}</p>
+          )}
           {item.status === 'error' && item.result && (
             <p className="mt-1 text-red-400">{item.result}</p>
           )}
@@ -316,6 +319,12 @@ export function describeTool(
         : []
       return `${running ? 'Componiendo' : 'Compuesta'} la canción: ${sections.join(' → ')}${running ? ' (se graba parte a parte; cada una tarda unos minutos)' : ''}`
     }
+    case 'redo_sections':
+      return running ? 'Grabando de nuevo las partes que fallaban' : 'Partes grabadas de nuevo'
+    case 'review_song':
+      return running ? 'Escuchando la canción' : 'Canción escuchada'
+    case 'genre_guide':
+      return `Consultando cómo suena ${typeof input.genre === 'string' ? `“${input.genre}”` : 'el género'}`
     case 'fill_section':
       return `${running ? 'Rellenando' : 'Rellenado'} “${input.section}” con ${role}: “${input.prompt}”`
     case 'set_sections':

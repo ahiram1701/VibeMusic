@@ -256,24 +256,68 @@ export function chunkBars(secPerBar: number, maxSec: number, contextSec: number)
   return Math.max(1, fit)
 }
 
-/** Texto de transición al final de una sección, según cómo cambia la energía. */
+// --- Prompts para MusicGen ----------------------------------------------------
+// MusicGen se entrenó con descripciones cortas tipo etiquetas ("latin pop, guitar,
+// drums, 96 bpm"). Con prompts largos se diluye y, si abundan "dark", "sub bass" o
+// "reverb", colapsa en un drone grave. Tampoco entiende negaciones: "not ambient"
+// le empuja hacia lo ambiental. Por eso cada tramo lleva pocas palabras, todas
+// positivas, y el tempo.
+
+/** Palabras máximas del estilo y del arreglo dentro del prompt de un tramo. */
+export const STYLE_WORDS = 15
+export const ARRANGEMENT_WORDS = 15
+
+/**
+ * Recorta un texto a `max` palabras quedándose con frases completas (separadas por
+ * comas); si la primera ya es más larga, la corta por palabras.
+ */
+export function clampWords(text: string, max: number): string {
+  const words = (t: string): string[] => t.split(/\s+/).filter(Boolean)
+  const kept: string[] = []
+  let count = 0
+  for (const phrase of text
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean)) {
+    const n = words(phrase).length
+    if (count + n > max) {
+      if (kept.length === 0) kept.push(words(phrase).slice(0, max).join(' '))
+      break
+    }
+    kept.push(phrase)
+    count += n
+  }
+  return kept.join(', ')
+}
+
+/** Lo que tiene que seguir sonando según la energía (MusicGen no entiende el número). */
+export function energyHint(energy: number | null): string {
+  if (energy !== null && energy <= 2) return 'soft drums, groove'
+  if (energy !== null && energy >= 4) return 'energetic, full drums'
+  return 'steady beat'
+}
+
+/** Transición al final de una sección, según cómo cambia la energía. */
 function transitionOut(from: number | null, to: number | null): string {
-  if (from !== null && to !== null && to > from) {
-    return 'ending with a drum fill and a riser building up into the next section'
-  }
-  if (from !== null && to !== null && to < from) {
-    return 'winding down at the end, transitioning into a calmer next section'
-  }
-  return 'ending with a short drum fill into the next section'
+  if (from !== null && to !== null && to > from) return 'build-up and drum fill at the end'
+  return 'drum fill at the end'
 }
 
 /**
  * Pasos para componer la canción: cada sección en tramos de `bars` compases (el
  * último puede ser más corto), con transiciones automáticas en los bordes. Las
- * secciones con `reuse` copian la anterior del mismo nombre.
+ * secciones con `reuse` copian la anterior del mismo nombre. Todo tramo generado
+ * continúa al que suena antes que él: escuchar otra parte de la canción daría un
+ * cambio en seco en la unión.
  */
-export function planChunks(spec: SongSpec, bars: number): ChunkStep[] {
+export function planChunks(
+  spec: SongSpec,
+  bars: number,
+  tempo: { bpm?: number; key?: string } = {}
+): ChunkStep[] {
   const steps: ChunkStep[] = []
+  const style = clampWords(spec.style, STYLE_WORDS)
+  const tail = [tempo.bpm ? `${Math.round(tempo.bpm)} bpm` : '', tempo.key ?? ''].filter(Boolean)
   let startBar = 1
   spec.sections.forEach((s, i) => {
     if (s.reuse) {
@@ -282,25 +326,23 @@ export function planChunks(spec: SongSpec, bars: number): ChunkStep[] {
       startBar += s.bars
       return
     }
-    const prev = spec.sections[i - 1]
     const next = spec.sections[i + 1]
     const count = Math.ceil(s.bars / bars)
     for (let k = 0; k < count; k++) {
       const len = Math.min(bars, s.bars - k * bars)
-      const hints: string[] = []
-      if (k === 0 && i === 0) hints.push('song intro')
-      if (k === 0 && prev?.energy && s.energy && s.energy > prev.energy) {
-        hints.push('powerful entrance, full energy from the first beat')
-      }
-      if (k === count - 1) {
-        hints.push(next ? transitionOut(s.energy, next.energy) : 'song ending, fading out')
-      }
+      const hints: string[] = [energyHint(s.energy), ...tail]
+      if (k === 0 && i === 0) hints.unshift('intro')
+      // La transición va al final: es lo último que suena en el tramo.
+      if (k === count - 1)
+        hints.push(next ? transitionOut(s.energy, next.energy) : 'fade out ending')
       steps.push({
         kind: 'generate',
         section: i,
         startBar: startBar + k * bars,
         bars: len,
-        prompt: [s.arrangement, spec.style, ...hints].join(', ')
+        prompt: [style, clampWords(s.arrangement, ARRANGEMENT_WORDS), ...hints]
+          .filter(Boolean)
+          .join(', ')
       })
     }
     startBar += s.bars
@@ -310,6 +352,17 @@ export function planChunks(spec: SongSpec, bars: number): ChunkStep[] {
 
 /** Segundos de audio previo que escucha el motor al continuar (ver audio/excerpt.ts). */
 export const CONTEXT_SEC = 8
+
+/**
+ * Pre-roll de cada continuación: el tramo nuevo empieza un pulso antes, repitiendo el
+ * final del anterior, y se funden. Sin él, cada unión cambia de timbre en seco.
+ */
+export const XFADE_BEATS = 1
+
+/** Segundos de fundido cruzado entre tramos encadenados a este tempo (mínimo 0,25 s). */
+export function crossfadeSeconds(bpm: number): number {
+  return Math.max(0.25, (XFADE_BEATS * 60) / bpm)
+}
 
 /** La última región de la pista que empieza dentro de la sección. */
 export function lastRegionIn(p: Project, trackId: string, s: Section): Region | undefined {
@@ -352,6 +405,25 @@ export function polishSong(p: Project, trackId: string): Project {
             }))
           }
     )
+  }
+}
+
+/** Acorta una región a `lengthSec` (p. ej. para quitar un tramo atascado), sin clic al final. */
+export function trimRegion(p: Project, regionId: string, lengthSec: number): Project {
+  return {
+    ...p,
+    tracks: p.tracks.map((t) => ({
+      ...t,
+      regions: t.regions.map((r) =>
+        r.id !== regionId
+          ? r
+          : {
+              ...r,
+              lengthSec: Math.min(r.lengthSec, lengthSec),
+              fadeOutSec: Math.min(0.01, lengthSec)
+            }
+      )
+    }))
   }
 }
 

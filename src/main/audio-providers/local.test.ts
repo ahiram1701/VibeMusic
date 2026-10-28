@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -81,6 +81,45 @@ describe('proveedor local', () => {
     expect(calls.at(-1)?.url).toBe('http://127.0.0.1:9999/jobs/j1/audio')
     expect(progress).toContain(0.5)
     expect((await readFile(path)).toString()).toBe('RIFF')
+  })
+
+  it('al continuar pide el pre-roll para fundir y devuelve cuánto trae', async () => {
+    const cond = join(dir, 'partida.wav')
+    await writeFile(cond, new Uint8Array([1, 2, 3]))
+    const bodies: Record<string, unknown>[] = []
+    const replies = [
+      Response.json({ id: 'j3', status: 'queued', progress: null, stage: 'x', error: null }),
+      Response.json({
+        id: 'j3',
+        status: 'done',
+        progress: 1,
+        stage: 'Listo',
+        error: null,
+        lead_in_sec: 0.5
+      }),
+      new Response(new Uint8Array([82, 73, 70, 70]))
+    ]
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      if (init?.body) bodies.push(JSON.parse(init.body as string))
+      return replies.shift()!
+    }) as typeof fetch
+    const provider = createLocalProvider(host(), async () => 'm', fetchImpl, 1)
+    const result = await provider.generate(
+      {
+        ...spec,
+        mode: 'continue',
+        conditioning: { clipId: 'c', file: 'partida.wav', seconds: 8 },
+        crossfadeSec: 0.5
+      },
+      {
+        signal: new AbortController().signal,
+        outBase: join(dir, 'o3'),
+        conditioningPath: cond,
+        onProgress: () => undefined
+      }
+    )
+    expect(bodies[0]).toMatchObject({ keep_lead_sec: 0.5 })
+    expect(result.leadInSec).toBe(0.5)
   })
 
   it('traslada los errores del motor', async () => {

@@ -18,6 +18,8 @@ interface RemoteJob {
   progress: number | null
   stage: string
   error: string | null
+  /** Segundos de la partida devueltos delante del audio nuevo (si se pidieron). */
+  lead_in_sec?: number
 }
 
 const MAX_SEC = 30
@@ -77,11 +79,13 @@ export function createLocalProvider(
             seconds: Math.min(MAX_SEC, Math.ceil(spec.durationSec * 10) / 10),
             seed: spec.seed === undefined ? null : spec.seed % 2 ** 31,
             model: await getModel(),
-            // Continuar: el servidor recibe el fragmento de partida y devuelve solo lo nuevo.
+            // Continuar: el servidor recibe el fragmento de partida y devuelve lo nuevo,
+            // con delante el final de la partida si se pide para fundir.
             audio_b64:
               spec.conditioning && ctx.conditioningPath
                 ? (await readFile(ctx.conditioningPath)).toString('base64')
-                : null
+                : null,
+            ...(spec.conditioning && spec.crossfadeSec && { keep_lead_sec: spec.crossfadeSec })
           })
         })
       ).json()) as RemoteJob
@@ -114,7 +118,7 @@ export function createLocalProvider(
         const audio = await call(`/jobs/${job.id}/audio`)
         const path = `${ctx.outBase}.wav`
         await writeFile(path, new Uint8Array(await audio.arrayBuffer()))
-        return { path }
+        return { path, ...(job.lead_in_sec && { leadInSec: job.lead_in_sec }) }
       } finally {
         ctx.signal.removeEventListener('abort', cancelRemote)
       }
