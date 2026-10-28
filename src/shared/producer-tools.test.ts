@@ -753,6 +753,45 @@ describe('productor · canciones completas', () => {
     expect(plainCalls.some((c) => c.atBeat === 96)).toBe(true)
   })
 
+  it('con batería, la cama no se pide "filtered" ni "soft" (lo hace la mezcla)', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    withFakeDrums(h)
+    await h.run('genre_guide', { genre: 'house' })
+    await h.run('compose_song', {
+      ...houseSong,
+      sections: [
+        { ...houseSong.sections[0], arrangement: 'filtered kick and metallic percussion' },
+        ...houseSong.sections.slice(1)
+      ]
+    })
+    const prompts = [...h.generated.map((g) => g.prompt), ...calls.map((c) => c.prompt)]
+    expect(h.generated[0].prompt).toMatch(/kick and metallic percussion, intro, groove/)
+    expect(prompts.some((t) => /filtered|soft drums/.test(t ?? ''))).toBe(false)
+  })
+
+  it('con batería, la revisión no marca lo que la batería tapa', async () => {
+    const h = fakeHost(createProject('X'))
+    chainable(h)
+    withFakeDrums(h)
+    h.host.inspectRegion = async (regionId) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      // Cama oscura; el coro (pulso 32) entra mucho más apagado y termina más fuerte:
+      // con batería solo cuenta un salto de volumen grande.
+      const s = { db: -18, highDb: -30, pulseDb: 5 }
+      const head = r.startBeat === 32 ? { ...s, highDb: -42 } : s
+      const tail = r.startBeat === 32 ? { ...s, db: -10 } : s
+      return { collapseAtSec: null, sound: { head, tail, mean: s, staticRun: null, opening: [] } }
+    }
+    await h.run('genre_guide', { genre: 'house' })
+    const res = (await h.run('compose_song', houseSong)) as {
+      review: { issues: { type: string; bar?: number }[] }
+    }
+    expect(res.review.issues).toEqual([expect.objectContaining({ type: 'seam', bar: 17 })])
+    const again = (await h.run('review_song')) as { issues: unknown[] }
+    expect(again.issues).toEqual(res.review.issues)
+  })
+
   it('set_drums cambia el patrón en segundos y "off" la quita', async () => {
     const h = fakeHost(createProject('X'))
     chainable(h)

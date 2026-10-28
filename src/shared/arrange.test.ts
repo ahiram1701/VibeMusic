@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   chunkBars,
+  energyHint,
   clampWords,
   fillSections,
   lastRegionIn,
@@ -15,6 +16,7 @@ import {
   tileRegions,
   trackBusy,
   vocalSongRequest,
+  withoutFilterWords,
   type ChunkStep
 } from './arrange'
 import { createProject, createTrack, type Project, type Region } from './project'
@@ -392,5 +394,16 @@ describe('letra', () => {
     expect(req.prompt).toBe(
       'reggaeton, male vocal, bilingual Spanish and English lyrics, English lines sung with native English pronunciation'
     )
+  })
+})
+
+describe('cama con batería programada', () => {
+  it('quita las palabras de filtro del arreglo y el "soft" de la calma', () => {
+    expect(withoutFilterWords('filtered kick and metallic percussion, muffled pad')).toBe(
+      'kick and metallic percussion, pad'
+    )
+    expect(withoutFilterWords('lowpassed, bass')).toBe('bass')
+    expect(energyHint(2, { drums: true })).toBe('groove')
+    expect(energyHint(2)).toBe('soft drums, groove')
   })
 })

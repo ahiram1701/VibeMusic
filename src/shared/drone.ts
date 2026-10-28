@@ -153,8 +153,32 @@ export function toMono(channels: Float32Array[]): Float32Array {
   return out
 }
 
-/** Ventana de los bordes: un cambio en seco en una unión dura menos de medio segundo. */
+/** Ventana de los bordes (para ver un hueco al empezar, cuarto a cuarto). */
 const EDGE_SEC = 0.25
+/**
+ * Cuartos de segundo que se promedian en cada borde para comparar una unión: uno solo
+ * cae a veces en el silencio entre dos golpes y marca un salto de 8 dB que no se oye
+ * (test7: medido con un segundo, ese salto eran 2 dB).
+ */
+const EDGE_PARTS = 4
+
+/** Media en potencia de varias medidas. */
+function powerMean(stats: WindowStats[]): WindowStats {
+  let power = 0
+  let high = 0
+  let pulse = 0
+  for (const s of stats) {
+    const p = Math.pow(10, s.db / 10)
+    power += p
+    high += p * Math.pow(10, s.highDb / 10)
+    pulse += s.pulseDb
+  }
+  return {
+    db: 10 * Math.log10(power / stats.length + 1e-24),
+    highDb: 10 * Math.log10(high / (power + 1e-24) + 1e-12),
+    pulseDb: pulse / stats.length
+  }
+}
 
 /** Resumen de un audio para revisar la canción (ver soundSummary). */
 export interface SoundSummary {
@@ -180,34 +204,23 @@ export function hasStartGap(opening: number[], prevTailDb: number, dropDb = 10):
 }
 
 /**
- * Primer y último cuarto de segundo de un audio (lo que se oye en sus uniones), su
+ * Primer y último segundo de un audio (lo que se oye en sus uniones), su
  * media en potencia y la racha más larga de sonido estático, o null si dura < 1 s.
  */
 export function soundSummary(samples: Float32Array, sampleRate: number): SoundSummary | null {
   const stats = windowStats(samples, sampleRate)
   if (stats.length === 0) return null
-  let power = 0
-  let high = 0
-  let pulse = 0
   let staticRun: SoundSummary['staticRun'] = null
   let run = 0
   stats.forEach((s, i) => {
-    const p = Math.pow(10, s.db / 10)
-    power += p
-    high += p * Math.pow(10, s.highDb / 10)
-    pulse += s.pulseDb
     run = s.db >= DEFAULTS.silenceDb && s.pulseDb < DEFAULTS.pulseMin ? run + 1 : 0
     if (run > (staticRun?.sec ?? 0)) staticRun = { startSec: i - run + 1, sec: run }
   })
   const edge = windowStats(samples, sampleRate, EDGE_SEC)
   return {
-    head: edge[0],
-    tail: edge[edge.length - 1],
-    mean: {
-      db: 10 * Math.log10(power / stats.length + 1e-24),
-      highDb: 10 * Math.log10(high / (power + 1e-24) + 1e-12),
-      pulseDb: pulse / stats.length
-    },
+    head: powerMean(edge.slice(0, EDGE_PARTS)),
+    tail: powerMean(edge.slice(-EDGE_PARTS)),
+    mean: powerMean(stats),
     staticRun,
     opening: edge.slice(0, OPENING_PARTS).map((w) => w.db)
   }

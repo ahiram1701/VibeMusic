@@ -290,11 +290,30 @@ export function clampWords(text: string, max: number): string {
   return kept.join(', ')
 }
 
-/** Lo que tiene que seguir sonando según la energía (MusicGen no entiende el número). */
-export function energyHint(energy: number | null): string {
-  if (energy !== null && energy <= 2) return 'soft drums, groove'
+/**
+ * Lo que tiene que seguir sonando según la energía (MusicGen no entiende el número).
+ * Con batería programada, la calma de la intro y el outro la pone la batería: pedirle
+ * "soft" a la cama la oscurece hasta el drone (test7: la intro se quedó en un zumbido).
+ */
+export function energyHint(energy: number | null, { drums = false } = {}): string {
+  if (energy !== null && energy <= 2) return drums ? 'groove' : 'soft drums, groove'
   if (energy !== null && energy >= 4) return 'energetic, full drums'
   return 'steady beat'
+}
+
+/**
+ * Con batería programada la app filtra la cama (intro que se abre, break apagado): si
+ * además el prompt pide "filtered", MusicGen la entrega ya oscura y el filtro de la
+ * mezcla la deja en un zumbido grave. Se quitan esas palabras del arreglo.
+ */
+const FILTER_WORDS = /\b(filtered|muffled|low-?pass(ed)?|high-?pass(ed)?)\b/gi
+
+export function withoutFilterWords(text: string): string {
+  return text
+    .split(',')
+    .map((p) => p.replace(FILTER_WORDS, '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join(', ')
 }
 
 /** Transición al final de una sección, según cómo cambia la energía. */
@@ -313,8 +332,9 @@ function transitionOut(from: number | null, to: number | null): string {
 export function planChunks(
   spec: SongSpec,
   bars: number,
-  tempo: { bpm?: number; key?: string } = {}
+  tempo: { bpm?: number; key?: string; drums?: boolean } = {}
 ): ChunkStep[] {
+  const drums = tempo.drums ?? false
   const steps: ChunkStep[] = []
   const style = clampWords(spec.style, STYLE_WORDS)
   const tail = [tempo.bpm ? `${Math.round(tempo.bpm)} bpm` : '', tempo.key ?? ''].filter(Boolean)
@@ -330,7 +350,7 @@ export function planChunks(
     const count = Math.ceil(s.bars / bars)
     for (let k = 0; k < count; k++) {
       const len = Math.min(bars, s.bars - k * bars)
-      const hints: string[] = [energyHint(s.energy), ...tail]
+      const hints: string[] = [energyHint(s.energy, { drums }), ...tail]
       if (k === 0 && i === 0) hints.unshift('intro')
       // La transición va al final: es lo último que suena en el tramo.
       if (k === count - 1)
@@ -340,7 +360,11 @@ export function planChunks(
         section: i,
         startBar: startBar + k * bars,
         bars: len,
-        prompt: [style, clampWords(s.arrangement, ARRANGEMENT_WORDS), ...hints]
+        prompt: [
+          style,
+          clampWords(drums ? withoutFilterWords(s.arrangement) : s.arrangement, ARRANGEMENT_WORDS),
+          ...hints
+        ]
           .filter(Boolean)
           .join(', ')
       })

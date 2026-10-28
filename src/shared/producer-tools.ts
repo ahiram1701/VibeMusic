@@ -44,7 +44,7 @@ import { barsToSeconds } from './prompt'
 import { MAX_GAIN_DB, MIN_GAIN_DB, withDefaultMix } from './mixer'
 import { copySection, copySectionInto, sectionsOf, setSections, updateSection } from './sections'
 import { projectEndSec } from './timeline'
-import { reviewSong, type RegionSound, type SongReview } from './review'
+import { reviewSong, SEAM_LEVEL_DB, type RegionSound, type SongReview } from './review'
 
 // Herramientas del agente productor. Hablan con la app a través de `ProducerHost`,
 // así se pueden probar sin interfaz. Trabajan en compases (1 = primer compás),
@@ -453,11 +453,24 @@ function regionEndingAt(p: Project, trackId: string, beat: number): Region | und
 }
 
 /**
- * Con batería programada, la revisión mide solo la cama: que el coro no suba ahí no
- * significa nada (la energía la pone la batería, con más capas y un platillo).
+ * Con batería programada, la revisión mide solo la cama, y en la mezcla la batería
+ * cambia lo que se oye: que el coro no suba ahí no significa nada (la energía la pone
+ * la batería, con más capas y un platillo), los hats, el shaker y el platillo le dan
+ * el brillo que a la cama le falta ("dull"), y los cambios de brillo en una unión los
+ * tapan el redoble y el filtro de la subida. Solo queda lo que sí se oye: un salto de
+ * volumen en una unión, un siseo o una sección que se apagó. (test7: el productor
+ * ofreció regrabar 20 min por un break "apagado" que estaba filtrado a propósito.)
  */
-function drumsReview<T extends SongReview & { note: string }>(review: T): T {
-  return { ...review, issues: review.issues.filter((i) => i.type !== 'flat_energy') }
+function drumsReview(review: SongReview): SongReview {
+  return {
+    ...review,
+    issues: review.issues.filter(
+      (i) =>
+        i.type !== 'flat_energy' &&
+        i.type !== 'dull' &&
+        (i.type !== 'seam' || Math.abs(i.level_jump_db) > SEAM_LEVEL_DB)
+    )
+  }
 }
 
 export function createProducerTools(host: ProducerHost): AgentTool[] {
@@ -643,7 +656,8 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         })
       }
     }
-    const review = reviewSong(sectionsOf(p), regions, perBar(p))
+    const measured = reviewSong(sectionsOf(p), regions, perBar(p))
+    const review = p.tracks.some((t) => t.drums) ? drumsReview(measured) : measured
     return {
       ...review,
       note:
@@ -1040,7 +1054,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         const backing = local ? { ...spec, style: `instrumental, ${spec.style}` } : spec
         const tempo = host.getProject()
         const { generated, failed, repaired, drone } = await recordChunks({
-          steps: planChunks(backing, bars, { bpm: tempo.bpm, key: tempo.key }),
+          steps: planChunks(backing, bars, { bpm: tempo.bpm, key: tempo.key, drums: !!drums }),
           sections,
           trackId: song.id,
           totalBars: spec.sections.reduce((n, s) => n + s.bars, 0),
@@ -1126,7 +1140,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
                     'Programmed drums play on top of the generated music, with filter sweeps (intro opening, build-up before each chorus, filtered break) and sidechain pumping. Repeated choruses reuse the first one. Change them with set_drums.'
                 })),
           check: reviewProject(final) ?? 'Every section has music.',
-          ...(review && { review: withDrums && !drumsError ? drumsReview(review) : review })
+          ...(review && { review })
         }
       }
     },
