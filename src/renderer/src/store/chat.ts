@@ -18,6 +18,7 @@ import { engine } from '../audio/engine'
 import { continueRegion, convertVoiceRegion, separateRegion, varyRegion } from './clip-actions'
 import { useGeneration, vocalProvider, waitForJob } from './generation'
 import { useProject } from './project'
+import { applyDrums, removeDrums } from './drums'
 import { keepAcrossHmr } from './hot'
 import { useVoice } from './voice'
 import { renderSungVocal, useSinger } from './singer'
@@ -131,6 +132,8 @@ const host: ProducerHost = {
       sound: soundSummary(mono, sr)
     }
   },
+  applyDrums: (opts) => applyDrums(opts),
+  removeDrums: (message) => removeDrums(message),
   separate: (regionId) => separateRegion(regionId, { messagePrefix: AGENT_PREFIX }),
   myVoices: () => {
     const { status, voices } = useVoice.getState()

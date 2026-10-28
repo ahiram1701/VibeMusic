@@ -1,7 +1,7 @@
 import type { Clip, Project } from '@shared/project'
 import { dbToGain, isTrackAudible } from '@shared/mixer'
 import { projectEndSec } from '@shared/timeline'
-import { regionPlayback } from '@shared/playback'
+import { duckEvents, regionPlayback, sweepEvents, type ParamEvent } from '@shared/playback'
 
 export const SAMPLE_RATE = 48000
 
@@ -16,9 +16,19 @@ interface Graph {
   tracks: Map<string, TrackNodes>
 }
 
+/** Programa en un parámetro los eventos de una automatización a partir de `now`. */
+function schedule(param: AudioParam, events: ParamEvent[], now: number): void {
+  for (const e of events) {
+    const at = now + e.atSec
+    if (e.kind === 'set') param.setValueAtTime(e.value, at)
+    else if (e.kind === 'linear') param.linearRampToValueAtTime(e.value, at)
+    else param.exponentialRampToValueAtTime(e.value, at)
+  }
+}
+
 /**
  * Construye el grafo de audio de la canción a partir de `fromSec`.
- *   región → fade → [gain → pan] de la pista → master → limitador → salida
+ *   región → fade → [gain → sidechain → filtros → pan] de la pista → master → limitador
  * Se usa igual en tiempo real (AudioContext) y al exportar (OfflineAudioContext),
  * así lo que oyes es exactamente lo que exportas.
  */
@@ -48,7 +58,23 @@ function buildGraph(
     const pan = ctx.createStereoPanner()
     gain.gain.value = isTrackAudible(track, project.tracks) ? dbToGain(track.gainDb) : 0
     pan.pan.value = track.pan
-    gain.connect(pan).connect(master)
+    // Sidechain y filtros automatizados, solo si la pista los tiene.
+    let tail: AudioNode = gain
+    if (track.duck && track.duck.beats.length > 0) {
+      const duck = ctx.createGain()
+      schedule(duck.gain, duckEvents(track.duck, project.bpm, fromSec), now)
+      tail = tail.connect(duck)
+    }
+    for (const type of ['highpass', 'lowpass'] as const) {
+      const points = track.sweeps?.[type]
+      if (!points || points.length === 0) continue
+      const filter = ctx.createBiquadFilter()
+      filter.type = type
+      filter.Q.value = 0.707
+      schedule(filter.frequency, sweepEvents(points, project.bpm, fromSec), now)
+      tail = tail.connect(filter)
+    }
+    tail.connect(pan).connect(master)
     tracks.set(track.id, { gain, pan })
 
     for (const region of track.regions) {

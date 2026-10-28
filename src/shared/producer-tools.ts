@@ -12,6 +12,7 @@ import {
   planChunks,
   polishSong,
   reviewProject,
+  sameName,
   sectionCoverage,
   trackBusy,
   trimRegion,
@@ -19,6 +20,7 @@ import {
   type ChunkStep
 } from './arrange'
 import { hasStartGap, type CollapseOptions, type SoundSummary } from './drone'
+import { DRUM_PATTERNS, findPattern } from './drums'
 import { findGenre, GENRES, PROMPT_EXAMPLES, type GenreGuide } from './genres'
 import type { ProviderInfo, SingingEngine } from './generation'
 import { buildUstx, melodyForLyrics, placeMelody } from './melody'
@@ -56,6 +58,18 @@ export interface ProducerHost {
    * El género de la canción sale de sus palabras, no de la consulta que haga el LLM.
    */
   userMessages?(): string[]
+  /**
+   * Batería programada (drums.ts) en toda la canción, con el sidechain de la cama
+   * (`bedTrackId`) a su bombo. Rehace la que hubiera. Tarda segundos.
+   */
+  applyDrums?(opts: {
+    pattern: string
+    intensity?: number
+    bedTrackId: string | null
+    message: string
+  }): Promise<{ trackId: string }>
+  /** Quita la batería programada. */
+  removeDrums?(message: string): Promise<void>
   commit(next: Project, message: string): Promise<void>
   /** Cambia tempo/tonalidad estirando el audio generado; devuelve cuántos clips se ajustaron. */
   setTempo(
@@ -436,6 +450,14 @@ function regionEndingAt(p: Project, trackId: string, beat: number): Region | und
   return p.tracks
     .find((t) => t.id === trackId)
     ?.regions.find((r) => Math.abs(r.startBeat + secondsToBeats(r.lengthSec, p.bpm) - beat) < 0.05)
+}
+
+/**
+ * Con batería programada, la revisión mide solo la cama: que el coro no suba ahí no
+ * significa nada (la energía la pone la batería, con más capas y un platillo).
+ */
+function drumsReview<T extends SongReview & { note: string }>(review: T): T {
+  return { ...review, issues: review.issues.filter((i) => i.type !== 'flat_energy') }
 }
 
 export function createProducerTools(host: ProducerHost): AgentTool[] {
@@ -870,7 +892,22 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         // "industrial techno" para un house tumbado), se usa el de la guía.
         const head = guide?.style.split(',')[0].trim().toLowerCase()
         const offStyle = !!head && !parsed.style.toLowerCase().includes(head)
-        const spec = offStyle ? { ...parsed, style: guide!.style } : parsed
+        const styled = offStyle ? { ...parsed, style: guide!.style } : parsed
+        // Con batería programada, los coros que se repiten reutilizan el audio del
+        // primero (como en el house real): la variación la ponen la batería y los filtros,
+        // y se ahorran varios minutos de generación por coro.
+        const drums = findPattern(guide?.drums)
+        const spec = drums
+          ? {
+              ...styled,
+              sections: styled.sections.map((s, i) =>
+                (s.energy ?? 0) >= 4 &&
+                styled.sections.slice(0, i).some((o) => sameName(o.name, s.name))
+                  ? { ...s, reuse: true }
+                  : s
+              )
+            }
+          : styled
         const styleNote = offStyle
           ? `style "${parsed.style}" did not match the ${guide!.id} guide; used "${guide!.style}". Put extra flavour in the sections' arrangement instead.`
           : null
@@ -931,6 +968,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         // pista para la canción. Se limpia antes de cambiar el tempo para no estirar
         // clips que van a desaparecer.
         const kept = p.tracks
+          .filter((t) => !t.drums)
           .map((t) => ({ ...t, regions: t.regions.filter((r) => !p.clips[r.clipId]?.spec) }))
           .filter((t) => t.regions.length > 0)
         const song = withDefaultMix(createTrack('Canción', 'full'))
@@ -1015,6 +1053,21 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             'pulido: fundidos de entrada y salida'
           )
         }
+        // La batería programada y la automatización de la cama: segundos, no minutos.
+        let drumsError: string | null = null
+        const withDrums = !!drums && generated > 0 && !!host.applyDrums
+        if (withDrums) {
+          try {
+            await host.applyDrums!({
+              pattern: drums.id,
+              bedTrackId: song.id,
+              message: AGENT_PREFIX + `batería programada (${drums.id})`
+            })
+          } catch (err) {
+            if (signal.aborted) throw err
+            drumsError = err instanceof Error ? err.message : String(err)
+          }
+        }
 
         // La voz va al final, encima del instrumental: si falla, la canción se queda.
         let vocalError: string | null = null
@@ -1064,9 +1117,74 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
               bars: c.section.bars,
               has_music: c.layers.length > 0
             })),
+          ...(withDrums &&
+            (drumsError
+              ? { drums_error: drumsError }
+              : {
+                  drums: drums.label,
+                  drums_note:
+                    'Programmed drums play on top of the generated music, with filter sweeps (intro opening, build-up before each chorus, filtered break) and sidechain pumping. Repeated choruses reuse the first one. Change them with set_drums.'
+                })),
           check: reviewProject(final) ?? 'Every section has music.',
-          ...(review && { review })
+          ...(review && { review: withDrums && !drumsError ? drumsReview(review) : review })
         }
+      }
+    },
+    {
+      def: {
+        name: 'set_drums',
+        description:
+          'Programmed drums over the whole song (compose_song adds them by itself for house, techno, reggaeton and trap): a tight pattern in tempo whose layers follow the energy of each section, with a snare build-up and riser before each chorus, a break without kick, a crash on the drops, and sidechain pumping of the song track. Use it for "more/less percussion", "another beat", "remove the drums". Takes a few seconds.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            pattern: {
+              type: 'string',
+              enum: [...DRUM_PATTERNS.map((d) => d.id), 'off'],
+              description: `Drum pattern, or "off" to remove the programmed drums. ${DRUM_PATTERNS.map((d) => `${d.id}: ${d.label}`).join('; ')}.`
+            },
+            intensity: {
+              type: 'integer',
+              minimum: -2,
+              maximum: 2,
+              description:
+                'Shift the energy of every section: -2 sparse (kick and hats), 0 as planned, +2 every layer everywhere.'
+            }
+          },
+          required: ['pattern'],
+          additionalProperties: false
+        }
+      },
+      run: async (input) => {
+        const pattern = str(input, 'pattern')
+        if (pattern === 'off') {
+          if (!host.removeDrums) throw new Error('Esta app no tiene batería programada')
+          await host.removeDrums(AGENT_PREFIX + 'sin batería programada')
+          return { ok: true, drums: null }
+        }
+        const found = findPattern(pattern)
+        if (!found) {
+          throw new Error(
+            `No existe el patrón "${pattern}". Usa uno de: ${DRUM_PATTERNS.map((d) => d.id).join(', ')}, u "off".`
+          )
+        }
+        if (!host.applyDrums) throw new Error('Esta app no tiene batería programada')
+        const intensity = num(input, 'intensity', -2, 2, true) ?? 0
+        const p = host.getProject()
+        if (sectionsOf(p).length === 0) {
+          throw new Error(
+            'La canción no tiene secciones: compón la canción o crea la estructura antes.'
+          )
+        }
+        const { trackId } = await host.applyDrums({
+          pattern: found.id,
+          intensity,
+          bedTrackId: songTrackOf(p)?.id ?? null,
+          message:
+            AGENT_PREFIX +
+            `batería: ${found.id}${intensity ? ` (${intensity > 0 ? '+' : ''}${intensity})` : ''}`
+        })
+        return { ok: true, track_id: trackId, drums: found.label, intensity }
       }
     },
     {

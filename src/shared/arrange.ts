@@ -71,7 +71,7 @@ function toNumber(raw: unknown): number {
   return typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : (raw as number)
 }
 
-const sameName = (a: string, b: string): boolean =>
+export const sameName = (a: string, b: string): boolean =>
   a.trim().toLowerCase() === b.trim().toLowerCase()
 
 /**

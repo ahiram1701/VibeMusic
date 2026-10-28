@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { LocalEngineStatus } from '@shared/local-engine'
 import type { GenerationSpec } from '@shared/project'
-import { createLocalProvider, type LocalEngineHost } from './local'
+import { createLocalProvider, requestedSeconds, type LocalEngineHost } from './local'
 
 const spec: GenerationSpec = {
   prompt: 'lofi drums',
@@ -158,5 +158,18 @@ describe('proveedor local', () => {
     expect(await createLocalProvider(host('stopped'), async () => 'm').status()).toEqual({
       ready: true
     })
+  })
+})
+
+describe('segundos que se piden al motor local', () => {
+  const base = { prompt: 'x', bpm: 120, key: 'C', role: 'full', mode: 'text' } as const
+  it('suma el margen para alinear al pulso', () => {
+    expect(requestedSeconds({ ...base, durationSec: 16, marginSec: 1.3 })).toBe(17.3)
+  })
+  it('con audio de partida, el margen no pasa del máximo del motor', () => {
+    const conditioning = { clipId: 'c', file: 'p.wav', seconds: 8 }
+    expect(requestedSeconds({ ...base, durationSec: 21.3, marginSec: 1.7, conditioning })).toBe(22)
+    // Aunque no quepa el margen, nunca se pide menos que la duración.
+    expect(requestedSeconds({ ...base, durationSec: 23, marginSec: 1, conditioning })).toBe(23)
   })
 })

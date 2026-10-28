@@ -24,11 +24,14 @@ export interface GenreGuide {
    * "tumbado"), antes que el alias más largo, que daría solo uno de los dos géneros.
    */
   blend?: string[][]
+  /** Patrón de la batería programada (drums.ts) que lleva este género, si lleva. */
+  drums?: string
 }
 
 export const GENRES: GenreGuide[] = [
   {
     id: 'reggaeton',
+    drums: 'dembow',
     aliases: ['reggaeton', 'regueton', 'dembow', 'perreo', 'urbano'],
     bpm: [88, 98],
     style: 'reggaeton, dembow drum pattern, punchy kick, 808 bass, synth plucks, latin percussion',
@@ -131,6 +134,7 @@ export const GENRES: GenreGuide[] = [
   },
   {
     id: 'latin-trap',
+    drums: 'trap',
     aliases: ['trap latino', 'latin trap', 'trap'],
     bpm: [130, 150],
     style: 'latin trap, half-time 808 drums, rolling hi-hats, deep 808 bass, piano melody',
@@ -208,6 +212,7 @@ export const GENRES: GenreGuide[] = [
     // "tumbado" la guitarra y la percusión latina. Lo industrial se pide con timbres,
     // no con la palabra (MusicGen la lleva a un drone oscuro).
     id: 'house-tumbado',
+    drums: 'house',
     aliases: ['house tumbado', 'tech house tumbado', 'techno tumbado', 'tumbado house'],
     blend: [
       ['house', 'tech house', 'techno', 'tecno', 'electronica', 'edm'],
@@ -238,6 +243,7 @@ export const GENRES: GenreGuide[] = [
   },
   {
     id: 'house',
+    drums: 'house',
     aliases: ['house', 'deep house', 'tech house', 'afro house'],
     bpm: [120, 126],
     style: 'house music, four-on-the-floor kick, offbeat hi-hats, groovy bassline, piano chords',
@@ -260,6 +266,7 @@ export const GENRES: GenreGuide[] = [
   },
   {
     id: 'techno',
+    drums: 'techno',
     aliases: ['techno', 'tecno', 'hard techno', 'melodic techno'],
     bpm: [125, 135],
     style: 'techno, driving kick, rolling bassline, hi-hats, analog synth riff, hypnotic groove',
