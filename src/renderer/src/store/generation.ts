@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { keepAcrossHmr } from './hot'
 import { conformAudio, seamGainDb } from '@shared/conform'
 import type { AppSettings, GenerationJob, ProviderId, ProviderInfo } from '@shared/generation'
 import {
@@ -129,119 +130,121 @@ export function waitForJob(jobId: string): Promise<GenerationResult> {
   return new Promise((resolve, reject) => waiters.set(jobId, { resolve, reject }))
 }
 
-export const useGeneration = create<GenerationState>((set, get) => ({
-  providers: [],
-  singers: [],
-  settings: null,
-  jobs: {},
+export const useGeneration = keepAcrossHmr('useGeneration', () =>
+  create<GenerationState>((set, get) => ({
+    providers: [],
+    singers: [],
+    settings: null,
+    jobs: {},
 
-  async init() {
-    if (!unsubscribe) {
-      unsubscribe = window.vibe.generation.onUpdate((job) => {
-        const view = get().jobs[job.id]
-        if (!view) {
-          early.set(job.id, job)
-          return
+    async init() {
+      if (!unsubscribe) {
+        unsubscribe = window.vibe.generation.onUpdate((job) => {
+          const view = get().jobs[job.id]
+          if (!view) {
+            early.set(job.id, job)
+            return
+          }
+          set((s) => ({ jobs: { ...s.jobs, [job.id]: { ...view, job } } }))
+          settleIfFinished(job)
+        })
+      }
+      await get().refresh()
+    },
+
+    async refresh() {
+      const [all, settings] = await Promise.all([
+        window.vibe.generation.providers(),
+        window.vibe.settings.get()
+      ])
+      set({
+        providers: all.filter((p) => !p.capabilities.supportsLyrics),
+        singers: all.filter((p) => p.capabilities.supportsLyrics),
+        settings
+      })
+    },
+
+    async generate(input) {
+      const { dir, project } = useProject.getState()
+      if (!dir || !project) throw new Error('No hay ningún proyecto abierto')
+      const spec: GenerationSpec = {
+        prompt: input.prompt.trim(),
+        role: input.role,
+        bpm: project.bpm,
+        key: project.key,
+        durationSec: barsToSeconds(input.bars, project),
+        mode: input.mode ?? 'text',
+        ...(input.conditioning && { conditioning: input.conditioning }),
+        ...(input.conditioning && input.crossfadeSec && { crossfadeSec: input.crossfadeSec }),
+        ...(input.lyrics && { lyrics: input.lyrics }),
+        ...(input.lyricsLanguage && { lyricsLanguage: input.lyricsLanguage }),
+        // Siempre guardamos una semilla: así cualquier clip se puede volver a generar igual.
+        seed: input.seed ?? Math.floor(Math.random() * 2 ** 31)
+      }
+      const queued = await window.vibe.generation.enqueue(dir, input.providerId, spec)
+      const job = early.get(queued.id) ?? queued
+      early.delete(queued.id)
+      set((s) => ({
+        jobs: {
+          ...s.jobs,
+          [job.id]: {
+            job,
+            placement: {
+              atBeat: input.atBeat,
+              trackId: input.trackId,
+              trackName: input.trackName,
+              bars: input.bars,
+              messagePrefix: input.messagePrefix,
+              replaceRegionId: input.replaceRegionId,
+              message: input.message,
+              parentClipId: input.parentClipId
+            },
+            added: false
+          }
         }
-        set((s) => ({ jobs: { ...s.jobs, [job.id]: { ...view, job } } }))
-        settleIfFinished(job)
+      }))
+      // Si ya terminó antes de registrarse (p. ej. falló al instante), se resuelve aquí:
+      // si no, quien espera el resultado (el productor) se quedaría esperando para siempre.
+      settleIfFinished(job)
+      return job.id
+    },
+
+    async cancel(jobId) {
+      await window.vibe.generation.cancel(jobId)
+    },
+
+    async retry(jobId) {
+      const view = get().jobs[jobId]
+      if (!view) return
+      get().dismiss(jobId)
+      await get().generate({
+        prompt: view.job.spec.prompt,
+        role: view.job.spec.role,
+        bars: view.placement.bars,
+        providerId: view.job.providerId,
+        atBeat: view.placement.atBeat,
+        trackId: view.placement.trackId,
+        trackName: view.placement.trackName,
+        messagePrefix: view.placement.messagePrefix,
+        replaceRegionId: view.placement.replaceRegionId,
+        message: view.placement.message,
+        parentClipId: view.placement.parentClipId,
+        mode: view.job.spec.mode,
+        conditioning: view.job.spec.conditioning,
+        lyrics: view.job.spec.lyrics,
+        lyricsLanguage: view.job.spec.lyricsLanguage
+      })
+    },
+
+    dismiss(jobId) {
+      set((s) => {
+        const jobs = { ...s.jobs }
+        delete jobs[jobId]
+        return { jobs }
       })
     }
-    await get().refresh()
-  },
-
-  async refresh() {
-    const [all, settings] = await Promise.all([
-      window.vibe.generation.providers(),
-      window.vibe.settings.get()
-    ])
-    set({
-      providers: all.filter((p) => !p.capabilities.supportsLyrics),
-      singers: all.filter((p) => p.capabilities.supportsLyrics),
-      settings
-    })
-  },
-
-  async generate(input) {
-    const { dir, project } = useProject.getState()
-    if (!dir || !project) throw new Error('No hay ningún proyecto abierto')
-    const spec: GenerationSpec = {
-      prompt: input.prompt.trim(),
-      role: input.role,
-      bpm: project.bpm,
-      key: project.key,
-      durationSec: barsToSeconds(input.bars, project),
-      mode: input.mode ?? 'text',
-      ...(input.conditioning && { conditioning: input.conditioning }),
-      ...(input.conditioning && input.crossfadeSec && { crossfadeSec: input.crossfadeSec }),
-      ...(input.lyrics && { lyrics: input.lyrics }),
-      ...(input.lyricsLanguage && { lyricsLanguage: input.lyricsLanguage }),
-      // Siempre guardamos una semilla: así cualquier clip se puede volver a generar igual.
-      seed: input.seed ?? Math.floor(Math.random() * 2 ** 31)
-    }
-    const queued = await window.vibe.generation.enqueue(dir, input.providerId, spec)
-    const job = early.get(queued.id) ?? queued
-    early.delete(queued.id)
-    set((s) => ({
-      jobs: {
-        ...s.jobs,
-        [job.id]: {
-          job,
-          placement: {
-            atBeat: input.atBeat,
-            trackId: input.trackId,
-            trackName: input.trackName,
-            bars: input.bars,
-            messagePrefix: input.messagePrefix,
-            replaceRegionId: input.replaceRegionId,
-            message: input.message,
-            parentClipId: input.parentClipId
-          },
-          added: false
-        }
-      }
-    }))
-    // Si ya terminó antes de registrarse (p. ej. falló al instante), se resuelve aquí:
-    // si no, quien espera el resultado (el productor) se quedaría esperando para siempre.
-    settleIfFinished(job)
-    return job.id
-  },
-
-  async cancel(jobId) {
-    await window.vibe.generation.cancel(jobId)
-  },
-
-  async retry(jobId) {
-    const view = get().jobs[jobId]
-    if (!view) return
-    get().dismiss(jobId)
-    await get().generate({
-      prompt: view.job.spec.prompt,
-      role: view.job.spec.role,
-      bars: view.placement.bars,
-      providerId: view.job.providerId,
-      atBeat: view.placement.atBeat,
-      trackId: view.placement.trackId,
-      trackName: view.placement.trackName,
-      messagePrefix: view.placement.messagePrefix,
-      replaceRegionId: view.placement.replaceRegionId,
-      message: view.placement.message,
-      parentClipId: view.placement.parentClipId,
-      mode: view.job.spec.mode,
-      conditioning: view.job.spec.conditioning,
-      lyrics: view.job.spec.lyrics,
-      lyricsLanguage: view.job.spec.lyricsLanguage
-    })
-  },
-
-  dismiss(jobId) {
-    set((s) => {
-      const jobs = { ...s.jobs }
-      delete jobs[jobId]
-      return { jobs }
-    })
-  }
-}))
+  }))
+)
 
 /**
  * Convierte el audio en bruto del proveedor en un clip del proyecto:

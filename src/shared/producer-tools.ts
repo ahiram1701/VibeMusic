@@ -18,7 +18,7 @@ import {
   vocalSongRequest,
   type ChunkStep
 } from './arrange'
-import type { CollapseOptions, WindowStats } from './drone'
+import { hasStartGap, type CollapseOptions, type SoundSummary } from './drone'
 import { findGenre, GENRES, PROMPT_EXAMPLES, type GenreGuide } from './genres'
 import type { ProviderInfo, SingingEngine } from './generation'
 import { buildUstx, melodyForLyrics, placeMelody } from './melody'
@@ -97,7 +97,14 @@ export interface ProducerHost {
   extend(
     regionId: string,
     bars: number,
-    opts?: { instructions?: string; prompt?: string; atBeat?: number; message?: string }
+    opts?: {
+      instructions?: string
+      prompt?: string
+      atBeat?: number
+      message?: string
+      /** Fundirse con el final de la región (por defecto sí). */
+      crossfade?: boolean
+    }
   ): Promise<{ trackId: string; regionId: string }>
   /**
    * Escucha una región: segundo (desde su inicio) en el que se atasca en un drone
@@ -111,7 +118,7 @@ export interface ProducerHost {
     collapseAtSec: number | null
     tailBrightDb?: number | null
     /** Primer y último segundo y media de la región (para revisar la canción). */
-    sound?: { head: WindowStats; tail: WindowStats; mean: WindowStats } | null
+    sound?: SoundSummary | null
   }>
   /** Separa una región en pistas (voz, batería, bajo, otros) con el motor local. */
   separate(regionId: string): Promise<{ trackIds: string[]; stems: string[]; skipped: string[] }>
@@ -406,12 +413,204 @@ export function describeProject(p: Project, host: ProducerHost): unknown {
 
 // --- Herramientas ------------------------------------------------------------
 
+/** Tramos a grabar en una pista (ver recordChunks). */
+interface ChunkRun {
+  steps: ChunkStep[]
+  /** Secciones a las que apuntan los pasos (`step.section` es su índice). */
+  sections: Section[]
+  trackId: string
+  /** Compases de la canción: el último tramo puede terminar en fundido. */
+  totalBars: number
+  signal: AbortSignal
+  progress?: (text: string) => void
+}
+
+interface ChunkReport {
+  generated: number
+  failed: { section: string; start_bar: number; error: string }[]
+  repaired: { section: string; start_bar: number; bars: number }[]
+  drone: { section: string; start_bar: number }[]
+}
+
+/** Pista de la canción: la de tipo "full" con más audio generado. */
+function songTrackOf(p: Project): Track | undefined {
+  return p.tracks
+    .filter((t) => t.role === 'full' && t.regions.some((r) => p.clips[r.clipId]?.spec))
+    .sort((a, b) => b.regions.length - a.regions.length)[0]
+}
+
+/** Región de la pista que termina en `beat` (la que suena justo antes de ahí). */
+function regionEndingAt(p: Project, trackId: string, beat: number): Region | undefined {
+  return p.tracks
+    .find((t) => t.id === trackId)
+    ?.regions.find((r) => Math.abs(r.startBeat + secondsToBeats(r.lengthSec, p.bpm) - beat) < 0.05)
+}
+
 export function createProducerTools(host: ProducerHost): AgentTool[] {
   const commit = (next: Project, message: string): Promise<void> =>
     host.commit(next, AGENT_PREFIX + message)
   // Última guía de género consultada: el LLM copia la estructura pero a menudo se
   // inventa el tempo (108 BPM para un tech house), así que compose_song lo ajusta.
   let guide: GenreGuide | null = null
+
+  /**
+   * Graba tramos en orden. Cada uno continúa la región que suena justo antes (el
+   * motor escucha sus últimos segundos y se funde con ella), así que no puede ir en
+   * paralelo; cada tramo se guarda al terminar. Tras cada uno se escucha: si se atasca
+   * (drone grave, siseo estático o un hueco al empezar) se recorta o se quita, y lo
+   * que falta se regenera una vez.
+   */
+  const recordChunks = async (run: ChunkRun): Promise<ChunkReport> => {
+    const { sections, trackId, signal } = run
+    const secPerBar = barsToSeconds(1, host.getProject())
+    const failed: ChunkReport['failed'] = []
+    const repaired: ChunkReport['repaired'] = []
+    const drone: ChunkReport['drone'] = []
+    let generated = 0
+    let last: string | null = null
+    // Final de cada región (brillo y volumen): lo que oye el tramo que la continúa.
+    const tails = new Map<string, { bright: number | null; db: number | null }>()
+    const tailOf = async (id: string): Promise<{ bright: number | null; db: number | null }> => {
+      if (!tails.has(id)) {
+        const r = await host.inspectRegion(id)
+        tails.set(id, { bright: r.tailBrightDb ?? null, db: r.sound?.tail.db ?? null })
+      }
+      return tails.get(id)!
+    }
+    // Para reparar: escuchar un final que ya se apagó volvería a atascarse, así que se
+    // parte de la región más brillante. Solo aquí: en un tramo normal sería un corte.
+    const repairContext = async (from: string | null): Promise<string | null> => {
+      const own = from && (await tailOf(from)).bright
+      if (!from || typeof own !== 'number') return from
+      let best = from
+      let bestDb = own
+      for (const [id, t] of tails) {
+        if (t.bright !== null && t.bright > bestDb) [best, bestDb] = [id, t.bright]
+      }
+      return bestDb - own > DRIFT_DB ? best : from
+    }
+    const queue: (ChunkStep & { repair?: boolean })[] = [...run.steps]
+    const total = queue.filter((s) => s.kind === 'generate').length
+    const started = Date.now()
+    let finished = 0
+    while (queue.length > 0) {
+      const step = queue.shift()!
+      if (signal.aborted) throw new Error('Cancelado')
+      const section = sections[step.section]
+      if (step.kind === 'reuse') {
+        const src = sections[step.from]
+        await commit(
+          copySectionInto(host.getProject(), src.id, section.id),
+          `${section.name}: repite ${src.name}`
+        )
+        last = lastRegionIn(host.getProject(), trackId, section)?.id ?? last
+        continue
+      }
+      const p = host.getProject()
+      const atBeat = beatOfBar(p, step.startBar)
+      const span = `compases ${step.startBar}–${step.startBar + step.bars - 1}`
+      // Lo que suena justo antes (en una canción nueva, el último tramo grabado).
+      const before = regionEndingAt(p, trackId, atBeat)?.id ?? last
+      const from = step.repair ? await repairContext(before) : before
+      if (step.repair) {
+        run.progress?.(`Reparando ${section.name} (${span})`)
+      } else {
+        const perPart = finished > 0 ? (Date.now() - started) / finished : 0
+        const left = Math.max(1, Math.round((perPart * (total - finished)) / 60_000))
+        const eta = finished > 0 ? ` · quedan ~${left} min` : ''
+        run.progress?.(`Parte ${finished + 1} de ${total} · ${section.name} (${span})${eta}`)
+      }
+      // Un tramo que falla se reintenta una vez; si vuelve a fallar, el siguiente
+      // continúa desde el último bueno.
+      let made: string | null = null
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const r = from
+            ? await host.extend(from, step.bars, {
+                prompt: step.prompt,
+                atBeat,
+                message: `${section.name} (${span})`,
+                // Fundirse con audio de otra parte de la canción sonaría raro.
+                crossfade: from === before
+              })
+            : await host.generate({
+                prompt: step.prompt,
+                role: 'full',
+                bars: step.bars,
+                atBeat,
+                trackId
+              })
+          made = r.regionId
+          generated++
+          break
+        } catch (err) {
+          if (signal.aborted) throw err
+          if (attempt === 2) {
+            failed.push({
+              section: section.name,
+              start_bar: step.startBar,
+              error: err instanceof Error ? err.message : String(err)
+            })
+          }
+        }
+      }
+      if (!step.repair) finished++
+      if (!made) continue
+
+      // ¿Se atascó? El fundido final de la canción no cuenta.
+      const endsSong = step.startBar + step.bars - 1 >= run.totalBars
+      const inspected = await host.inspectRegion(made, {
+        ignoreTailSec: endsSong ? 2 * secPerBar : 0
+      })
+      // Un hueco justo tras la unión (el modelo se calla tras el fundido) es un atasco
+      // desde el principio.
+      const prevDb = from && from === before ? (await tailOf(from)).db : null
+      const gap =
+        prevDb !== null && !!inspected.sound && hasStartGap(inspected.sound.opening, prevDb)
+      const collapseAtSec = gap ? 0 : inspected.collapseAtSec
+      tails.set(made, {
+        bright: inspected.tailBrightDb ?? null,
+        db: inspected.sound?.tail.db ?? null
+      })
+      if (collapseAtSec === null) {
+        last = made
+        continue
+      }
+      if (step.repair) {
+        // Ya era la reparación: se queda (mejor que un hueco) y se avisa.
+        drone.push({ section: section.name, start_bar: step.startBar })
+        last = made
+        continue
+      }
+      // Recortada cambia su final; quitada no debe servir de contexto.
+      tails.delete(made)
+      const good = Math.min(step.bars - 1, Math.floor(collapseAtSec / secPerBar))
+      if (good >= 1) {
+        await commit(
+          trimRegion(host.getProject(), made, good * secPerBar),
+          `${section.name}: recorte de un tramo atascado`
+        )
+        last = made
+      } else {
+        await commit(
+          removeRegion(host.getProject(), made),
+          `${section.name}: fuera un tramo ${gap ? 'que empezaba con un hueco' : 'atascado'}`
+        )
+      }
+      repaired.push({
+        section: section.name,
+        start_bar: step.startBar + good,
+        bars: step.bars - good
+      })
+      queue.unshift({
+        ...step,
+        startBar: step.startBar + good,
+        bars: step.bars - good,
+        repair: true
+      })
+    }
+    return { generated, failed, repaired, drone }
+  }
 
   /** Escucha una pista entera: medidas por sección y por unión (ver review.ts). */
   const reviewTrack = async (trackId: string): Promise<SongReview & { note: string }> => {
@@ -423,6 +622,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         regions.push({
           startBeat: r.startBeat,
           endBeat: r.startBeat + secondsToBeats(r.lengthSec, p.bpm),
+          lengthSec: r.lengthSec,
           ...sound
         })
       }
@@ -669,7 +869,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           additionalProperties: false
         }
       },
-      run: async (input, signal) => {
+      run: async (input, signal, progress) => {
         // Se valida todo antes de tocar nada: si falla, el LLM corrige y vuelve a llamar.
         const parsed = parseSongSpec(input)
         // Igual con el sonido: si el "style" no nombra el género de la guía (un
@@ -802,144 +1002,19 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           }
         }
 
-        // Tramo a tramo y en orden: cada uno continúa al anterior (el motor escucha sus
-        // últimos segundos), así que no puede ir en paralelo. Cada tramo se guarda al
-        // terminar: la canción crece y, si algo se corta, lo hecho se queda.
         const secPerBar = barsToSeconds(1, host.getProject())
         const bars = chunkBars(secPerBar, provider.capabilities.maxDurationSec, CONTEXT_SEC)
-        const failed: { section: string; start_bar: number; error: string }[] = []
-        const repaired: { section: string; start_bar: number; bars: number }[] = []
-        const drone: { section: string; start_bar: number }[] = []
-        let generated = 0
-        let last: string | null = null
         // Con cantante local, el instrumental no debe traer voces propias.
         const backing = local ? { ...spec, style: `instrumental, ${spec.style}` } : spec
         const tempo = host.getProject()
-        const totalBars = spec.sections.reduce((n, s) => n + s.bars, 0)
-        // Una cola: si un tramo se atasca en un drone, se recorta y lo que falta se mete
-        // delante como "reparación" (una sola vez por tramo, para no disparar el tiempo).
-        const queue: (ChunkStep & { repair?: boolean })[] = planChunks(backing, bars, {
-          bpm: tempo.bpm,
-          key: tempo.key
+        const { generated, failed, repaired, drone } = await recordChunks({
+          steps: planChunks(backing, bars, { bpm: tempo.bpm, key: tempo.key }),
+          sections,
+          trackId: song.id,
+          totalBars: spec.sections.reduce((n, s) => n + s.bars, 0),
+          signal,
+          progress
         })
-        // Brillo del final de cada región. Cada continuación sale más apagada que lo que
-        // escucha, y encadenadas la canción se hunde en graves (suena a banda sonora).
-        // Si el final que tocaría escuchar se ha apagado demasiado respecto al más
-        // brillante de la canción, el tramo continúa desde ese otro: misma canción, pero
-        // la deriva no se acumula.
-        const tails = new Map<string, number | null>()
-        const tailOf = async (id: string): Promise<number | null> => {
-          if (!tails.has(id)) tails.set(id, (await host.inspectRegion(id)).tailBrightDb ?? null)
-          return tails.get(id)!
-        }
-        const contextFor = async (
-          from: string | null,
-          mayJump: boolean
-        ): Promise<string | null> => {
-          const own = from && (await tailOf(from))
-          if (!from || !mayJump || typeof own !== 'number') return from
-          let best = from
-          let bestDb = own
-          for (const [id, db] of tails) {
-            if (db !== null && db > bestDb) [best, bestDb] = [id, db]
-          }
-          return bestDb - own > DRIFT_DB ? best : from
-        }
-        while (queue.length > 0) {
-          const step = queue.shift()!
-          if (signal.aborted) throw new Error('Cancelado')
-          const section = sections[step.section]
-          if (step.kind === 'reuse') {
-            const src = sections[step.from]
-            await commit(
-              copySectionInto(host.getProject(), src.id, section.id),
-              `${section.name}: repite ${src.name}`
-            )
-            last = lastRegionIn(host.getProject(), song.id, section)?.id ?? last
-            continue
-          }
-          const atBeat = beatOfBar(planned, step.startBar)
-          const span = `compases ${step.startBar}–${step.startBar + step.bars - 1}`
-          // Solo al empezar una sección (o al reparar un atasco) puede escuchar otra
-          // parte más brillante: ahí un cambio suena a propósito; a mitad, a corte.
-          const from = await contextFor(last, step.startBar === section.startBar || !!step.repair)
-          // Un tramo que falla se reintenta una vez; si vuelve a fallar, el siguiente
-          // continúa desde el último bueno.
-          let made: string | null = null
-          for (let attempt = 1; attempt <= 2; attempt++) {
-            try {
-              const r = from
-                ? await host.extend(from, step.bars, {
-                    prompt: step.prompt,
-                    atBeat,
-                    message: `${section.name} (${span})`
-                  })
-                : await host.generate({
-                    prompt: step.prompt,
-                    role: 'full',
-                    bars: step.bars,
-                    atBeat,
-                    trackId: song.id
-                  })
-              made = r.regionId
-              generated++
-              break
-            } catch (err) {
-              if (signal.aborted) throw err
-              if (attempt === 2) {
-                failed.push({
-                  section: section.name,
-                  start_bar: step.startBar,
-                  error: err instanceof Error ? err.message : String(err)
-                })
-              }
-            }
-          }
-          if (!made) continue
-
-          // ¿Se atascó en un drone? El fundido final de la canción no cuenta.
-          const endsSong = step.startBar + step.bars - 1 >= totalBars
-          const { collapseAtSec, tailBrightDb } = await host.inspectRegion(made, {
-            ignoreTailSec: endsSong ? 2 * secPerBar : 0
-          })
-          tails.set(made, tailBrightDb ?? null)
-          if (collapseAtSec === null) {
-            last = made
-            continue
-          }
-          if (step.repair) {
-            // Ya era la reparación: se queda (mejor que un hueco) y se avisa.
-            drone.push({ section: section.name, start_bar: step.startBar })
-            last = made
-            continue
-          }
-          // Recortada cambia su final; quitada no debe servir de contexto.
-          tails.delete(made)
-          const good = Math.min(step.bars - 1, Math.floor(collapseAtSec / secPerBar))
-          if (good >= 1) {
-            await commit(
-              trimRegion(host.getProject(), made, good * secPerBar),
-              `${section.name}: recorte de un tramo atascado`
-            )
-            last = made
-          } else {
-            await commit(
-              removeRegion(host.getProject(), made),
-              `${section.name}: fuera un tramo atascado`
-            )
-          }
-          repaired.push({
-            section: section.name,
-            start_bar: step.startBar + good,
-            bars: step.bars - good
-          })
-          queue.unshift({
-            ...step,
-            startBar: step.startBar + good,
-            bars: step.bars - good,
-            repair: true
-          })
-        }
         if (generated > 0) {
           await commit(
             polishSong(host.getProject(), song.id),
@@ -1008,13 +1083,122 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         inputSchema: { type: 'object', properties: {}, additionalProperties: false }
       },
       run: async () => {
-        const p = host.getProject()
-        // La pista de la canción: la de tipo "full" con más audio generado.
-        const song = p.tracks
-          .filter((t) => t.role === 'full' && t.regions.some((r) => p.clips[r.clipId]?.spec))
-          .sort((a, b) => b.regions.length - a.regions.length)[0]
+        const song = songTrackOf(host.getProject())
         if (!song) throw new Error('No hay ninguna canción generada que revisar')
         return reviewTrack(song.id)
+      }
+    },
+    {
+      def: {
+        name: 'redo_sections',
+        description:
+          "Records again whole sections of the finished song (typically the ones review_song or compose_song's review flag), keeping the rest. Each new part continues the music right before it and blends into it, with the same automatic repair as compose_song, and the song is reviewed again at the end. Much cheaper than composing the song again, but each part still takes about 6-7 minutes on this computer: tell the user how long before calling it.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            section_ids: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Ids of the sections to record again (from get_project_state).'
+            }
+          },
+          required: ['section_ids'],
+          additionalProperties: false
+        }
+      },
+      run: async (input, signal, progress) => {
+        const ids = input.section_ids
+        if (!Array.isArray(ids) || ids.length === 0 || ids.some((x) => typeof x !== 'string')) {
+          throw new Error('section_ids debe ser una lista de ids de sección')
+        }
+        const p = host.getProject()
+        const song = songTrackOf(p)
+        if (!song) throw new Error('No hay ninguna canción generada que rehacer')
+        const provider = readyProvider()
+        if (!provider.capabilities.supportsContinue) {
+          throw new Error(`${provider.label} no sabe continuar audio; elige otro motor en Ajustes.`)
+        }
+        const all = sectionsOf(p)
+        const targets = all.filter((s) => ids.includes(s.id))
+        const unknown = (ids as string[]).filter((id) => !all.some((s) => s.id === id))
+        if (unknown.length > 0) throw new Error(`Secciones desconocidas: ${unknown.join(', ')}`)
+
+        const bars = chunkBars(
+          barsToSeconds(1, p),
+          provider.capabilities.maxDurationSec,
+          CONTEXT_SEC
+        )
+        const steps: ChunkStep[] = []
+        const doomed = new Set<string>()
+        for (const s of targets) {
+          const a = beatOfBar(p, s.startBar)
+          const b = beatOfBar(p, s.startBar + s.bars)
+          const old = song.regions
+            .filter((r) => r.startBeat >= a - 0.01 && r.startBeat < b - 0.01)
+            .sort((x, y) => x.startBeat - y.startBeat)
+          old.forEach((r) => doomed.add(r.id))
+          // Cada parte nueva repite la descripción de la que sustituye.
+          const prompts = old.flatMap((r) => p.clips[r.clipId]?.spec?.prompt ?? [])
+          const fallback = [p.style, s.name.toLowerCase()].filter(Boolean).join(', ')
+          for (let k = 0; k * bars < s.bars; k++) {
+            steps.push({
+              kind: 'generate',
+              section: all.indexOf(s),
+              startBar: s.startBar + k * bars,
+              bars: Math.min(bars, s.bars - k * bars),
+              prompt: prompts[k] ?? prompts.at(-1) ?? fallback
+            })
+          }
+        }
+
+        // Fuera el audio viejo. Una región que sigue a una sección rehecha entraba
+        // fundiéndose con ese audio viejo: pierde el pre-roll.
+        const ends = targets.map((s) => beatOfBar(p, s.startBar + s.bars))
+        let next = p
+        for (const id of doomed) next = removeRegion(next, id)
+        next = {
+          ...next,
+          tracks: next.tracks.map((t) =>
+            t.id !== song.id
+              ? t
+              : {
+                  ...t,
+                  regions: t.regions.map((r) =>
+                    r.leadInSec && ends.some((e) => Math.abs(e - r.startBeat) < 0.05)
+                      ? { ...r, leadInSec: undefined, fadeInSec: 0.01 }
+                      : r
+                  )
+                }
+          )
+        }
+        await commit(next, `rehacer: ${targets.map((s) => s.name).join(', ')}`)
+
+        const report = await recordChunks({
+          steps,
+          sections: all,
+          trackId: song.id,
+          totalBars: Math.max(...all.map((s) => s.startBar + s.bars - 1)),
+          signal,
+          progress
+        })
+        if (report.generated > 0) {
+          await commit(
+            polishSong(host.getProject(), song.id),
+            'pulido: fundidos de entrada y salida'
+          )
+        }
+        return {
+          ok: report.failed.length === 0,
+          redone: targets.map((s) => s.name),
+          parts_generated: report.generated,
+          ...(report.failed.length > 0 && { failed: report.failed }),
+          ...(report.repaired.length > 0 && { repaired: report.repaired }),
+          ...(report.drone.length > 0 && {
+            drone: report.drone,
+            drone_note: 'These parts still sound stuck after one repair. Tell the user.'
+          }),
+          ...(report.generated > 0 && { review: await reviewTrack(song.id) })
+        }
       }
     },
     {

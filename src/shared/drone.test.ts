@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { findCollapse, soundSummary, tailBrightness, toMono, windowStats } from './drone'
+import {
+  findCollapse,
+  hasStartGap,
+  soundSummary,
+  tailBrightness,
+  toMono,
+  windowStats
+} from './drone'
 
 const SR = 8000
 
@@ -18,7 +25,12 @@ const noise = (): number => {
   seed = (seed * 1103515245 + 12345) % 2 ** 31
   return seed / 2 ** 30 - 1
 }
-const song = (t: number): number => 0.3 * Math.sin(2 * Math.PI * 110 * t) + 0.2 * noise()
+// Una "canción": tono y ruido con un golpe cada medio segundo (el pulso de un bombo).
+const beat = (t: number): number => 0.3 + 0.7 * Math.exp(-(t % 0.5) / 0.08)
+const song = (t: number): number =>
+  beat(t) * (0.3 * Math.sin(2 * Math.PI * 110 * t) + 0.2 * noise())
+/** Siseo estático: ruido de amplitud constante, todo agudos y sin ritmo. */
+const hiss = (): number => 0.2 * noise()
 const drone = (t: number): number => 0.4 * Math.sin(2 * Math.PI * 50 * t)
 const silence = (): number => 0
 
@@ -70,5 +82,25 @@ describe('drone', () => {
     expect(sum.tail.highDb).toBeLessThan(-40)
     expect(sum.mean.highDb).toBeGreaterThan(sum.tail.highDb)
     expect(soundSummary(new Float32Array(10), SR)).toBeNull()
+  })
+
+  it('un siseo estático (sin pulso) también es colapso, aunque tenga agudos', () => {
+    const stats = windowStats(signal([2, song], [2, hiss]), SR)
+    expect(stats[0].pulseDb).toBeGreaterThan(2)
+    expect(stats[3].pulseDb).toBeLessThan(1)
+    expect(stats[3].highDb).toBeGreaterThan(-15) // no es un drone: tiene agudos
+    expect(findCollapse(signal([5, song], [6, hiss], [4, song]), SR)).toBe(5)
+    const sum = soundSummary(signal([5, song], [6, hiss], [4, song]), SR)!
+    expect(sum.staticRun).toEqual({ startSec: 5, sec: 6 })
+  })
+
+  it('ve un hueco al empezar: más de 1 s muy por debajo del final anterior', () => {
+    const opening = soundSummary(signal([1.5, silence], [3, song]), SR)!.opening
+    expect(opening).toHaveLength(6)
+    expect(hasStartGap(opening, -18)).toBe(true)
+    // Un golpe de silencio corto (0,5 s) es un respiro, no un hueco.
+    expect(hasStartGap(soundSummary(signal([0.5, silence], [3, song]), SR)!.opening, -18)).toBe(
+      false
+    )
   })
 })

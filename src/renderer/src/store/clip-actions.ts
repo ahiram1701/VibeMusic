@@ -111,6 +111,11 @@ export interface ContinueOptions extends ActionOptions {
   atBeat?: number
   /** Texto del cambio en el historial. */
   message?: string
+  /**
+   * Fundirse con el final de la región (por defecto sí). No, si el audio nuevo se
+   * coloca en otro sitio: se fundiría con algo que no está sonando.
+   */
+  crossfade?: boolean
 }
 
 export async function continueRegion(
@@ -149,7 +154,9 @@ export async function continueRegion(
     parentClipId: clip.id,
     mode: 'continue',
     conditioning: { clipId: clip.id, file, seconds: excerpt.seconds },
-    crossfadeSec: Math.min(crossfadeSeconds(project.bpm), excerpt.seconds),
+    ...(opts.crossfade !== false && {
+      crossfadeSec: Math.min(crossfadeSeconds(project.bpm), excerpt.seconds)
+    }),
     messagePrefix: opts.messagePrefix,
     message:
       opts.message ??

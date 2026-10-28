@@ -3,16 +3,13 @@
 // de problemas concretos que sabría oír un productor: un corte en una unión, un coro
 // que no sube respecto al verso, una sección apagada. Puro para probarlo.
 
-import type { WindowStats } from './drone'
+import type { SoundSummary, WindowStats } from './drone'
 
 /** Lo que suena de una región de la pista de la canción. */
-export interface RegionSound {
+export interface RegionSound extends SoundSummary {
   startBeat: number
   endBeat: number
-  /** Primer y último cuarto de segundo de la región, y la media de toda ella. */
-  head: WindowStats
-  tail: WindowStats
-  mean: WindowStats
+  lengthSec: number
 }
 
 export interface ReviewSection {
@@ -38,6 +35,7 @@ export type ReviewIssue =
       other_db: number
     }
   | { type: 'dull'; section: string; brightness_db: number }
+  | { type: 'static'; section: string; bar: number; seconds: number }
 
 export interface SongReview {
   sections: { name: string; level_db: number; brightness_db: number }[]
@@ -50,6 +48,8 @@ export interface SongReview {
 export const SEAM_LEVEL_DB = 3
 export const SEAM_BRIGHTNESS_DB = 5
 export const DULL_DB = -28
+/** Segundos seguidos de sonido estático que ya se oyen como ruido. */
+export const STATIC_SEC = 3
 /** Un coro (más energía) debe sonar al menos así de fuerte respecto al verso. */
 const ENERGY_MARGIN_DB = 0.5
 
@@ -61,14 +61,17 @@ function average(parts: { stats: WindowStats; weight: number }[]): WindowStats |
   if (total <= 0) return null
   let power = 0
   let high = 0
+  let pulse = 0
   for (const { stats, weight } of parts) {
     const p = Math.pow(10, stats.db / 10)
     power += p * weight
     high += p * Math.pow(10, stats.highDb / 10) * weight
+    pulse += stats.pulseDb * weight
   }
   return {
     db: 10 * Math.log10(power / total + 1e-24),
-    highDb: 10 * Math.log10(high / power + 1e-12)
+    highDb: 10 * Math.log10(high / power + 1e-12),
+    pulseDb: pulse / total
   }
 }
 
@@ -101,6 +104,18 @@ export function reviewSong(
         brightness_jump_db: r1(bright)
       })
     }
+  }
+
+  // Siseo estático (sin ritmo) de varios segundos: se oye como ruido, no como música.
+  for (const r of sorted) {
+    if (!r.staticRun || r.staticRun.sec < STATIC_SEC) continue
+    const beat = r.startBeat + (r.staticRun.startSec * (r.endBeat - r.startBeat)) / r.lengthSec
+    issues.push({
+      type: 'static',
+      section: sectionAt(beat)?.name ?? '?',
+      bar: Math.floor(beat / beatsPerBar) + 1,
+      seconds: r.staticRun.sec
+    })
   }
 
   // Por sección: la media de lo que suena dentro de ella.

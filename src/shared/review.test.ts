@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest'
+import type { WindowStats } from './drone'
 import { reviewSong, type RegionSound } from './review'
 
-const w = (db: number, highDb = -15): { db: number; highDb: number } => ({ db, highDb })
+const w = (db: number, highDb = -15): WindowStats => ({ db, highDb, pulseDb: 5 })
 const region = (startBeat: number, mean: number, over: Partial<RegionSound> = {}): RegionSound => ({
   startBeat,
   endBeat: startBeat + 32,
+  lengthSec: 16,
+  staticRun: null,
+  opening: [],
   head: w(mean),
   tail: w(mean),
   mean: w(mean),
@@ -52,5 +56,12 @@ describe('revisión de la canción', () => {
   it('sin energía planificada no juzga la curva', () => {
     const plain = sections.map((s) => ({ name: s.name, startBar: s.startBar, bars: s.bars }))
     expect(reviewSong(plain, [region(0, -14), region(32, -16)], 4).issues).toEqual([])
+  })
+
+  it('avisa de un siseo estático de varios segundos, en su compás', () => {
+    // 32 pulsos en 16 s: el segundo 8 cae en el pulso 16 = compás 13.
+    const hiss = region(32, -14, { staticRun: { startSec: 8, sec: 5 } })
+    const review = reviewSong(sections, [region(0, -18, { tail: w(-14) }), hiss], 4)
+    expect(review.issues).toContainEqual({ type: 'static', section: 'Coro', bar: 13, seconds: 5 })
   })
 })

@@ -4,7 +4,10 @@
 // sin IA: por cada segundo se mide el volumen y cuánta energía hay por encima de
 // 1 kHz. Una canción normal siempre tiene algo arriba (platillos, ataques, voces);
 // un drone casi nada. Calibrado con tramos reales: los sanos quedan entre −3 y
-// −28 dB de agudos, los atascados entre −35 y −60. Todo es puro para probarlo.
+// −28 dB de agudos, los atascados entre −35 y −60. El colapso opuesto es un siseo
+// estático (todo agudos, sin ritmo): ahí falla el "pulso", cuánto varía el volumen
+// dentro del segundo; con bombo y percusión nunca baja de ~1,7 dB, el siseo da 0,1-0,5.
+// Todo es puro para probarlo.
 
 /** Medidas de un segundo de audio. */
 export interface WindowStats {
@@ -12,6 +15,8 @@ export interface WindowStats {
   db: number
   /** Energía por encima de ~1 kHz respecto al total, en dB (0 = todo es agudo). */
   highDb: number
+  /** Pulso: desviación típica (dB) del volumen en trozos de 50 ms; ~0 = sonido estático. */
+  pulseDb: number
 }
 
 export interface CollapseOptions {
@@ -23,6 +28,8 @@ export interface CollapseOptions {
   silenceDb?: number
   /** Por debajo de este nivel de agudos (dB respecto al total), un segundo es drone. */
   highDbMin?: number
+  /** Por debajo de este pulso (dB), un segundo que suena es estático (siseo sin ritmo). */
+  pulseMin?: number
   /** Segundos finales que no se miran (p. ej. el fundido del último tramo). */
   ignoreTailSec?: number
 }
@@ -32,12 +39,22 @@ const DEFAULTS: Required<CollapseOptions> = {
   minTailSec: 2,
   silenceDb: -45,
   highDbMin: -32,
+  pulseMin: 1,
   ignoreTailSec: 0
 }
 
 /** Frecuencia de corte del filtro que separa los agudos (tres polos: corte claro). */
 const SPLIT_HZ = 1000
 const POLES = 3
+/** Trozo con el que se mide el pulso: más corto que un golpe de bombo a 130 BPM. */
+const PULSE_SEC = 0.05
+
+/** Desviación típica de una lista de dB. */
+function spread(values: number[]): number {
+  if (values.length < 2) return 0
+  const mean = values.reduce((a, b) => a + b, 0) / values.length
+  return Math.sqrt(values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length)
+}
 
 /** Volumen y nivel de agudos de cada ventana completa (1 s por defecto) del audio. */
 export function windowStats(
@@ -50,10 +67,13 @@ export function windowStats(
   const alpha = rc / (rc + 1 / sampleRate)
   const prevX = new Float64Array(POLES)
   const prevY = new Float64Array(POLES)
+  const piece = Math.max(1, Math.round(sampleRate * PULSE_SEC))
   const out: WindowStats[] = []
   for (let start = 0; start + win <= samples.length; start += win) {
     let total = 0
     let high = 0
+    let pieceSum = 0
+    const pieces: number[] = []
     for (let i = start; i < start + win; i++) {
       const x = samples[i]
       let y = x
@@ -65,19 +85,25 @@ export function windowStats(
       }
       total += x * x
       high += y * y
+      pieceSum += x * x
+      if ((i - start + 1) % piece === 0) {
+        pieces.push(10 * Math.log10(pieceSum / piece + 1e-10))
+        pieceSum = 0
+      }
     }
     out.push({
       db: 10 * Math.log10(total / win + 1e-24),
-      highDb: total > 0 ? 10 * Math.log10(high / total + 1e-12) : -120
+      highDb: total > 0 ? 10 * Math.log10(high / total + 1e-12) : -120,
+      pulseDb: spread(pieces)
     })
   }
   return out
 }
 
-/** ¿Es este segundo parte de un colapso (silencio, o suena pero sin agudos)? */
+/** ¿Es este segundo parte de un colapso (silencio, drone sin agudos o siseo estático)? */
 export function isDead(w: WindowStats, opts: CollapseOptions = {}): boolean {
   const o = { ...DEFAULTS, ...opts }
-  return w.db < o.silenceDb || w.highDb < o.highDbMin
+  return w.db < o.silenceDb || w.highDb < o.highDbMin || w.pulseDb < o.pulseMin
 }
 
 /**
@@ -137,30 +163,59 @@ export function tailBrightness(
 /** Ventana de los bordes: un cambio en seco en una unión dura menos de medio segundo. */
 const EDGE_SEC = 0.25
 
+/** Resumen de un audio para revisar la canción (ver soundSummary). */
+export interface SoundSummary {
+  head: WindowStats
+  tail: WindowStats
+  mean: WindowStats
+  /** Racha más larga de segundos estáticos (suena, pero sin pulso), o null. */
+  staticRun: { startSec: number; sec: number } | null
+  /** Volumen (dBFS) de los primeros cuartos de segundo, para ver un hueco al empezar. */
+  opening: number[]
+}
+
+/** Cuartos de segundo del principio que mira `hasStartGap` (1,5 s). */
+const OPENING_PARTS = 6
+
 /**
- * Primer y último cuarto de segundo de un audio (lo que se oye en sus uniones) y su
- * media en potencia, o null si dura menos de un segundo.
+ * ¿Arranca con un hueco? Al menos 1 s de los primeros 1,5 s suena más de `dropDb` por
+ * debajo del final del tramo anterior (`prevTailDb`): tras el fundido, el modelo se
+ * calló y la unión se oye como un corte.
  */
-export function soundSummary(
-  samples: Float32Array,
-  sampleRate: number
-): { head: WindowStats; tail: WindowStats; mean: WindowStats } | null {
+export function hasStartGap(opening: number[], prevTailDb: number, dropDb = 10): boolean {
+  return opening.filter((db) => db < prevTailDb - dropDb).length >= 4
+}
+
+/**
+ * Primer y último cuarto de segundo de un audio (lo que se oye en sus uniones), su
+ * media en potencia y la racha más larga de sonido estático, o null si dura < 1 s.
+ */
+export function soundSummary(samples: Float32Array, sampleRate: number): SoundSummary | null {
   const stats = windowStats(samples, sampleRate)
   if (stats.length === 0) return null
   let power = 0
   let high = 0
-  for (const s of stats) {
+  let pulse = 0
+  let staticRun: SoundSummary['staticRun'] = null
+  let run = 0
+  stats.forEach((s, i) => {
     const p = Math.pow(10, s.db / 10)
     power += p
     high += p * Math.pow(10, s.highDb / 10)
-  }
+    pulse += s.pulseDb
+    run = s.db >= DEFAULTS.silenceDb && s.pulseDb < DEFAULTS.pulseMin ? run + 1 : 0
+    if (run > (staticRun?.sec ?? 0)) staticRun = { startSec: i - run + 1, sec: run }
+  })
   const edge = windowStats(samples, sampleRate, EDGE_SEC)
   return {
     head: edge[0],
     tail: edge[edge.length - 1],
     mean: {
       db: 10 * Math.log10(power / stats.length + 1e-24),
-      highDb: 10 * Math.log10(high / (power + 1e-24) + 1e-12)
-    }
+      highDb: 10 * Math.log10(high / (power + 1e-24) + 1e-12),
+      pulseDb: pulse / stats.length
+    },
+    staticRun,
+    opening: edge.slice(0, OPENING_PARTS).map((w) => w.db)
   }
 }

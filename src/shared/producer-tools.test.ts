@@ -406,9 +406,21 @@ describe('productor · canciones completas', () => {
 
   /** Continuación en memoria, como en la app: región nueva en la misma pista. */
   function chainable(h: ReturnType<typeof fakeHost>) {
-    const calls: { from: string; bars: number; prompt?: string; atBeat?: number }[] = []
+    const calls: {
+      from: string
+      bars: number
+      prompt?: string
+      atBeat?: number
+      crossfade?: boolean
+    }[] = []
     h.host.extend = async (regionId, bars, opts) => {
-      calls.push({ from: regionId, bars, prompt: opts?.prompt, atBeat: opts?.atBeat })
+      calls.push({
+        from: regionId,
+        bars,
+        prompt: opts?.prompt,
+        atBeat: opts?.atBeat,
+        crossfade: opts?.crossfade
+      })
       const p = h.state.project
       const track = p.tracks.find((t) => t.regions.some((r) => r.id === regionId))!
       const src = track.regions.find((r) => r.id === regionId)!
@@ -571,8 +583,11 @@ describe('productor · canciones completas', () => {
     h.host.inspectRegion = async (regionId) => {
       const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
       // El Coro (energía 5) suena más bajo que el verso.
-      const s = { db: r.startBeat >= 96 ? -20 : -14, highDb: -15 }
-      return { collapseAtSec: null, sound: { head: s, tail: s, mean: s } }
+      const s = { db: r.startBeat >= 96 ? -20 : -14, highDb: -15, pulseDb: 5 }
+      return {
+        collapseAtSec: null,
+        sound: { head: s, tail: s, mean: s, staticRun: null, opening: [] }
+      }
     }
     const res = (await h.run('compose_song', songInput)) as {
       review: { issues: { type: string; section: string }[]; sections: unknown[] }
@@ -600,7 +615,7 @@ describe('productor · canciones completas', () => {
     expect(calls.find((c) => c.atBeat === 64)!.from).toBe(at32)
   })
 
-  it('compose_song vuelve a escuchar el final más brillante si la continuación se apaga', async () => {
+  it('compose_song siempre continúa lo anterior, aunque se apague (sin cortes)', async () => {
     const h = fakeHost(createProject('X'))
     const calls = chainable(h)
     // Agudos del final de cada tramo, como en una canción real que se hunde en graves.
@@ -612,9 +627,81 @@ describe('productor · canciones completas', () => {
     await h.run('compose_song', songInput)
     const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
     const at = (beat: number): string => song.regions.find((r) => r.startBeat === beat)!.id
-    expect(calls.find((c) => c.atBeat === 64)!.from).toBe(at(32)) // −6 dB: sigue
-    expect(calls.find((c) => c.atBeat === 96)!.from).toBe(at(0)) // −17 dB: la intro
-    expect(calls.find((c) => c.atBeat === 128)!.from).toBe(at(96))
+    // El coro (beat 96) empieza tras un verso apagado, pero lo continúa y se funde con él.
+    expect(calls.find((c) => c.atBeat === 96)).toMatchObject({ from: at(64), crossfade: true })
+  })
+
+  it('compose_song repara un atasco desde la región más brillante, sin fundirse', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    const tail: Record<number, number> = { 0: -13, 32: -30 }
+    let stuck = true
+    h.host.inspectRegion = async (regionId) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      // El tramo del beat 64 se atasca desde el principio la primera vez.
+      const collapse = r.startBeat === 64 && stuck ? 0 : null
+      if (r.startBeat === 64) stuck = false
+      return { collapseAtSec: collapse, tailBrightDb: tail[r.startBeat] ?? null }
+    }
+    await h.run('compose_song', songInput)
+    const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
+    const at = (beat: number): string => song.regions.find((r) => r.startBeat === beat)!.id
+    const tries = calls.filter((c) => c.atBeat === 64)
+    expect(tries[0]).toMatchObject({ from: at(32), crossfade: true })
+    // La reparación no escucha el final apagado del beat 32, sino la intro.
+    expect(tries[1]).toMatchObject({ from: at(0), crossfade: false })
+  })
+
+  it('compose_song regenera un tramo que empieza con un hueco tras la unión', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    let first = true
+    h.host.inspectRegion = async (regionId) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      const loud = { db: -14, highDb: -10, pulseDb: 5 }
+      // El primer verso (beat 32) se calla 1,5 s tras el fundido.
+      const silent = r.startBeat === 32 && first
+      if (r.startBeat === 32) first = false
+      const opening = silent ? [-40, -45, -50, -48, -40, -20] : [-15, -14, -16, -15, -14, -15]
+      return {
+        collapseAtSec: null,
+        sound: { head: loud, tail: loud, mean: loud, staticRun: null, opening }
+      }
+    }
+    const res = (await h.run('compose_song', songInput)) as {
+      repaired?: { section: string; start_bar: number; bars: number }[]
+    }
+    expect(res.repaired).toEqual([{ section: 'Verso', start_bar: 9, bars: 8 }])
+    expect(calls.filter((c) => c.atBeat === 32)).toHaveLength(2)
+  })
+
+  it('redo_sections rehace solo esas secciones, continuando lo que suena antes', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    await h.run('compose_song', songInput)
+    const before = h.state.project.tracks.find((t) => t.name === 'Canción')!.regions
+    const intro = before.find((r) => r.startBeat === 0)!
+    const chorus = before.find((r) => r.startBeat === 96)!
+    const verse = h.state.project.sections!.find((s) => s.name === 'Verso')!
+    calls.length = 0
+    const progress: string[] = []
+    const tool = createProducerTools(h.host).find((t) => t.def.name === 'redo_sections')!
+    const res = (await tool.run({ section_ids: [verse.id] }, new AbortController().signal, (t) =>
+      progress.push(t)
+    )) as { ok: boolean; redone: string[]; parts_generated: number }
+    expect(res).toMatchObject({ ok: true, redone: ['Verso'], parts_generated: 2 })
+    // Los dos tramos del verso (beats 32 y 64), el primero tras la intro.
+    expect(calls.map((c) => c.atBeat)).toEqual([32, 64])
+    expect(calls[0]).toMatchObject({ from: intro.id, crossfade: true })
+    const after = h.state.project.tracks.find((t) => t.name === 'Canción')!.regions
+    expect(after.find((r) => r.startBeat === 0)!.id).toBe(intro.id)
+    expect(after.find((r) => r.startBeat === 96)!.id).toBe(chorus.id)
+    expect(after.filter((r) => r.startBeat === 32)).toHaveLength(1)
+    expect(after.find((r) => r.startBeat === 32)!.id).not.toBe(
+      before.find((r) => r.startBeat === 32)!.id
+    )
+    expect(progress[0]).toMatch(/^Parte 1 de 2 · Verso \(compases 9–16\)$/)
+    expect(progress[1]).toMatch(/^Parte 2 de 2 · Verso/)
   })
 
   it('compose_song continúa un coro repetido sin copiar desde lo que suena antes', async () => {
