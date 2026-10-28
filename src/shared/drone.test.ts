@@ -1,12 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  findCollapse,
-  hasStartGap,
-  soundSummary,
-  tailBrightness,
-  toMono,
-  windowStats
-} from './drone'
+import { findCollapse, hasStartGap, soundSummary, toMono, windowStats } from './drone'
 
 const SR = 8000
 
@@ -32,6 +25,14 @@ const song = (t: number): number =>
 /** Siseo estático: ruido de amplitud constante, todo agudos y sin ritmo. */
 const hiss = (): number => 0.2 * noise()
 const drone = (t: number): number => 0.4 * Math.sin(2 * Math.PI * 50 * t)
+/** La música se vacía: sin bombo ni bajo, un hilo bajito de platillos al ritmo. */
+let lastNoise = 0
+const faint = (t: number): number => {
+  const n = noise()
+  const hat = n - lastNoise // ruido derivado: casi todo agudos, como un platillo
+  lastNoise = n
+  return 0.03 * beat(t) * hat
+}
 const silence = (): number => 0
 
 describe('drone', () => {
@@ -51,6 +52,14 @@ describe('drone', () => {
     expect(findCollapse(signal([5, song], [8, drone], [2, song]), SR)).toBe(5)
   })
 
+  it('que la música se vacíe (un hilo de platillos) también', () => {
+    expect(findCollapse(signal([5, song], [8, faint], [2, song]), SR)).toBe(5)
+    // Una intro que empieza de cero puede arrancar así: se puede desactivar.
+    expect(
+      findCollapse(signal([5, song], [8, faint], [2, song]), SR, { thinDb: -Infinity })
+    ).toBeNull()
+  })
+
   it('un silencio largo a mitad de tramo también', () => {
     expect(findCollapse(signal([3, song], [5, silence], [7, song]), SR)).toBe(3)
   })
@@ -66,14 +75,6 @@ describe('drone', () => {
 
   it('mezcla a mono promediando canales', () => {
     expect(Array.from(toMono([Float32Array.of(1, 0), Float32Array.of(0, 1)]))).toEqual([0.5, 0.5])
-  })
-
-  it('mide el brillo solo del final y sin contar el silencio', () => {
-    const bright = tailBrightness(signal([8, drone], [8, song]), SR, 8)!
-    const dark = tailBrightness(signal([8, song], [8, drone]), SR, 8)!
-    expect(bright - dark).toBeGreaterThan(15)
-    expect(tailBrightness(signal([8, song], [2, silence]), SR, 4)).toBeCloseTo(bright, 0)
-    expect(tailBrightness(signal([3, silence]), SR, 3)).toBeNull()
   })
 
   it('resume el principio, el final y la media de un audio', () => {

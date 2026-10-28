@@ -7,6 +7,9 @@
 // −28 dB de agudos, los atascados entre −35 y −60. El colapso opuesto es un siseo
 // estático (todo agudos, sin ritmo): ahí falla el "pulso", cuánto varía el volumen
 // dentro del segundo; con bombo y percusión nunca baja de ~1,7 dB, el siseo da 0,1-0,5.
+// El tercero es que la música se vacía: se van el bombo y el bajo y queda un hilo
+// bajito de platillos (por debajo de −25 dB y con casi todo en agudos); la música sana
+// suena entre −13 y −23 dB con los agudos entre −12 y −18.
 // Todo es puro para probarlo.
 
 /** Medidas de un segundo de audio. */
@@ -30,6 +33,10 @@ export interface CollapseOptions {
   highDbMin?: number
   /** Por debajo de este pulso (dB), un segundo que suena es estático (siseo sin ritmo). */
   pulseMin?: number
+  /** Un segundo más bajo que esto (dBFS) y con más agudos que `thinHighDb` está vacío. */
+  thinDb?: number
+  /** Nivel de agudos (dB respecto al total) a partir del cual un segundo bajito está vacío. */
+  thinHighDb?: number
   /** Segundos finales que no se miran (p. ej. el fundido del último tramo). */
   ignoreTailSec?: number
 }
@@ -40,6 +47,8 @@ const DEFAULTS: Required<CollapseOptions> = {
   silenceDb: -45,
   highDbMin: -32,
   pulseMin: 1,
+  thinDb: -25,
+  thinHighDb: -10,
   ignoreTailSec: 0
 }
 
@@ -100,10 +109,15 @@ export function windowStats(
   return out
 }
 
-/** ¿Es este segundo parte de un colapso (silencio, drone sin agudos o siseo estático)? */
+/** ¿Es este segundo parte de un colapso (silencio, drone, siseo estático o vacío)? */
 export function isDead(w: WindowStats, opts: CollapseOptions = {}): boolean {
   const o = { ...DEFAULTS, ...opts }
-  return w.db < o.silenceDb || w.highDb < o.highDbMin || w.pulseDb < o.pulseMin
+  return (
+    w.db < o.silenceDb ||
+    w.highDb < o.highDbMin ||
+    w.pulseDb < o.pulseMin ||
+    (w.db < o.thinDb && w.highDb > o.thinHighDb)
+  )
 }
 
 /**
@@ -137,27 +151,6 @@ export function toMono(channels: Float32Array[]): Float32Array {
   const out = new Float32Array(channels[0].length)
   for (const ch of channels) for (let i = 0; i < out.length; i++) out[i] += ch[i] / channels.length
   return out
-}
-
-/**
- * Brillo de los últimos `tailSec` segundos: la mediana del nivel de agudos (dB respecto
- * al total) de los segundos que suenan, o null si todo es silencio. Al continuar, cada
- * tramo de MusicGen sale algo más apagado que el que escucha (en una canción real se
- * midió −13 → −19 → −27 → −33 → −40), y ese final es lo que oye el siguiente.
- */
-export function tailBrightness(
-  samples: Float32Array,
-  sampleRate: number,
-  tailSec: number,
-  silenceDb = DEFAULTS.silenceDb
-): number | null {
-  const stats = windowStats(samples, sampleRate)
-  const tail = stats
-    .slice(Math.max(0, stats.length - Math.ceil(tailSec)))
-    .filter((w) => w.db >= silenceDb)
-    .map((w) => w.highDb)
-    .sort((a, b) => a - b)
-  return tail.length > 0 ? tail[Math.floor(tail.length / 2)] : null
 }
 
 /** Ventana de los bordes: un cambio en seco en una unión dura menos de medio segundo. */

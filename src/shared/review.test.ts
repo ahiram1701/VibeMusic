@@ -53,6 +53,23 @@ describe('revisión de la canción', () => {
     expect(review.issues).toContainEqual({ type: 'dull', section: 'Coro', brightness_db: -35 })
   })
 
+  it('avisa de una sección que se apagó respecto al resto de la canción', () => {
+    const song = ['Intro', 'Verso', 'Coro', 'Outro'].map((name, i) => ({
+      name,
+      startBar: 1 + i * 8,
+      bars: 8
+    }))
+    const levels = [-16, -19, -18, -31]
+    const review = reviewSong(
+      song,
+      levels.map((db, i) => region(i * 32, db, { head: w(db), tail: w(db) })),
+      4
+    )
+    expect(review.issues.filter((x) => x.type === 'faded')).toEqual([
+      { type: 'faded', section: 'Outro', level_db: -31, song_db: -18 }
+    ])
+  })
+
   it('sin energía planificada no juzga la curva', () => {
     const plain = sections.map((s) => ({ name: s.name, startBar: s.startBar, bars: s.bars }))
     expect(reviewSong(plain, [region(0, -14), region(32, -16)], 4).issues).toEqual([])

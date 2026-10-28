@@ -600,56 +600,55 @@ describe('productor · canciones completas', () => {
     expect(again.issues).toEqual(res.review.issues)
   })
 
-  it('compose_song no salta a otra parte a mitad de sección aunque se apague', async () => {
+  it('compose_song siempre continúa lo anterior (sin cortes)', async () => {
     const h = fakeHost(createProject('X'))
     const calls = chainable(h)
-    const tail: Record<number, number> = { 0: -13, 32: -30 }
-    h.host.inspectRegion = async (regionId) => {
-      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
-      return { collapseAtSec: null, tailBrightDb: tail[r.startBeat] ?? null }
-    }
-    await h.run('compose_song', songInput)
-    const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
-    // Beat 64 sigue dentro del Verso: continúa el tramo anterior (sin corte).
-    const at32 = song.regions.find((r) => r.startBeat === 32)!.id
-    expect(calls.find((c) => c.atBeat === 64)!.from).toBe(at32)
-  })
-
-  it('compose_song siempre continúa lo anterior, aunque se apague (sin cortes)', async () => {
-    const h = fakeHost(createProject('X'))
-    const calls = chainable(h)
-    // Agudos del final de cada tramo, como en una canción real que se hunde en graves.
-    const tail: Record<number, number> = { 0: -13, 32: -19, 64: -30, 96: -16 }
-    h.host.inspectRegion = async (regionId) => {
-      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
-      return { collapseAtSec: null, tailBrightDb: tail[r.startBeat] ?? null }
-    }
     await h.run('compose_song', songInput)
     const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
     const at = (beat: number): string => song.regions.find((r) => r.startBeat === beat)!.id
-    // El coro (beat 96) empieza tras un verso apagado, pero lo continúa y se funde con él.
+    // A mitad del verso (beat 64) y al entrar al coro (beat 96): continúa y se funde.
+    expect(calls.find((c) => c.atBeat === 64)).toMatchObject({ from: at(32), crossfade: true })
     expect(calls.find((c) => c.atBeat === 96)).toMatchObject({ from: at(64), crossfade: true })
   })
 
-  it('compose_song repara un atasco desde la región más brillante, sin fundirse', async () => {
+  it('compose_song repara un atasco continuando lo anterior si está sano', async () => {
     const h = fakeHost(createProject('X'))
     const calls = chainable(h)
-    const tail: Record<number, number> = { 0: -13, 32: -30 }
     let stuck = true
     h.host.inspectRegion = async (regionId) => {
       const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
       // El tramo del beat 64 se atasca desde el principio la primera vez.
       const collapse = r.startBeat === 64 && stuck ? 0 : null
       if (r.startBeat === 64) stuck = false
-      return { collapseAtSec: collapse, tailBrightDb: tail[r.startBeat] ?? null }
+      return { collapseAtSec: collapse }
     }
     await h.run('compose_song', songInput)
     const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
     const at = (beat: number): string => song.regions.find((r) => r.startBeat === beat)!.id
     const tries = calls.filter((c) => c.atBeat === 64)
-    expect(tries[0]).toMatchObject({ from: at(32), crossfade: true })
-    // La reparación no escucha el final apagado del beat 32, sino la intro.
-    expect(tries[1]).toMatchObject({ from: at(0), crossfade: false })
+    expect(tries).toHaveLength(2)
+    expect(tries[1]).toMatchObject({ from: at(32), crossfade: true })
+  })
+
+  it('compose_song repara desde la última región sana si la anterior quedó atascada', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    let chorusStuck = true
+    h.host.inspectRegion = async (regionId) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      // El beat 64 se atasca siempre (su reparación se queda); el coro, la primera vez.
+      if (r.startBeat === 64) return { collapseAtSec: 0 }
+      const collapse = r.startBeat === 96 && chorusStuck ? 0 : null
+      if (r.startBeat === 96) chorusStuck = false
+      return { collapseAtSec: collapse }
+    }
+    await h.run('compose_song', songInput)
+    const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
+    const at = (beat: number): string => song.regions.find((r) => r.startBeat === beat)!.id
+    const tries = calls.filter((c) => c.atBeat === 96)
+    expect(tries[0]).toMatchObject({ from: at(64), crossfade: true })
+    // No escucha el final atascado del beat 64, sino el último sano (beat 32), sin fundirse.
+    expect(tries[1]).toMatchObject({ from: at(32), crossfade: false })
   })
 
   it('compose_song regenera un tramo que empieza con un hueco tras la unión', async () => {

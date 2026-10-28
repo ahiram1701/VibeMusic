@@ -107,16 +107,14 @@ export interface ProducerHost {
     }
   ): Promise<{ trackId: string; regionId: string }>
   /**
-   * Escucha una región: segundo (desde su inicio) en el que se atasca en un drone
-   * grave o en silencio, o null si suena bien, y el brillo de sus últimos CONTEXT_SEC
-   * segundos (lo que oiría un tramo que la continúe; null si es silencio). Ver drone.ts.
+   * Escucha una región: segundo (desde su inicio) en el que se atasca (drone grave,
+   * silencio, siseo o se vacía), o null si suena bien. Ver drone.ts.
    */
   inspectRegion(
     regionId: string,
     opts?: CollapseOptions
   ): Promise<{
     collapseAtSec: number | null
-    tailBrightDb?: number | null
     /** Primer y último segundo y media de la región (para revisar la canción). */
     sound?: SoundSummary | null
   }>
@@ -246,12 +244,6 @@ const perBar = (p: Project): number => p.timeSignature[0]
 const beatOfBar = (p: Project, bar: number): number => (bar - 1) * perBar(p)
 const barOfBeat = (p: Project, beat: number): number => beat / perBar(p) + 1
 const round2 = (n: number): number => Math.round(n * 100) / 100
-/**
- * dB de agudos que puede perder el final de un tramo respecto al más brillante antes de
- * dejar de continuarlo. Medido: la intro −13, un tramo sano después −19 (se sigue) y el
- * siguiente −27 (ya se oye apagado, se vuelve a escuchar la intro).
- */
-const DRIFT_DB = 8
 
 function findTrack(p: Project, id: string): Track {
   const t = p.tracks.find((x) => x.id === id)
@@ -468,26 +460,29 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
     const drone: ChunkReport['drone'] = []
     let generated = 0
     let last: string | null = null
-    // Final de cada región (brillo y volumen): lo que oye el tramo que la continúa.
-    const tails = new Map<string, { bright: number | null; db: number | null }>()
-    const tailOf = async (id: string): Promise<{ bright: number | null; db: number | null }> => {
+    // Final de cada región: su volumen (para ver un hueco tras la unión) y si está sana
+    // (sin atasco), que es lo que oye el tramo que la continúa.
+    type Tail = { db: number | null; ok: boolean }
+    const tails = new Map<string, Tail>()
+    const tailOf = async (id: string): Promise<Tail> => {
       if (!tails.has(id)) {
         const r = await host.inspectRegion(id)
-        tails.set(id, { bright: r.tailBrightDb ?? null, db: r.sound?.tail.db ?? null })
+        tails.set(id, { db: r.sound?.tail.db ?? null, ok: r.collapseAtSec === null })
       }
       return tails.get(id)!
     }
-    // Para reparar: escuchar un final que ya se apagó volvería a atascarse, así que se
-    // parte de la región más brillante. Solo aquí: en un tramo normal sería un corte.
-    const repairContext = async (from: string | null): Promise<string | null> => {
-      const own = from && (await tailOf(from)).bright
-      if (!from || typeof own !== 'number') return from
+    // Para reparar: escuchar un final atascado volvería a atascarse, así que se parte de
+    // la última región sana de antes. Solo aquí: en un tramo normal sería un corte.
+    const repairContext = async (from: string | null, atBeat: number): Promise<string | null> => {
+      if (!from || (await tailOf(from)).ok) return from
+      const regions = host.getProject().tracks.flatMap((t) => t.regions)
       let best = from
-      let bestDb = own
+      let bestBeat = -1
       for (const [id, t] of tails) {
-        if (t.bright !== null && t.bright > bestDb) [best, bestDb] = [id, t.bright]
+        const beat = regions.find((r) => r.id === id)?.startBeat ?? -1
+        if (t.ok && beat < atBeat && beat > bestBeat) [best, bestBeat] = [id, beat]
       }
-      return bestDb - own > DRIFT_DB ? best : from
+      return best
     }
     const queue: (ChunkStep & { repair?: boolean })[] = [...run.steps]
     const total = queue.filter((s) => s.kind === 'generate').length
@@ -511,7 +506,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       const span = `compases ${step.startBar}–${step.startBar + step.bars - 1}`
       // Lo que suena justo antes (en una canción nueva, el último tramo grabado).
       const before = regionEndingAt(p, trackId, atBeat)?.id ?? last
-      const from = step.repair ? await repairContext(before) : before
+      const from = step.repair ? await repairContext(before, atBeat) : before
       if (step.repair) {
         run.progress?.(`Reparando ${section.name} (${span})`)
       } else {
@@ -557,10 +552,12 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       if (!step.repair) finished++
       if (!made) continue
 
-      // ¿Se atascó? El fundido final de la canción no cuenta.
+      // ¿Se atascó? El fundido final de la canción no cuenta, ni que un tramo que empieza
+      // de cero (la intro) arranque solo con platillos: ahí aún no hay nada que se vacíe.
       const endsSong = step.startBar + step.bars - 1 >= run.totalBars
       const inspected = await host.inspectRegion(made, {
-        ignoreTailSec: endsSong ? 2 * secPerBar : 0
+        ignoreTailSec: endsSong ? 2 * secPerBar : 0,
+        ...(from ? {} : { thinDb: -Infinity })
       })
       // Un hueco justo tras la unión (el modelo se calla tras el fundido) es un atasco
       // desde el principio.
@@ -568,10 +565,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       const gap =
         prevDb !== null && !!inspected.sound && hasStartGap(inspected.sound.opening, prevDb)
       const collapseAtSec = gap ? 0 : inspected.collapseAtSec
-      tails.set(made, {
-        bright: inspected.tailBrightDb ?? null,
-        db: inspected.sound?.tail.db ?? null
-      })
+      tails.set(made, { db: inspected.sound?.tail.db ?? null, ok: collapseAtSec === null })
       if (collapseAtSec === null) {
         last = made
         continue
@@ -633,7 +627,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       note:
         review.issues.length === 0
           ? 'Listened to the whole song: no abrupt joins, the energy curve is audible and no section sounds dull.'
-          : 'Problems a listener would hear. Tell the user about them in plain words and offer the fix (create_variation of that section, or extend_region from the region before it); do not regenerate without asking.'
+          : 'Problems a listener would hear. Tell the user about them in plain words and offer the fix (redo_sections with those sections); do not regenerate without asking.'
     }
   }
 
@@ -1054,7 +1048,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           ...(repaired.length > 0 && {
             repaired,
             repaired_note:
-              'These parts got stuck in a low drone; the stuck audio was cut and regenerated automatically.'
+              'These parts got stuck (a low drone, static hiss or the music thinning out to a faint hi-hat); the stuck audio was cut and regenerated automatically.'
           }),
           ...(drone.length > 0 && {
             drone,

@@ -35,6 +35,7 @@ export type ReviewIssue =
       other_db: number
     }
   | { type: 'dull'; section: string; brightness_db: number }
+  | { type: 'faded'; section: string; level_db: number; song_db: number }
   | { type: 'static'; section: string; bar: number; seconds: number }
 
 export interface SongReview {
@@ -50,6 +51,11 @@ export const SEAM_BRIGHTNESS_DB = 5
 export const DULL_DB = -28
 /** Segundos seguidos de sonido estático que ya se oyen como ruido. */
 export const STATIC_SEC = 3
+/**
+ * Una sección así de por debajo del volumen típico de la canción se oye como que la
+ * música se fue apagando (medido: las sanas a ±4 dB, las vaciadas a −10 y −18).
+ */
+export const FADED_DB = 8
 /** Un coro (más energía) debe sonar al menos así de fuerte respecto al verso. */
 const ENERGY_MARGIN_DB = 0.5
 
@@ -132,6 +138,23 @@ export function reviewSong(
   for (const { section, stats } of measured) {
     if (stats && stats.highDb < DULL_DB) {
       issues.push({ type: 'dull', section: section.name, brightness_db: r1(stats.highDb) })
+    }
+  }
+
+  // Secciones que se apagaron: muy por debajo del volumen típico (la mediana).
+  const levels = measured
+    .filter((m) => m.stats)
+    .map((m) => m.stats!.db)
+    .sort((a, b) => a - b)
+  const typical = levels[Math.floor(levels.length / 2)]
+  for (const { section, stats } of measured) {
+    if (stats && stats.db < typical - FADED_DB) {
+      issues.push({
+        type: 'faded',
+        section: section.name,
+        level_db: r1(stats.db),
+        song_db: r1(typical)
+      })
     }
   }
 

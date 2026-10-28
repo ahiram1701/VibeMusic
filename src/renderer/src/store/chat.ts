@@ -4,8 +4,8 @@ import { textOf, type LlmMessage, type LlmRetry } from '@shared/llm'
 import { newId } from '@shared/project'
 import { CHAT_FILE, parseSavedChat, serializeChat } from '@shared/chat-log'
 import { PRODUCER_SYSTEM_PROMPT } from '@shared/producer-prompt'
-import { CONTEXT_SEC, reviewProject } from '@shared/arrange'
-import { findCollapse, soundSummary, tailBrightness, toMono } from '@shared/drone'
+import { reviewProject } from '@shared/arrange'
+import { findCollapse, soundSummary, toMono } from '@shared/drone'
 import { createWebTools } from '@shared/web-tools'
 import {
   AGENT_PREFIX,
@@ -128,7 +128,6 @@ const host: ProducerHost = {
     const mono = toMono(channels)
     return {
       collapseAtSec: findCollapse(mono, sr, opts),
-      tailBrightDb: tailBrightness(mono, sr, CONTEXT_SEC),
       sound: soundSummary(mono, sr)
     }
   },
