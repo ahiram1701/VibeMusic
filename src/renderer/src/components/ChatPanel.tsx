@@ -321,6 +321,10 @@ export function describeTool(
     }
     case 'redo_sections':
       return running ? 'Grabando de nuevo las partes que fallaban' : 'Partes grabadas de nuevo'
+    case 'set_drums':
+      return input.pattern === 'off'
+        ? 'Quitando la batería programada'
+        : `${running ? 'Programando' : 'Programada'} la batería (${String(input.pattern ?? '')})`
     case 'review_song':
       return running ? 'Escuchando la canción' : 'Canción escuchada'
     case 'genre_guide':

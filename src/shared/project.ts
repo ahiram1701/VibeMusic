@@ -31,6 +31,8 @@ export interface GenerationSpec {
   conditioning?: { clipId: string; file: string; seconds: number }
   /** Al continuar: segundos de la partida que se piden delante para fundir con ella. */
   crossfadeSec?: number
+  /** Segundos de más que se piden para poder dejarlo a tempo y en fase (beat-align.ts). */
+  marginSec?: number
   mode: GenerationMode
   /**
    * Letra cantada (canción completa con voz), con etiquetas de sección como
@@ -73,6 +75,12 @@ export interface Region {
   leadInSec?: number
 }
 
+/** Un punto de una automatización: en ese pulso de la canción, ese valor. */
+export interface SweepPoint {
+  beat: number
+  hz: number
+}
+
 export interface Track {
   id: string
   name: string
@@ -82,6 +90,18 @@ export interface Track {
   mute: boolean
   solo: boolean
   regions: Region[]
+  /**
+   * Filtros automatizados (los barridos de la producción: la intro que se abre, la
+   * subida antes del coro, el break apagado). Entre puntos, el corte se mueve en curva.
+   */
+  sweeps?: { lowpass?: SweepPoint[]; highpass?: SweepPoint[] }
+  /**
+   * Sidechain: la pista baja `depthDb` en cada pulso de `beats` (los del bombo) y
+   * vuelve en `releaseSec`. Es el "bombeo" del house: el bombo se abre paso.
+   */
+  duck?: { beats: number[]; depthDb: number; releaseSec: number }
+  /** Batería programada (drums.ts): patrón e intensidad con que se generó esta pista. */
+  drums?: { pattern: string; intensity: number }
 }
 
 export interface Project {

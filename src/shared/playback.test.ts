@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { seamGainDb } from './conform'
-import { regionPlayback } from './playback'
+import { duckEvents, regionPlayback, sweepEvents } from './playback'
 import type { Region } from './project'
 
 const region = (over: Partial<Region> = {}): Region => ({
@@ -58,5 +58,40 @@ describe('volumen en la unión', () => {
     expect(seamGainDb(tone(0.25), tone(0.5), 0.891)).toBeCloseTo(0, 1)
     expect(seamGainDb(tone(0.05), tone(0.8), 0.05)).toBe(6)
     expect(seamGainDb(tone(0), tone(0.5), 0.5)).toBe(0)
+  })
+})
+
+describe('automatización de filtros y sidechain', () => {
+  // A 120 BPM un pulso dura 0,5 s.
+  const sweep = [
+    { beat: 0, hz: 400 },
+    { beat: 8, hz: 20000 }
+  ]
+
+  it('un barrido desde el principio salta al primer valor y sube en curva', () => {
+    expect(sweepEvents(sweep, 120, 0)).toEqual([
+      { atSec: 0, value: 400, kind: 'set' },
+      { atSec: 4, value: 20000, kind: 'exp' }
+    ])
+  })
+
+  it('empezando a mitad, arranca en el valor de ese momento', () => {
+    const [first, ramp] = sweepEvents(sweep, 120, 2)
+    expect(first.value).toBeCloseTo(400 * Math.sqrt(50), 3) // a mitad en curva
+    expect(ramp).toEqual({ atSec: 2, value: 20000, kind: 'exp' })
+    // Pasado el último punto se queda en él.
+    expect(sweepEvents(sweep, 120, 10)).toEqual([{ atSec: 0, value: 20000, kind: 'set' }])
+  })
+
+  it('el sidechain baja en cada bombo y vuelve', () => {
+    const events = duckEvents({ beats: [1, 2], depthDb: 6, releaseSec: 0.2 }, 120, 0)
+    const low = Math.pow(10, -6 / 20)
+    expect(events[0]).toEqual({ atSec: 0, value: 1, kind: 'set' })
+    expect(events.slice(1, 4)).toEqual([
+      { atSec: 0.495, value: 1, kind: 'set' },
+      { atSec: 0.5, value: low, kind: 'linear' },
+      { atSec: 0.7, value: 1, kind: 'linear' }
+    ])
+    expect(events).toHaveLength(7)
   })
 })

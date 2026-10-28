@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import type { LocalEngineStatus } from '@shared/local-engine'
 import { buildMusicPrompt } from '@shared/prompt'
+import type { GenerationSpec } from '@shared/project'
 import { CancelledError, sleep, StallWatch, throwIfAborted, type AudioProvider } from './types'
 
 // Proveedor "Local": genera en este equipo a través del sidecar Python (MusicGen).
@@ -23,6 +24,16 @@ interface RemoteJob {
 }
 
 const MAX_SEC = 30
+
+/**
+ * Segundos que se piden: la duración más el margen para alinear al pulso, sin pasar
+ * del máximo del motor contando el audio de partida (nunca menos que la duración).
+ */
+export function requestedSeconds(spec: GenerationSpec): number {
+  const room = MAX_SEC - (spec.conditioning?.seconds ?? 0)
+  const wanted = Math.min(room, spec.durationSec + (spec.marginSec ?? 0))
+  return Math.min(MAX_SEC, Math.ceil(Math.max(spec.durationSec, wanted) * 10) / 10)
+}
 
 export function createLocalProvider(
   engine: LocalEngineHost,
@@ -76,7 +87,7 @@ export function createLocalProvider(
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             prompt: buildMusicPrompt(spec),
-            seconds: Math.min(MAX_SEC, Math.ceil(spec.durationSec * 10) / 10),
+            seconds: requestedSeconds(spec),
             seed: spec.seed === undefined ? null : spec.seed % 2 ** 31,
             model: await getModel(),
             // Continuar: el servidor recibe el fragmento de partida y devuelve lo nuevo,

@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { keepAcrossHmr } from './hot'
+import { alignClip, beatMarginSec } from '@shared/beat-align'
 import { conformAudio, seamGainDb } from '@shared/conform'
 import type { AppSettings, GenerationJob, ProviderId, ProviderInfo } from '@shared/generation'
 import {
@@ -176,6 +177,11 @@ export const useGeneration = keepAcrossHmr('useGeneration', () =>
         mode: input.mode ?? 'text',
         ...(input.conditioning && { conditioning: input.conditioning }),
         ...(input.conditioning && input.crossfadeSec && { crossfadeSec: input.crossfadeSec }),
+        // Música sin voz: un poco de audio de más para dejarla a tempo al terminar.
+        ...(!input.lyrics &&
+          input.role !== 'vocal' && {
+            marginSec: beatMarginSec(project.bpm, barsToSeconds(input.bars, project))
+          }),
         ...(input.lyrics && { lyrics: input.lyrics }),
         ...(input.lyricsLanguage && { lyricsLanguage: input.lyricsLanguage }),
         // Siempre guardamos una semilla: así cualquier clip se puede volver a generar igual.
@@ -282,7 +288,22 @@ async function finalize(jobId: string): Promise<void> {
     // de la región, fundiéndose con él (ver Region.leadInSec).
     const sr = decoded.sampleRate
     const leadIn = Math.min(job.leadInSec ?? 0, job.spec.durationSec / 2)
-    const channels = conformAudio(stereo, {
+    // A tempo y en fase: MusicGen no siempre toca al tempo pedido (ver beat-align.ts).
+    const aligned = job.spec.marginSec
+      ? alignClip(stereo, sr, {
+          bpm: job.spec.bpm,
+          leadInSec: leadIn,
+          needSec: job.spec.durationSec,
+          phase: !job.spec.conditioning
+        })
+      : { channels: stereo, fix: null }
+    if (aligned.fix) {
+      const { measuredBpm, ratio, shiftSec } = aligned.fix
+      console.info(
+        `Clip a tempo: tocó a ${measuredBpm.toFixed(1)} BPM (×${ratio.toFixed(3)}), ${Math.round(shiftSec * 1000)} ms hasta el primer pulso`
+      )
+    }
+    const channels = conformAudio(aligned.channels, {
       targetSec: job.spec.durationSec + leadIn,
       sampleRate: sr
     })

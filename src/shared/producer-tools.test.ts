@@ -8,6 +8,9 @@ import {
   type ProducerHost
 } from './producer-tools'
 import { barsToSeconds } from './prompt'
+import { drumPlan, findPattern, kickBeats } from './drums'
+import { withDrumTrack, withoutDrums } from './production'
+import { sectionsOf } from './sections'
 
 const demo: ProviderInfo = {
   id: 'demo',
@@ -672,6 +675,98 @@ describe('productor · canciones completas', () => {
     }
     expect(res.repaired).toEqual([{ section: 'Verso', start_bar: 9, bars: 8 }])
     expect(calls.filter((c) => c.atBeat === 32)).toHaveLength(2)
+  })
+
+  /** Batería en memoria: el plan real de drums.ts, con clips sin audio. */
+  function withFakeDrums(h: ReturnType<typeof fakeHost>) {
+    const applied: Parameters<NonNullable<ProducerHost['applyDrums']>>[0][] = []
+    h.host.applyDrums = async (opts) => {
+      applied.push(opts)
+      const p = h.state.project
+      const sections = sectionsOf(p)
+      const pattern = findPattern(opts.pattern)!
+      const hits = drumPlan(sections, 4, pattern, { intensity: opts.intensity })
+      const clips = sections.map((s) => ({
+        id: newId('clp'),
+        file: '',
+        durationSec: barsToSeconds(s.bars, p),
+        spec: null,
+        provider: 'drums'
+      }))
+      h.state.project = withDrumTrack(p, {
+        pattern: pattern.id,
+        intensity: opts.intensity ?? 0,
+        sections,
+        clips,
+        kicks: kickBeats(hits),
+        bedTrackId: opts.bedTrackId
+      })
+      return { trackId: h.state.project.tracks.find((t) => t.drums)!.id }
+    }
+    h.host.removeDrums = async () => {
+      h.state.project = withoutDrums(h.state.project)
+    }
+    return applied
+  }
+
+  const houseSong = {
+    style: 'groovy house, four-on-the-floor kick, bassline',
+    bpm: 124,
+    sections: [
+      { name: 'Intro', bars: 8, energy: 2, arrangement: 'kick and hats' },
+      { name: 'Coro', bars: 8, energy: 5, arrangement: 'full groove' },
+      { name: 'Verso', bars: 8, energy: 3, arrangement: 'bass and congas' },
+      { name: 'Coro', bars: 8, energy: 5, arrangement: 'full groove' }
+    ]
+  }
+
+  it('en house, compose_song pone batería programada, filtros y sidechain', async () => {
+    const h = fakeHost(createProject('X'))
+    chainable(h)
+    const applied = withFakeDrums(h)
+    await h.run('genre_guide', { genre: 'house' })
+    const res = (await h.run('compose_song', houseSong)) as { drums?: string }
+    expect(res.drums).toMatch(/house/)
+    const p = h.state.project
+    const drums = p.tracks.find((t) => t.drums)!
+    expect(drums.regions).toHaveLength(4)
+    const song = p.tracks.find((t) => t.name === 'Canción')!
+    expect(applied[0].bedTrackId).toBe(song.id)
+    expect(song.duck!.beats.length).toBeGreaterThan(0)
+    expect(song.sweeps!.lowpass![0]).toEqual({ beat: 0, hz: 500 })
+  })
+
+  it('con batería programada, el coro repetido reutiliza el primero', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    withFakeDrums(h)
+    await h.run('genre_guide', { genre: 'house' })
+    await h.run('compose_song', houseSong)
+    // El segundo coro (compás 25, pulso 96) no se graba: se copia.
+    expect(calls.some((c) => c.atBeat === 96)).toBe(false)
+    const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
+    expect(song.regions.some((r) => r.startBeat === 96)).toBe(true)
+    // Sin guía de un género con batería, se graba como siempre.
+    const plain = fakeHost(createProject('Y'))
+    const plainCalls = chainable(plain)
+    await plain.run('compose_song', houseSong)
+    expect(plainCalls.some((c) => c.atBeat === 96)).toBe(true)
+  })
+
+  it('set_drums cambia el patrón en segundos y "off" la quita', async () => {
+    const h = fakeHost(createProject('X'))
+    chainable(h)
+    withFakeDrums(h)
+    await h.run('genre_guide', { genre: 'house' })
+    await h.run('compose_song', houseSong)
+    const before = h.state.project.tracks.find((t) => t.drums)!
+    await h.run('set_drums', { pattern: 'techno', intensity: 1 })
+    const after = h.state.project.tracks.find((t) => t.drums)!
+    expect(after).toMatchObject({ id: before.id, drums: { pattern: 'techno', intensity: 1 } })
+    await h.run('set_drums', { pattern: 'off' })
+    expect(h.state.project.tracks.some((t) => t.drums)).toBe(false)
+    expect(h.state.project.tracks.find((t) => t.name === 'Canción')!.duck).toBeUndefined()
+    await expect(h.run('set_drums', { pattern: 'polka' })).rejects.toThrow(/No existe el patrón/)
   })
 
   it('redo_sections rehace solo esas secciones, continuando lo que suena antes', async () => {
