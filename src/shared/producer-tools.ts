@@ -10,6 +10,7 @@ import {
   loopBars,
   parseSongSpec,
   planChunks,
+  bedText,
   polishSong,
   reviewProject,
   sameName,
@@ -520,7 +521,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       return best
     }
     const queue: (ChunkStep & { repair?: boolean })[] = [...run.steps]
-    const total = queue.filter((s) => s.kind === 'generate').length
+    let total = queue.filter((s) => s.kind === 'generate').length
     const started = Date.now()
     let finished = 0
     while (queue.length > 0) {
@@ -529,6 +530,15 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       const section = sections[step.section]
       if (step.kind === 'reuse') {
         const src = sections[step.from]
+        // Copiar una sección que se quedó atascada repetiría el fallo en cada coro
+        // (test8: un coro casi mudo, tres veces): se graba de nuevo.
+        const inSrc = (bar: number): boolean => bar >= src.startBar && bar < src.startBar + src.bars
+        const stuck = [...drone, ...failed].some((d) => inSrc(d.start_bar))
+        if (stuck && step.fallback.length > 0) {
+          queue.unshift(...step.fallback)
+          total += step.fallback.length
+          continue
+        }
         await commit(
           copySectionInto(host.getProject(), src.id, section.id),
           `${section.name}: repite ${src.name}`
@@ -1256,6 +1266,10 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         )
         const steps: ChunkStep[] = []
         const doomed = new Set<string>()
+        // Con batería programada, la parte nueva se pide sin percusión (ver bedText),
+        // aunque la vieja se grabara con ella.
+        const bed = (prompt: string): string =>
+          p.tracks.some((t) => t.drums) ? bedText(prompt) : prompt
         for (const s of targets) {
           const a = beatOfBar(p, s.startBar)
           const b = beatOfBar(p, s.startBar + s.bars)
@@ -1272,7 +1286,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
               section: all.indexOf(s),
               startBar: s.startBar + k * bars,
               bars: Math.min(bars, s.bars - k * bars),
-              prompt: prompts[k] ?? prompts.at(-1) ?? fallback
+              prompt: bed(prompts[k] ?? prompts.at(-1) ?? fallback)
             })
           }
         }

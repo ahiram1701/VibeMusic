@@ -42,16 +42,19 @@ export interface SongSpec {
 }
 
 /** Un paso de la composición: generar un tramo o repetir una sección ya hecha. */
+export interface GenerateStep {
+  kind: 'generate'
+  section: number
+  /** Compás (1 = primero) donde empieza el tramo. */
+  startBar: number
+  bars: number
+  prompt: string
+}
+
 export type ChunkStep =
-  | {
-      kind: 'generate'
-      section: number
-      /** Compás (1 = primero) donde empieza el tramo. */
-      startBar: number
-      bars: number
-      prompt: string
-    }
-  | { kind: 'reuse'; section: number; from: number }
+  | GenerateStep
+  /** Copia la sección `from`; si salió atascada, se graban `fallback` en su lugar. */
+  | { kind: 'reuse'; section: number; from: number; fallback: GenerateStep[] }
 
 type Input = Record<string, unknown>
 
@@ -292,13 +295,14 @@ export function clampWords(text: string, max: number): string {
 
 /**
  * Lo que tiene que seguir sonando según la energía (MusicGen no entiende el número).
- * Con batería programada, la calma de la intro y el outro la pone la batería: pedirle
- * "soft" a la cama la oscurece hasta el drone (test7: la intro se quedó en un zumbido).
+ * Con batería programada, el ritmo lo pone la batería: la cama pide el pulso con el
+ * bajo ("groove"), sin "drums" (ver withoutPercussion).
  */
 export function energyHint(energy: number | null, { drums = false } = {}): string {
   if (energy !== null && energy <= 2) return drums ? 'groove' : 'soft drums, groove'
-  if (energy !== null && energy >= 4) return 'energetic, full drums'
-  return 'steady beat'
+  if (energy !== null && energy >= 4)
+    return drums ? 'energetic, full groove' : 'energetic, full drums'
+  return drums ? 'steady groove' : 'steady beat'
 }
 
 /**
@@ -316,18 +320,50 @@ export function withoutFilterWords(text: string): string {
     .join(', ')
 }
 
+/** Instrumentos de percusión (y sus giros: "four-on-the-floor", "drum fill"…). */
+const PERCUSSION =
+  /\b(kicks?|drums?|percussion|cowbells?|congas?|bongos?|claps?|hi-?hats?|hats?|shakers?|snares?|cymbals?|crash|rims?(hot)?|toms?|four-on-the-floor|808s?|beats?)\b/i
+
+/**
+ * Con batería programada, la cama no pide percusión: con "kick, metallic percussion,
+ * cowbell, congas" MusicGen tocaba solo eso y, sin bajo ni sintes, se vaciaba en
+ * unos hats débiles (test8: 5 de 11 tramos), y encima la batería ya lo toca. Quita
+ * cada trozo (entre comas, "and" o "with") que nombre percusión y deja el resto:
+ * "kick and rolling bassline" → "rolling bassline".
+ */
+export function withoutPercussion(text: string): string {
+  return text
+    .split(',')
+    .map((phrase) =>
+      phrase
+        .split(/\s+(?:and|with|&|\+)\s+/i)
+        .map((p) => p.trim())
+        .filter((p) => p && !PERCUSSION.test(p))
+        .join(' and ')
+    )
+    .filter(Boolean)
+    .join(', ')
+}
+
+/** Prompt de la cama cuando la batería es programada: sin filtros ni percusión. */
+export function bedText(text: string): string {
+  return withoutPercussion(withoutFilterWords(text))
+}
+
 /** Transición al final de una sección, según cómo cambia la energía. */
-function transitionOut(from: number | null, to: number | null): string {
-  if (from !== null && to !== null && to > from) return 'build-up and drum fill at the end'
-  return 'drum fill at the end'
+function transitionOut(from: number | null, to: number | null, drums: boolean): string {
+  const rising = from !== null && to !== null && to > from
+  if (drums) return rising ? 'build-up at the end' : ''
+  return rising ? 'build-up and drum fill at the end' : 'drum fill at the end'
 }
 
 /**
  * Pasos para componer la canción: cada sección en tramos de `bars` compases (el
  * último puede ser más corto), con transiciones automáticas en los bordes. Las
- * secciones con `reuse` copian la anterior del mismo nombre. Todo tramo generado
- * continúa al que suena antes que él: escuchar otra parte de la canción daría un
- * cambio en seco en la unión.
+ * secciones con `reuse` copian la anterior del mismo nombre; por si esa salió
+ * atascada, llevan también sus tramos (`fallback`) para grabarla de nuevo. Todo tramo
+ * generado continúa al que suena antes que él: escuchar otra parte de la canción
+ * daría un cambio en seco en la unión.
  */
 export function planChunks(
   spec: SongSpec,
@@ -336,38 +372,43 @@ export function planChunks(
 ): ChunkStep[] {
   const drums = tempo.drums ?? false
   const steps: ChunkStep[] = []
-  const style = clampWords(spec.style, STYLE_WORDS)
+  const style = clampWords(drums ? bedText(spec.style) : spec.style, STYLE_WORDS)
   const tail = [tempo.bpm ? `${Math.round(tempo.bpm)} bpm` : '', tempo.key ?? ''].filter(Boolean)
+  /** Tramos de la sección `i` sonando como `like` (ella misma, o la que repite). */
+  const generateSteps = (
+    i: number,
+    like: SongSpec['sections'][number],
+    startBar: number
+  ): GenerateStep[] => {
+    const next = spec.sections[i + 1]
+    const s = spec.sections[i]
+    const count = Math.ceil(s.bars / bars)
+    const arrangement = drums ? bedText(like.arrangement) : like.arrangement
+    return Array.from({ length: count }, (_, k) => {
+      const hints: string[] = [energyHint(like.energy, { drums }), ...tail]
+      if (k === 0 && i === 0) hints.unshift('intro')
+      // La transición va al final: es lo último que suena en el tramo.
+      if (k === count - 1)
+        hints.push(next ? transitionOut(like.energy, next.energy, drums) : 'fade out ending')
+      return {
+        kind: 'generate' as const,
+        section: i,
+        startBar: startBar + k * bars,
+        bars: Math.min(bars, s.bars - k * bars),
+        prompt: [style, clampWords(arrangement, ARRANGEMENT_WORDS), ...hints]
+          .filter(Boolean)
+          .join(', ')
+      }
+    })
+  }
   let startBar = 1
   spec.sections.forEach((s, i) => {
     if (s.reuse) {
       const from = spec.sections.findIndex((o, j) => j < i && sameName(o.name, s.name))
-      steps.push({ kind: 'reuse', section: i, from })
-      startBar += s.bars
-      return
-    }
-    const next = spec.sections[i + 1]
-    const count = Math.ceil(s.bars / bars)
-    for (let k = 0; k < count; k++) {
-      const len = Math.min(bars, s.bars - k * bars)
-      const hints: string[] = [energyHint(s.energy, { drums }), ...tail]
-      if (k === 0 && i === 0) hints.unshift('intro')
-      // La transición va al final: es lo último que suena en el tramo.
-      if (k === count - 1)
-        hints.push(next ? transitionOut(s.energy, next.energy) : 'fade out ending')
-      steps.push({
-        kind: 'generate',
-        section: i,
-        startBar: startBar + k * bars,
-        bars: len,
-        prompt: [
-          style,
-          clampWords(drums ? withoutFilterWords(s.arrangement) : s.arrangement, ARRANGEMENT_WORDS),
-          ...hints
-        ]
-          .filter(Boolean)
-          .join(', ')
-      })
+      const fallback = from >= 0 ? generateSteps(i, spec.sections[from], startBar) : []
+      steps.push({ kind: 'reuse', section: i, from, fallback })
+    } else {
+      steps.push(...generateSteps(i, s, startBar))
     }
     startBar += s.bars
   })

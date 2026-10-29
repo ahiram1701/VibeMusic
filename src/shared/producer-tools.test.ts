@@ -753,7 +753,7 @@ describe('productor · canciones completas', () => {
     expect(plainCalls.some((c) => c.atBeat === 96)).toBe(true)
   })
 
-  it('con batería, la cama no se pide "filtered" ni "soft" (lo hace la mezcla)', async () => {
+  it('con batería, la cama no pide filtro ni percusión (lo hacen la mezcla y la batería)', async () => {
     const h = fakeHost(createProject('X'))
     const calls = chainable(h)
     withFakeDrums(h)
@@ -761,13 +761,39 @@ describe('productor · canciones completas', () => {
     await h.run('compose_song', {
       ...houseSong,
       sections: [
-        { ...houseSong.sections[0], arrangement: 'filtered kick and metallic percussion' },
+        {
+          ...houseSong.sections[0],
+          arrangement: 'filtered kick and metallic percussion, distorted stab'
+        },
         ...houseSong.sections.slice(1)
       ]
     })
-    const prompts = [...h.generated.map((g) => g.prompt), ...calls.map((c) => c.prompt)]
-    expect(h.generated[0].prompt).toMatch(/kick and metallic percussion, intro, groove/)
-    expect(prompts.some((t) => /filtered|soft drums/.test(t ?? ''))).toBe(false)
+    // El estilo de la guía de house también pierde su bombo y sus hats.
+    expect(h.generated[0].prompt).toBe(
+      'house music, groovy bassline, piano chords, distorted stab, intro, groove, 124 bpm, C minor, build-up at the end'
+    )
+    const prompts = [...h.generated.map((g) => g.prompt), ...calls.map((c) => c.prompt ?? '')]
+    for (const t of prompts) expect(t).not.toMatch(/filtered|kick|percussion|drum|soft/)
+  })
+
+  it('con batería, un coro que salió atascado no se repite: se graba otra vez', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    withFakeDrums(h)
+    // El primer coro (pulso 32) se queda en drone, también al repararlo.
+    h.host.inspectRegion = async (regionId) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      return { collapseAtSec: r.startBeat === 32 ? 0 : null }
+    }
+    await h.run('genre_guide', { genre: 'house' })
+    const res = (await h.run('compose_song', houseSong)) as { drone: { start_bar: number }[] }
+    expect(res.drone).toEqual([expect.objectContaining({ start_bar: 9 })])
+    // El segundo coro (pulso 96) se graba en vez de copiar el atascado.
+    expect(calls.some((c) => c.atBeat === 96)).toBe(true)
+    const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
+    const at96 = song.regions.filter((r) => r.startBeat === 96)
+    expect(at96).toHaveLength(1)
+    expect(at96[0].clipId).not.toBe(song.regions.find((r) => r.startBeat === 32)!.clipId)
   })
 
   it('con batería, la revisión no marca lo que la batería tapa', async () => {

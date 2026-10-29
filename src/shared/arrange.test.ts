@@ -17,6 +17,8 @@ import {
   trackBusy,
   vocalSongRequest,
   withoutFilterWords,
+  withoutPercussion,
+  bedText,
   type ChunkStep
 } from './arrange'
 import { createProject, createTrack, type Project, type Region } from './project'
@@ -405,5 +407,57 @@ describe('cama con batería programada', () => {
     expect(withoutFilterWords('lowpassed, bass')).toBe('bass')
     expect(energyHint(2, { drums: true })).toBe('groove')
     expect(energyHint(2)).toBe('soft drums, groove')
+  })
+})
+
+describe('cama sin percusión', () => {
+  it('quita los trozos que nombran percusión y deja el resto', () => {
+    expect(withoutPercussion('kick and rolling bassline, congas, distorted synth stabs')).toBe(
+      'rolling bassline, distorted synth stabs'
+    )
+    expect(
+      withoutPercussion('tech house, punchy four-on-the-floor kick, metallic percussion, cowbell')
+    ).toBe('tech house')
+    expect(withoutPercussion('full groove, synth riff with claps, energetic, full drums')).toBe(
+      'full groove, synth riff, energetic'
+    )
+    expect(bedText('filtered kick and metallic percussion, muffled pad')).toBe('pad')
+  })
+
+  it('con batería, la energía y las transiciones se piden sin batería', () => {
+    expect(energyHint(5, { drums: true })).toBe('energetic, full groove')
+    expect(energyHint(3, { drums: true })).toBe('steady groove')
+    const steps = planChunks(
+      parseSongSpec(
+        song({
+          sections: [
+            { name: 'Intro', bars: 8, energy: 2, arrangement: 'kick and pad' },
+            { name: 'Coro', bars: 8, energy: 5, arrangement: 'acid lead, claps' },
+            { name: 'Coro', bars: 8, reuse: true }
+          ]
+        })
+      ),
+      8,
+      { bpm: 128, drums: true }
+    )
+    const [intro, coro, again] = steps
+    expect(intro).toMatchObject({
+      prompt: 'dark techno, pad, intro, groove, 128 bpm, build-up at the end'
+    })
+    expect(coro).toMatchObject({
+      prompt: 'dark techno, acid lead, energetic, full groove, 128 bpm'
+    })
+    // La repetición lleva, por si acaso, los tramos para grabarla igual que la original.
+    expect(again).toMatchObject({
+      kind: 'reuse',
+      from: 1,
+      fallback: [
+        {
+          startBar: 17,
+          bars: 8,
+          prompt: 'dark techno, acid lead, energetic, full groove, 128 bpm, fade out ending'
+        }
+      ]
+    })
   })
 })
