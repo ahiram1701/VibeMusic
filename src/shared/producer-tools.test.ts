@@ -681,25 +681,70 @@ describe('productor · canciones completas', () => {
     expect(tries[1]).toMatchObject({ from: at(32), crossfade: true })
   })
 
-  it('compose_song repara desde la última región sana si la anterior quedó atascada', async () => {
+  it('compose_song continúa desde la última región sana si la anterior quedó atascada', async () => {
     const h = fakeHost(createProject('X'))
     const calls = chainable(h)
-    let chorusStuck = true
+    // El primer tramo del verso (beat 32) se atasca siempre y no hay compases sanos del
+    // verso con que taparlo: se queda.
     h.host.inspectRegion = async (regionId) => {
       const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
-      // El beat 64 se atasca siempre (su reparación se queda); el coro, la primera vez.
-      if (r.startBeat === 64) return { collapseAtSec: 0 }
-      const collapse = r.startBeat === 96 && chorusStuck ? 0 : null
-      if (r.startBeat === 96) chorusStuck = false
-      return { collapseAtSec: collapse }
+      return { collapseAtSec: r.startBeat === 32 ? 0 : null }
     }
-    await h.run('compose_song', songInput)
+    const res = (await h.run('compose_song', songInput)) as Repaired
+    expect(res.drone).toEqual([{ section: 'Verso', start_bar: 9 }])
     const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
-    const at = (beat: number): string => song.regions.find((r) => r.startBeat === beat)!.id
-    const tries = calls.filter((c) => c.atBeat === 96)
-    expect(tries[0]).toMatchObject({ from: at(64), crossfade: true })
-    // No escucha el final atascado del beat 64, sino el último sano (beat 32), sin fundirse.
-    expect(tries[1]).toMatchObject({ from: at(32), crossfade: false })
+    const intro = song.regions.find((r) => r.startBeat === 0)!.id
+    // El tramo siguiente no escucha ese final atascado, sino la intro, sin fundirse.
+    expect(calls.find((c) => c.atBeat === 64)).toMatchObject({ from: intro, crossfade: false })
+  })
+
+  it('compose_song no continúa un tramo que termina apagado', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    const sound = (head: number, tail: number) => ({
+      head: { db: head, highDb: -15, pulseDb: 5 },
+      tail: { db: tail, highDb: -15, pulseDb: 5 },
+      mean: { db: head, highDb: -15, pulseDb: 5 },
+      staticRun: null,
+      opening: [head, head, head, head, head, head]
+    })
+    // El tramo del beat 32 acaba 18 dB por debajo de como empezó (test11: el break).
+    h.host.inspectRegion = async (regionId) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      return { collapseAtSec: null, sound: r.startBeat === 32 ? sound(-20, -38) : sound(-20, -20) }
+    }
+    const res = (await h.run('compose_song', songInput)) as Repaired
+    expect(res.repaired).toBeUndefined()
+    const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
+    const intro = song.regions.find((r) => r.startBeat === 0)!.id
+    expect(calls.find((c) => c.atBeat === 64)).toMatchObject({ from: intro, crossfade: false })
+  })
+
+  it('compose_song repara como mucho cuatro tramos', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    // Todo tramo entero se atasca a la mitad (la intro no); las reparaciones salen bien.
+    h.host.inspectRegion = async (regionId) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      return { collapseAtSec: r.startBeat > 0 && r.lengthSec > 10 ? 8 : null }
+    }
+    const part = (name: string, energy: number) => ({ name, bars: 8, energy, arrangement: 'bass' })
+    const res = (await h.run('compose_song', {
+      ...songInput,
+      sections: [
+        part('Intro', 2),
+        part('Verso', 3),
+        part('Coro', 5),
+        part('Puente', 3),
+        part('Break', 2),
+        part('Subida', 4),
+        part('Outro', 2)
+      ]
+    })) as Repaired
+    expect(res.repaired).toHaveLength(4)
+    // Pasado el tope no se vuelve a grabar: la subida y el outro se quedan como están.
+    expect(res.drone?.map((d) => d.section)).toEqual(['Subida', 'Outro'])
+    expect(calls).toHaveLength(6 + 4)
   })
 
   it('compose_song regenera un tramo que empieza con un hueco tras la unión', async () => {

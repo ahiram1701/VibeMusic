@@ -8,6 +8,7 @@ import {
   type Track,
   type TrackRole
 } from './project'
+import { THIN_DB, THIN_HIGH_DB } from './drone'
 import { lyricsLanguages } from './lyrics-language'
 import { sectionsOf } from './sections'
 
@@ -345,9 +346,41 @@ export function withoutPercussion(text: string): string {
     .join(', ')
 }
 
-/** Prompt de la cama cuando la batería es programada: sin filtros ni percusión. */
+/**
+ * Palabras que hunden la cama en un zumbido grave. Con batería programada no hay
+ * percusión en el prompt que las equilibre (test11: "industrial …, low rolling
+ * bassline" perdió los agudos a mitad de la subida y el drop salió zumbido dos veces).
+ */
+const DRONE_WORDS =
+  /\b(industrial|dark|low|deep|sub|rumbling|ambient|atmospheric|cinematic|drone|droning)\b/gi
+
+/** Prompt de la cama cuando la batería es programada: sin filtros, percusión ni graves. */
 export function bedText(text: string): string {
   return withoutPercussion(withoutFilterWords(text))
+    .split(',')
+    .map((p) => p.replace(DRONE_WORDS, '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join(', ')
+}
+
+/**
+ * Quita del arreglo lo que ya dice el estilo: "rolling bassline" en los dos pedía el
+ * bajo dos veces en cada tramo y la cama se iba al grave.
+ */
+export function withoutStyleRepeats(arrangement: string, style: string): string {
+  const norm = (t: string): string => t.toLowerCase().replace(/\s+/g, ' ').trim()
+  const said = new Set(style.split(',').map(norm))
+  return arrangement
+    .split(',')
+    .map((phrase) =>
+      phrase
+        .split(/\s+and\s+/i)
+        .map((p) => p.trim())
+        .filter((p) => p && !said.has(norm(p)))
+        .join(' and ')
+    )
+    .filter(Boolean)
+    .join(', ')
 }
 
 /** Transición al final de una sección, según cómo cambia la energía. */
@@ -383,7 +416,9 @@ export function planChunks(
     const next = spec.sections[i + 1]
     const s = spec.sections[i]
     const count = Math.ceil(s.bars / bars)
-    const arrangement = drums ? bedText(like.arrangement) : like.arrangement
+    const arrangement = drums
+      ? withoutStyleRepeats(bedText(like.arrangement), style)
+      : like.arrangement
     return Array.from({ length: count }, (_, k) => {
       const hints: string[] = [energyHint(like.energy, { drums }), ...tail]
       if (k === 0 && i === 0) hints.unshift('intro')
@@ -537,6 +572,8 @@ export const MAX_CUT_DB = 6
 const MAX_SHIFT_DB = 3
 /** Diferencias menores no se tocan: ya suenan parejas. */
 const MIN_CHANGE_DB = 1.5
+/** Salto de volumen en una unión que la mezcla puede dejar sin que se oiga como un corte. */
+const SEAM_DB = 6
 
 /**
  * Ganancia de cada región para que las secciones suenen según su energía. Cada tramo
@@ -545,6 +582,11 @@ const MIN_CHANGE_DB = 1.5
  * se repetía tres veces). Como un ingeniero de mezcla, se sube o baja la sección hacia
  * el volumen típico de la canción (la mediana; una sección repetida cuenta una vez) más
  * un dB por punto de energía. `db`: volumen medio de la región tal como sale del clip.
+ *
+ * Dos excepciones (test11): una sección bajita y de puros agudos es siseo, no música, y
+ * no se sube (se oiría más); y la ganancia no agranda el salto de una unión entre
+ * secciones más allá de SEAM_DB (o del que ya tenía), con `headDb`/`tailDb` de cada
+ * región: el break a −4 y el verso a +6 dejaban una unión de +17 dB.
  */
 export function sectionGains(
   sections: { name?: string; startBar: number; bars: number; energy?: number }[],
@@ -555,6 +597,9 @@ export function sectionGains(
     startBeat: number
     lengthSec: number
     db: number
+    highDb?: number
+    headDb?: number
+    tailDb?: number
   }[],
   beatsPerBar: number
 ): Map<string, number> {
@@ -568,15 +613,23 @@ export function sectionGains(
     .map((s) => {
       const a = (s.startBar - 1) * beatsPerBar
       const b = a + s.bars * beatsPerBar
-      const inside = regions.filter((r) => r.startBeat >= a - 0.05 && r.startBeat < b - 0.05)
+      const inside = regions
+        .filter((r) => r.startBeat >= a - 0.05 && r.startBeat < b - 0.05)
+        .sort((x, y) => x.startBeat - y.startBeat)
       const weight = inside.reduce((n, r) => n + r.lengthSec, 0)
       if (weight <= 0) return null
       const power = inside.reduce((n, r) => n + Math.pow(10, r.db / 10) * r.lengthSec, 0)
+      // Agudos respecto al total, ponderados por la potencia de cada región.
+      const high = inside.every((r) => r.highDb !== undefined)
+        ? inside.reduce((n, r) => n + Math.pow(10, (r.db + r.highDb!) / 10) * r.lengthSec, 0)
+        : null
       const key = inside
         .map((r) => `${r.clipId}@${r.offsetSec.toFixed(2)}`)
         .sort()
         .join(' ')
-      return { energy: energyOf(s), inside, key, db: 10 * Math.log10(power / weight) }
+      const db = 10 * Math.log10(power / weight)
+      const hiss = high !== null && db < THIN_DB && 10 * Math.log10(high / power) > THIN_HIGH_DB
+      return { energy: energyOf(s), inside, key, db, hiss, a, b }
     })
     .filter((m) => m !== null)
   const gains = new Map<string, number>()
@@ -585,11 +638,36 @@ export function sectionGains(
   const typical = distinct[Math.floor(distinct.length / 2)]
   const wanted = measured.map((m) => typical + (m.energy - 3) * LEVEL_STEP_DB - m.db)
   const shift = Math.min(MAX_SHIFT_DB, Math.max(0, Math.max(...wanted) - MAX_BOOST_DB))
+  const clamp = (g: number): number => Math.max(-MAX_CUT_DB, Math.min(MAX_BOOST_DB, g))
+  const byKey = new Map<string, number>()
   measured.forEach((m, i) => {
-    const g = Math.max(-MAX_CUT_DB, Math.min(MAX_BOOST_DB, wanted[i] - shift))
+    const g = clamp(wanted[i] - shift)
+    byKey.set(m.key, m.hiss ? Math.min(0, g) : g)
+  })
+  // Uniones entre secciones seguidas: si la ganancia agranda el salto, se acerca a 0 la
+  // de la sección que más se movió. Unas pasadas bastan (una sección repetida comparte
+  // ganancia en todas sus uniones).
+  for (let pass = 0; pass < 3; pass++) {
+    for (let i = 1; i < measured.length; i++) {
+      const [x, y] = [measured[i - 1], measured[i]]
+      const [prev, next] = [x.inside[x.inside.length - 1], y.inside[0]]
+      if (x.key === y.key || Math.abs(x.b - y.a) > 0.05) continue
+      if (prev.tailDb === undefined || next.headDb === undefined) continue
+      const jump = next.headDb - prev.tailDb
+      const [gx, gy] = [byKey.get(x.key)!, byKey.get(y.key)!]
+      const heard = jump + gy - gx
+      const excess = Math.abs(heard) - Math.max(Math.abs(jump), SEAM_DB)
+      if (excess <= 0) continue
+      const dir = Math.sign(heard)
+      if (Math.abs(gy) >= Math.abs(gx)) byKey.set(y.key, clamp(gy - dir * excess))
+      else byKey.set(x.key, clamp(gx + dir * excess))
+    }
+  }
+  for (const m of measured) {
+    const g = byKey.get(m.key)!
     const rounded = Math.abs(g) < MIN_CHANGE_DB ? 0 : Math.round(g * 2) / 2
     for (const r of m.inside) gains.set(r.id, rounded)
-  })
+  }
   return gains
 }
 

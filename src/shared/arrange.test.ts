@@ -22,6 +22,7 @@ import {
   withoutPercussion,
   bedText,
   withRegionGains,
+  withoutStyleRepeats,
   type ChunkStep
 } from './arrange'
 import { createProject, createTrack, type Project, type Region } from './project'
@@ -427,6 +428,19 @@ describe('cama sin percusión', () => {
     expect(bedText('filtered kick and metallic percussion, muffled pad')).toBe('pad')
   })
 
+  it('la cama no pide graves que la hunden ni repite el estilo (test11)', () => {
+    expect(bedText('industrial tech house, distorted synth stabs, low rolling bassline')).toBe(
+      'tech house, distorted synth stabs, rolling bassline'
+    )
+    const style = 'tech house, distorted synth stabs, rolling bassline, acid synth riff'
+    expect(withoutStyleRepeats('acid synth riff and rolling bassline, simpler', style)).toBe(
+      'simpler'
+    )
+    expect(withoutStyleRepeats('full groove, Rolling  bassline, acid riff', style)).toBe(
+      'full groove, acid riff'
+    )
+  })
+
   it('con batería, la energía y las transiciones se piden sin batería', () => {
     expect(energyHint(5, { drums: true })).toBe('energetic, full groove')
     expect(energyHint(3, { drums: true })).toBe('steady groove')
@@ -445,10 +459,10 @@ describe('cama sin percusión', () => {
     )
     const [intro, coro, again] = steps
     expect(intro).toMatchObject({
-      prompt: 'dark techno, pad, intro, groove, 128 bpm, build-up at the end'
+      prompt: 'techno, pad, intro, groove, 128 bpm, build-up at the end'
     })
     expect(coro).toMatchObject({
-      prompt: 'dark techno, acid lead, energetic, full groove, 128 bpm'
+      prompt: 'techno, acid lead, energetic, full groove, 128 bpm'
     })
     // La repetición lleva, por si acaso, los tramos para grabarla igual que la original.
     expect(again).toMatchObject({
@@ -458,7 +472,7 @@ describe('cama sin percusión', () => {
         {
           startBar: 17,
           bars: 8,
-          prompt: 'dark techno, acid lead, energetic, full groove, 128 bpm, fade out ending'
+          prompt: 'techno, acid lead, energetic, full groove, 128 bpm, fade out ending'
         }
       ]
     })
@@ -520,6 +534,39 @@ describe('mezcla por sección', () => {
   it('una canción ya pareja no se toca', () => {
     const even = regions.map((r, i) => ({ ...r, clipId: `c${i}`, db: -18 + (plan[i].energy - 3) }))
     expect([...sectionGains(plan, even, 4).values()].every((g) => g === 0)).toBe(true)
+  })
+
+  it('no sube el siseo: una sección bajita y de puros agudos se queda', () => {
+    const g = sectionGains(
+      plan.slice(0, 3),
+      [
+        { ...at(1, 'intro', -18), highDb: -20 },
+        { ...at(9, 'verso', -18), highDb: -20 },
+        { ...at(17, 'coro', -30), highDb: -6 }
+      ],
+      4
+    )
+    expect(g.get('r17')).toBe(0)
+  })
+
+  it('la ganancia no agranda una unión (test11: break a −4 y verso a +6)', () => {
+    const sections = [
+      { startBar: 1, bars: 8, energy: 5 },
+      { startBar: 9, bars: 8, energy: 2 },
+      { startBar: 17, bars: 8, energy: 3 }
+    ]
+    const g = sectionGains(
+      sections,
+      [
+        { ...at(1, 'drop', -14), headDb: -14, tailDb: -14 },
+        { ...at(9, 'break', -15), headDb: -14, tailDb: -38 },
+        { ...at(17, 'verso', -31), headDb: -29, tailDb: -30 }
+      ],
+      4
+    )
+    const heard = -29 + g.get('r17')! - (-38 + g.get('r9')!)
+    // El salto crudo era de 9 dB: la mezcla no lo empeora.
+    expect(heard).toBeLessThanOrEqual(9)
   })
 
   it('pone y quita la ganancia de las regiones', () => {

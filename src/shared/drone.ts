@@ -47,14 +47,19 @@ export interface CollapseOptions {
   fadeDb?: number
 }
 
+/** Un segundo más bajo que esto (dBFS) y con más agudos que THIN_HIGH_DB está vacío. */
+export const THIN_DB = -25
+/** Nivel de agudos (dB respecto al total) a partir del cual un segundo bajito está vacío. */
+export const THIN_HIGH_DB = -10
+
 const DEFAULTS: Required<CollapseOptions> = {
   minRunSec: 4,
   minTailSec: 2,
   silenceDb: -45,
   highDbMin: -32,
   pulseMin: 1,
-  thinDb: -25,
-  thinHighDb: -10,
+  thinDb: THIN_DB,
+  thinHighDb: THIN_HIGH_DB,
   ignoreTailSec: 0,
   fadeDb: 9
 }
@@ -201,6 +206,16 @@ export interface SoundSummary {
   staticRun: { startSec: number; sec: number } | null
   /** Volumen (dBFS) de los primeros cuartos de segundo, para ver un hueco al empezar. */
   opening: number[]
+}
+
+/**
+ * ¿Termina apagado? Su último segundo suena `dropDb` por debajo del primero. Un tramo
+ * corto (una reparación de 3 compases) no llega a los segundos que pide la regla de
+ * findCollapse, y el siguiente nacía de ese final vacío (test11: el break acabó a
+ * −38 dB y el verso que lo continuaba salió siseo, y con él el resto de la canción).
+ */
+export function fadedEnd(sound: SoundSummary, dropDb = DEFAULTS.fadeDb): boolean {
+  return sound.tail.db < sound.head.db - dropDb
 }
 
 /** Cuartos de segundo del principio que mira `hasStartGap` (1,5 s). */
