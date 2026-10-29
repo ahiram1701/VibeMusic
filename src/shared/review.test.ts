@@ -70,6 +70,29 @@ describe('revisión de la canción', () => {
     ])
   })
 
+  it('un coro apagado repetido tres veces se marca igual (cuenta una vez)', () => {
+    const plan = [
+      { name: 'Verso', startBar: 1, bars: 8 },
+      { name: 'Coro', startBar: 9, bars: 8 },
+      { name: 'Verso', startBar: 17, bars: 8 },
+      { name: 'Coro', startBar: 25, bars: 8 },
+      { name: 'Coro', startBar: 33, bars: 8 }
+    ]
+    const coro = (beat: number) => region(beat, -29, { source: 'coro@0.50' })
+    const review = reviewSong(
+      plan,
+      [
+        region(0, -19, { source: 'v1' }),
+        coro(32),
+        region(64, -19, { source: 'v2' }),
+        coro(96),
+        coro(128)
+      ],
+      4
+    )
+    expect(review.issues.filter((x) => x.type === 'faded')).toHaveLength(3)
+  })
+
   it('sin energía planificada no juzga la curva', () => {
     const plain = sections.map((s) => ({ name: s.name, startBar: s.startBar, bars: s.bars }))
     expect(reviewSong(plain, [region(0, -14), region(32, -16)], 4).issues).toEqual([])

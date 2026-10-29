@@ -538,6 +538,54 @@ describe('productor · canciones completas', () => {
     expect(res.drone).toEqual([{ section: 'Verso', start_bar: 9 }])
   })
 
+  it('compose_song tapa con compases sanos de la sección un tramo que se atasca dos veces', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    // La segunda mitad del verso (pulso 64) se calla siempre, también al repararla.
+    h.host.inspectRegion = async (regionId) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      return { collapseAtSec: r.startBeat === 64 ? 0 : null }
+    }
+    const res = (await h.run('compose_song', songInput)) as Repaired & {
+      filled?: { section: string; start_bar: number; bars: number }[]
+    }
+    expect(calls.filter((c) => c.atBeat === 64)).toHaveLength(2)
+    expect(res.drone).toBeUndefined()
+    expect(res.filled).toEqual([{ section: 'Verso', start_bar: 17, bars: 8 }])
+    const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
+    const at64 = song.regions.filter((r) => r.startBeat === 64)
+    expect(at64).toHaveLength(1)
+    expect(at64[0].clipId).toBe(song.regions.find((r) => r.startBeat === 32)!.clipId)
+    // El coro continúa desde el loop, no desde el tramo atascado.
+    expect(calls.find((c) => c.atBeat === 96)!.from).toBe(at64[0].id)
+  })
+
+  it('compose_song iguala el volumen: un coro apagado sube', async () => {
+    const h = fakeHost(createProject('X'))
+    chainable(h)
+    const level = (db: number) => ({
+      head: { db, highDb: -15, pulseDb: 5 },
+      tail: { db, highDb: -15, pulseDb: 5 },
+      mean: { db, highDb: -15, pulseDb: 5 },
+      staticRun: null,
+      opening: [db, db, db]
+    })
+    h.host.inspectRegion = async (regionId) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      return { collapseAtSec: null, sound: level(r.startBeat >= 96 ? -29 : -19) }
+    }
+    const res = (await h.run('compose_song', songInput)) as Composed & {
+      review: { sections: { name: string; level_db: number }[] }
+    }
+    const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
+    const coro = song.regions.filter((r) => r.startBeat >= 96)
+    expect(coro.length).toBeGreaterThan(0)
+    for (const r of coro) expect(r.gainDb).toBeGreaterThan(0)
+    // La revisión oye la mezcla: el coro ya no queda 10 dB por debajo.
+    const coroDb = res.review.sections.find((x) => x.name === 'Coro')!.level_db
+    expect(coroDb).toBeGreaterThan(-25)
+  })
+
   it('genre_guide sigue la fusión que pidió el usuario aunque el LLM pregunte por una parte', async () => {
     const h = fakeHost(createProject('X'))
     h.host.userMessages = () => [
@@ -585,8 +633,8 @@ describe('productor · canciones completas', () => {
     chainable(h)
     h.host.inspectRegion = async (regionId) => {
       const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
-      // El Coro (energía 5) suena más bajo que el verso.
-      const s = { db: r.startBeat >= 96 ? -20 : -14, highDb: -15, pulseDb: 5 }
+      // El Coro (energía 5) suena tan por debajo del verso que ni igualando sube del todo.
+      const s = { db: r.startBeat >= 96 ? -30 : -14, highDb: -15, pulseDb: 5 }
       return {
         collapseAtSec: null,
         sound: { head: s, tail: s, mean: s, staticRun: null, opening: [] }

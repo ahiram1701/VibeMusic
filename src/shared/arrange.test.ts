@@ -8,17 +8,20 @@ import {
   layerPrompt,
   lyricsTag,
   loopBars,
+  loopRegion,
   parseSongSpec,
   planChunks,
   polishSong,
   reviewProject,
   sectionCoverage,
+  sectionGains,
   tileRegions,
   trackBusy,
   vocalSongRequest,
   withoutFilterWords,
   withoutPercussion,
   bedText,
+  withRegionGains,
   type ChunkStep
 } from './arrange'
 import { createProject, createTrack, type Project, type Region } from './project'
@@ -458,6 +461,114 @@ describe('cama sin percusión', () => {
           prompt: 'dark techno, acid lead, energetic, full groove, 128 bpm, fade out ending'
         }
       ]
+    })
+  })
+})
+
+describe('mezcla por sección', () => {
+  // test9: intro, verso, coro (repetido tres veces), verso, break y outro.
+  const plan = [
+    { startBar: 1, bars: 8, energy: 2 },
+    { startBar: 9, bars: 8, energy: 3 },
+    { startBar: 17, bars: 8, energy: 5 },
+    { startBar: 25, bars: 8, energy: 3 },
+    { startBar: 33, bars: 8, energy: 5 },
+    { startBar: 41, bars: 8, energy: 3 },
+    { startBar: 49, bars: 8, energy: 5 },
+    { startBar: 57, bars: 8, energy: 2 }
+  ]
+  const at = (bar: number, clipId: string, db: number) => ({
+    id: `r${bar}`,
+    clipId,
+    offsetSec: 0.5,
+    startBeat: (bar - 1) * 4,
+    lengthSec: 15.2,
+    db
+  })
+  const regions = [
+    at(1, 'intro', -16.6),
+    at(9, 'verso', -19.1),
+    at(17, 'coro', -29),
+    at(25, 'verso2', -18.9),
+    at(33, 'coro', -29),
+    at(41, 'break', -24.7),
+    at(49, 'coro', -29),
+    at(57, 'outro', -26.8)
+  ]
+
+  it('sube el coro apagado y lo deja junto al verso, sin pasarse', () => {
+    const g = sectionGains(plan, regions, 4)
+    // Hacía falta casi +12 dB: sube el máximo y el resto baja 3 dB para compensar.
+    for (const id of ['r17', 'r33', 'r49']) expect(g.get(id)).toBe(6)
+    expect(g.get('r9')).toBe(-3)
+    expect(g.get('r1')).toBe(-6)
+    expect(g.get('r57')).toBe(3.5)
+    const after = (id: string) => regions.find((r) => r.id === id)!.db + g.get(id)!
+    expect(after('r17')).toBeGreaterThan(after('r9') - 1)
+  })
+
+  it('una canción ya pareja no se toca', () => {
+    const even = regions.map((r, i) => ({ ...r, clipId: `c${i}`, db: -18 + (plan[i].energy - 3) }))
+    expect([...sectionGains(plan, even, 4).values()].every((g) => g === 0)).toBe(true)
+  })
+
+  it('pone y quita la ganancia de las regiones', () => {
+    const p = createProject('X')
+    const t = createTrack('Canción', 'full')
+    const r: Region = {
+      id: 'a',
+      clipId: 'c',
+      startBeat: 0,
+      offsetSec: 0,
+      lengthSec: 4,
+      fadeInSec: 0,
+      fadeOutSec: 0
+    }
+    const withGain = withRegionGains(
+      { ...p, tracks: [{ ...t, regions: [r] }] },
+      new Map([['a', 4]])
+    )
+    expect(withGain.tracks[0].regions[0].gainDb).toBe(4)
+    const cleared = withRegionGains(withGain, new Map([['a', 0]]))
+    expect('gainDb' in cleared.tracks[0].regions[0]).toBe(false)
+  })
+
+  it('tapa una región con compases sanos de otra, en su posición de la frase', () => {
+    const p = { ...createProject('X'), bpm: 120 } // un compás = 2 s
+    const t = createTrack('Canción', 'full')
+    const good: Region = {
+      id: 'good',
+      clipId: 'sano',
+      startBeat: 32,
+      offsetSec: 0.5,
+      lengthSec: 16,
+      fadeInSec: 0,
+      fadeOutSec: 0,
+      gainDb: 2
+    }
+    const bad: Region = {
+      id: 'bad',
+      clipId: 'mudo',
+      startBeat: 68,
+      offsetSec: 0.5,
+      lengthSec: 14,
+      fadeInSec: 0,
+      fadeOutSec: 0
+    }
+    const { project, regionId } = loopRegion(
+      { ...p, tracks: [{ ...t, regions: [good, bad] }] },
+      'bad',
+      good,
+      { atBeat: 68, offsetBars: 1, bars: 7 }
+    )
+    const regions = project.tracks[0].regions
+    expect(regions.map((r) => r.id)).toEqual(['good', regionId])
+    expect(regions[1]).toMatchObject({
+      clipId: 'sano',
+      startBeat: 68,
+      offsetSec: 2.5,
+      lengthSec: 14,
+      gainDb: 2
     })
   })
 })

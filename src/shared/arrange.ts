@@ -492,6 +492,122 @@ export function trimRegion(p: Project, regionId: string, lengthSec: number): Pro
   }
 }
 
+/**
+ * Cambia la región `replaceId` por `bars` compases de `src` (desde su compás
+ * `offsetBars`) colocados en `atBeat`: el loop con que un productor tapa un tramo que no
+ * sirve. Devuelve también el id de la región nueva.
+ */
+export function loopRegion(
+  p: Project,
+  replaceId: string,
+  src: Region,
+  opts: { atBeat: number; offsetBars: number; bars: number }
+): { project: Project; regionId: string } {
+  const bar = beatsToSeconds(p.timeSignature[0], p.bpm)
+  const region: Region = {
+    id: newId('rgn'),
+    clipId: src.clipId,
+    startBeat: opts.atBeat,
+    offsetSec: src.offsetSec + opts.offsetBars * bar,
+    lengthSec: opts.bars * bar,
+    fadeInSec: 0.01,
+    fadeOutSec: 0.01,
+    ...(src.gainDb !== undefined && { gainDb: src.gainDb })
+  }
+  return {
+    regionId: region.id,
+    project: {
+      ...p,
+      tracks: p.tracks.map((t) =>
+        t.regions.some((r) => r.id === replaceId)
+          ? { ...t, regions: [...t.regions.filter((r) => r.id !== replaceId), region] }
+          : t
+      )
+    }
+  }
+}
+
+/** dB que sube o baja cada punto de energía respecto a una sección de energía 3. */
+export const LEVEL_STEP_DB = 1
+/** Lo más que se sube una sección (más saturaría el limitador con sus picos). */
+export const MAX_BOOST_DB = 6
+/** Lo más que se baja una sección. */
+export const MAX_CUT_DB = 6
+/** Si hace falta subir más de MAX_BOOST_DB, se baja el resto hasta esto para compensar. */
+const MAX_SHIFT_DB = 3
+/** Diferencias menores no se tocan: ya suenan parejas. */
+const MIN_CHANGE_DB = 1.5
+
+/**
+ * Ganancia de cada región para que las secciones suenen según su energía. Cada tramo
+ * se normaliza al mismo pico, no al mismo volumen: uno de golpes sueltos (stabs y riff
+ * sin bajo continuo) queda mucho más bajo (test9: el coro 10 dB por debajo del verso, y
+ * se repetía tres veces). Como un ingeniero de mezcla, se sube o baja la sección hacia
+ * el volumen típico de la canción (la mediana; una sección repetida cuenta una vez) más
+ * un dB por punto de energía. `db`: volumen medio de la región tal como sale del clip.
+ */
+export function sectionGains(
+  sections: { startBar: number; bars: number; energy?: number }[],
+  regions: {
+    id: string
+    clipId: string
+    offsetSec: number
+    startBeat: number
+    lengthSec: number
+    db: number
+  }[],
+  beatsPerBar: number
+): Map<string, number> {
+  const measured = sections
+    .map((s) => {
+      const a = (s.startBar - 1) * beatsPerBar
+      const b = a + s.bars * beatsPerBar
+      const inside = regions.filter((r) => r.startBeat >= a - 0.05 && r.startBeat < b - 0.05)
+      const weight = inside.reduce((n, r) => n + r.lengthSec, 0)
+      if (weight <= 0) return null
+      const power = inside.reduce((n, r) => n + Math.pow(10, r.db / 10) * r.lengthSec, 0)
+      const key = inside
+        .map((r) => `${r.clipId}@${r.offsetSec.toFixed(2)}`)
+        .sort()
+        .join(' ')
+      return { energy: s.energy ?? 3, inside, key, db: 10 * Math.log10(power / weight) }
+    })
+    .filter((m) => m !== null)
+  const gains = new Map<string, number>()
+  if (measured.length < 2) return gains
+  const distinct = [...new Map(measured.map((m) => [m.key, m.db])).values()].sort((x, y) => x - y)
+  const typical = distinct[Math.floor(distinct.length / 2)]
+  const wanted = measured.map((m) => typical + (m.energy - 3) * LEVEL_STEP_DB - m.db)
+  const shift = Math.min(MAX_SHIFT_DB, Math.max(0, Math.max(...wanted) - MAX_BOOST_DB))
+  measured.forEach((m, i) => {
+    const g = Math.max(-MAX_CUT_DB, Math.min(MAX_BOOST_DB, wanted[i] - shift))
+    const rounded = Math.abs(g) < MIN_CHANGE_DB ? 0 : Math.round(g * 2) / 2
+    for (const r of m.inside) gains.set(r.id, rounded)
+  })
+  return gains
+}
+
+/** Pone la ganancia de cada región de `gains` (0 la quita). */
+export function withRegionGains(p: Project, gains: Map<string, number>): Project {
+  return {
+    ...p,
+    tracks: p.tracks.map((t) =>
+      t.regions.some((r) => gains.has(r.id))
+        ? {
+            ...t,
+            regions: t.regions.map((r) => {
+              const g = gains.get(r.id)
+              if (g === undefined) return r
+              const next: Region = { ...r, gainDb: g }
+              if (g === 0) delete next.gainDb
+              return next
+            })
+          }
+        : t
+    )
+  }
+}
+
 /** Compases de un loop para una capa encima: 8 si caben, si no 4 o lo que quepa. */
 export function loopBars(maxBarsPerClip: number, longestSection: number): number {
   const preferred = maxBarsPerClip >= 8 ? 8 : maxBarsPerClip >= 4 ? 4 : maxBarsPerClip

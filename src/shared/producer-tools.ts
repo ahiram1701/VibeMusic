@@ -8,6 +8,7 @@ import {
   parseMelodyLines,
   layerPrompt,
   loopBars,
+  loopRegion,
   parseSongSpec,
   planChunks,
   bedText,
@@ -15,9 +16,11 @@ import {
   reviewProject,
   sameName,
   sectionCoverage,
+  sectionGains,
   trackBusy,
   trimRegion,
   vocalSongRequest,
+  withRegionGains,
   type ChunkStep
 } from './arrange'
 import { hasStartGap, type CollapseOptions, type SoundSummary } from './drone'
@@ -437,6 +440,8 @@ interface ChunkReport {
   failed: { section: string; start_bar: number; error: string }[]
   repaired: { section: string; start_bar: number; bars: number }[]
   drone: { section: string; start_bar: number }[]
+  /** Tramos atascados dos veces que ahora repiten compases sanos de su sección. */
+  filled: { section: string; start_bar: number; bars: number }[]
 }
 
 /** Pista de la canción: la de tipo "full" con más audio generado. */
@@ -494,6 +499,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
     const failed: ChunkReport['failed'] = []
     const repaired: ChunkReport['repaired'] = []
     const drone: ChunkReport['drone'] = []
+    const filled: ChunkReport['filled'] = []
     let generated = 0
     let last: string | null = null
     // Final de cada región: su volumen (para ver un hueco tras la unión) y si está sana
@@ -519,6 +525,38 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         if (t.ok && beat < atBeat && beat > bestBeat) [best, bestBeat] = [id, beat]
       }
       return best
+    }
+    // Para tapar un tramo que sigue atascado: compases sanos ya grabados de la misma
+    // sección (o de otra igual de antes), de los que se toman los que tocan en esa
+    // posición de la frase. La más cercana primero.
+    const healthyLoop = async (
+      section: Section,
+      startBar: number,
+      bars: number,
+      skip: string
+    ): Promise<{ region: Region; offsetBars: number } | null> => {
+      const p = host.getProject()
+      const per = perBar(p)
+      const like = sections.filter((s) => s.name === section.name && s.startBar <= section.startBar)
+      const inLike = (bar: number): boolean =>
+        like.some((s) => bar >= s.startBar && bar < Math.min(s.startBar + s.bars, startBar))
+      const onBar = (r: Region): boolean =>
+        Math.abs(r.startBeat / per - Math.round(r.startBeat / per)) < 0.01
+      const candidates = (p.tracks.find((t) => t.id === trackId)?.regions ?? [])
+        .filter((r) => r.id !== skip && onBar(r))
+        .map((r) => ({
+          r,
+          bar: Math.round(r.startBeat / per) + 1,
+          length: Math.floor(r.lengthSec / secPerBar + 0.01)
+        }))
+        .filter((c) => inLike(c.bar) && c.length >= bars)
+        .sort((a, b) => b.r.startBeat - a.r.startBeat)
+      for (const c of candidates) {
+        if (!(await tailOf(c.r.id)).ok) continue
+        const k = (startBar - c.bar) % c.length
+        return { region: c.r, offsetBars: k + bars <= c.length ? k : 0 }
+      }
+      return null
     }
     const queue: (ChunkStep & { repair?: boolean })[] = [...run.steps]
     let total = queue.filter((s) => s.kind === 'generate').length
@@ -616,7 +654,22 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         continue
       }
       if (step.repair) {
-        // Ya era la reparación: se queda (mejor que un hueco) y se avisa.
+        // Ya era la reparación, y otra toma suele atascarse igual (test9: el verso se
+        // calló dos veces). Si la sección ya tiene compases sanos, se repiten, como el
+        // loop de un productor; si no, se queda (mejor que un hueco) y se avisa.
+        const loop = await healthyLoop(section, step.startBar, step.bars, made)
+        if (loop) {
+          tails.delete(made)
+          const r = loopRegion(host.getProject(), made, loop.region, {
+            atBeat,
+            offsetBars: loop.offsetBars,
+            bars: step.bars
+          })
+          await commit(r.project, `${section.name}: repite compases sanos en vez de un atasco`)
+          filled.push({ section: section.name, start_bar: step.startBar, bars: step.bars })
+          last = r.regionId
+          continue
+        }
         drone.push({ section: section.name, start_bar: step.startBar })
         last = made
         continue
@@ -648,7 +701,27 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         repair: true
       })
     }
-    return { generated, failed, repaired, drone }
+    return { generated, failed, repaired, drone, filled }
+  }
+
+  /**
+   * Iguala las secciones de la pista (ver sectionGains): se escucha cada región tal
+   * como sale del clip y se le pone su ganancia. Sin medidas no cambia nada.
+   */
+  const levelTrack = async (trackId: string): Promise<void> => {
+    const p = host.getProject()
+    const measured: (Region & { db: number })[] = []
+    for (const r of p.tracks.find((t) => t.id === trackId)?.regions ?? []) {
+      const { sound } = await host.inspectRegion(r.id)
+      if (sound && Number.isFinite(sound.mean.db)) measured.push({ ...r, db: sound.mean.db })
+    }
+    const gains = sectionGains(sectionsOf(p), measured, perBar(p))
+    const now = host.getProject()
+    const gainOf = (id: string): number =>
+      now.tracks.flatMap((t) => t.regions).find((r) => r.id === id)?.gainDb ?? 0
+    if ([...gains].some(([id, g]) => gainOf(id) !== g)) {
+      await commit(withRegionGains(now, gains), 'mezcla: volumen igualado por sección')
+    }
   }
 
   /** Escucha una pista entera: medidas por sección y por unión (ver review.ts). */
@@ -658,11 +731,19 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
     for (const r of p.tracks.find((t) => t.id === trackId)?.regions ?? []) {
       const { sound } = await host.inspectRegion(r.id)
       if (sound) {
+        // Se mide el clip; lo que se oye lleva además la ganancia de la región.
+        const g = r.gainDb ?? 0
+        const up = (w: SoundSummary['mean']): SoundSummary['mean'] => ({ ...w, db: w.db + g })
         regions.push({
           startBeat: r.startBeat,
           endBeat: r.startBeat + secondsToBeats(r.lengthSec, p.bpm),
           lengthSec: r.lengthSec,
-          ...sound
+          source: `${r.clipId}@${r.offsetSec.toFixed(2)}`,
+          ...sound,
+          head: up(sound.head),
+          tail: up(sound.tail),
+          mean: up(sound.mean),
+          opening: sound.opening.map((db) => db + g)
         })
       }
     }
@@ -1063,7 +1144,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         // Con cantante local, el instrumental no debe traer voces propias.
         const backing = local ? { ...spec, style: `instrumental, ${spec.style}` } : spec
         const tempo = host.getProject()
-        const { generated, failed, repaired, drone } = await recordChunks({
+        const { generated, failed, repaired, drone, filled } = await recordChunks({
           steps: planChunks(backing, bars, { bpm: tempo.bpm, key: tempo.key, drums: !!drums }),
           sections,
           trackId: song.id,
@@ -1076,6 +1157,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             polishSong(host.getProject(), song.id),
             'pulido: fundidos de entrada y salida'
           )
+          await levelTrack(song.id)
         }
         // La batería programada y la automatización de la cama: segundos, no minutos.
         let drumsError: string | null = null
@@ -1131,6 +1213,11 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             drone,
             drone_note:
               'These parts still sound like a low drone after one repair. Tell the user and offer create_variation on them.'
+          }),
+          ...(filled.length > 0 && {
+            filled,
+            filled_note:
+              'These parts got stuck twice, so they now repeat healthy bars of the same section and play fine. No need to mention it; if the user wants more variety there, offer create_variation.'
           }),
           sections: sectionCoverage(final)
             .filter((c) => ids.has(c.section.id))
@@ -1326,6 +1413,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             polishSong(host.getProject(), song.id),
             'pulido: fundidos de entrada y salida'
           )
+          await levelTrack(song.id)
         }
         return {
           ok: report.failed.length === 0,
@@ -1333,6 +1421,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           parts_generated: report.generated,
           ...(report.failed.length > 0 && { failed: report.failed }),
           ...(report.repaired.length > 0 && { repaired: report.repaired }),
+          ...(report.filled.length > 0 && { filled: report.filled }),
           ...(report.drone.length > 0 && {
             drone: report.drone,
             drone_note: 'These parts still sound stuck after one repair. Tell the user.'
