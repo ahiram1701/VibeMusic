@@ -507,6 +507,16 @@ describe('mezcla por sección', () => {
     expect(after('r17')).toBeGreaterThan(after('r9') - 1)
   })
 
+  it('un coro repetido sin energía usa la del primero', () => {
+    const named = [
+      { name: 'Verso', startBar: 1, bars: 8, energy: 3 },
+      { name: 'Coro', startBar: 9, bars: 8, energy: 5 },
+      { name: 'Coro', startBar: 17, bars: 8 }
+    ]
+    const g = sectionGains(named, [at(1, 'v', -19), at(9, 'c', -29), at(17, 'c', -29)], 4)
+    expect(g.get('r17')).toBe(g.get('r9'))
+  })
+
   it('una canción ya pareja no se toca', () => {
     const even = regions.map((r, i) => ({ ...r, clipId: `c${i}`, db: -18 + (plan[i].energy - 3) }))
     expect([...sectionGains(plan, even, 4).values()].every((g) => g === 0)).toBe(true)

@@ -39,6 +39,12 @@ export interface CollapseOptions {
   thinHighDb?: number
   /** Segundos finales que no se miran (p. ej. el fundido del último tramo). */
   ignoreTailSec?: number
+  /**
+   * Un segundo así de por debajo (dB) del volumen con que empezó el tramo está apagado:
+   * la música se fue vaciando aunque aún suene (test10: un coro de −20 a −33 dB, y los
+   * tres tramos que lo continuaban nacieron vacíos).
+   */
+  fadeDb?: number
 }
 
 const DEFAULTS: Required<CollapseOptions> = {
@@ -49,8 +55,12 @@ const DEFAULTS: Required<CollapseOptions> = {
   pulseMin: 1,
   thinDb: -25,
   thinHighDb: -10,
-  ignoreTailSec: 0
+  ignoreTailSec: 0,
+  fadeDb: 9
 }
+
+/** Segundos del principio con que se mide el volumen de partida para `fadeDb`. */
+const FADE_REF_SEC = 2
 
 /** Frecuencia de corte del filtro que separa los agudos (tres polos: corte claro). */
 const SPLIT_HZ = 1000
@@ -133,9 +143,11 @@ export function findCollapse(
   const o = { ...DEFAULTS, ...opts }
   const stats = windowStats(samples, sampleRate)
   const usable = Math.max(0, stats.length - Math.ceil(o.ignoreTailSec))
+  const start = stats.slice(0, FADE_REF_SEC)
+  const faded = start.length > 0 ? powerMean(start).db - o.fadeDb : Number.NEGATIVE_INFINITY
   let runStart = -1
   for (let i = 0; i < usable; i++) {
-    if (!isDead(stats[i], o)) {
+    if (!isDead(stats[i], o) && stats[i].db >= faded) {
       runStart = -1
       continue
     }

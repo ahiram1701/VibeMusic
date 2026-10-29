@@ -547,7 +547,7 @@ const MIN_CHANGE_DB = 1.5
  * un dB por punto de energía. `db`: volumen medio de la región tal como sale del clip.
  */
 export function sectionGains(
-  sections: { startBar: number; bars: number; energy?: number }[],
+  sections: { name?: string; startBar: number; bars: number; energy?: number }[],
   regions: {
     id: string
     clipId: string
@@ -558,6 +558,12 @@ export function sectionGains(
   }[],
   beatsPerBar: number
 ): Map<string, number> {
+  // Un coro repetido ("reuse") no trae energía: es la del primero con su nombre (test10:
+  // el coro original subía 6 dB y sus copias 5,5).
+  const energyOf = (s: (typeof sections)[number]): number =>
+    s.energy ??
+    sections.find((o) => o.name && o.name === s.name && o.energy !== undefined)?.energy ??
+    3
   const measured = sections
     .map((s) => {
       const a = (s.startBar - 1) * beatsPerBar
@@ -570,7 +576,7 @@ export function sectionGains(
         .map((r) => `${r.clipId}@${r.offsetSec.toFixed(2)}`)
         .sort()
         .join(' ')
-      return { energy: s.energy ?? 3, inside, key, db: 10 * Math.log10(power / weight) }
+      return { energy: energyOf(s), inside, key, db: 10 * Math.log10(power / weight) }
     })
     .filter((m) => m !== null)
   const gains = new Map<string, number>()

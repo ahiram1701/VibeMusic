@@ -56,8 +56,19 @@ describe('drone', () => {
     expect(findCollapse(signal([5, song], [8, faint], [2, song]), SR)).toBe(5)
     // Una intro que empieza de cero puede arrancar así: se puede desactivar.
     expect(
-      findCollapse(signal([5, song], [8, faint], [2, song]), SR, { thinDb: -Infinity })
+      findCollapse(signal([5, song], [8, faint], [2, song]), SR, {
+        thinDb: -Infinity,
+        fadeDb: Infinity
+      })
     ).toBeNull()
+  })
+
+  it('que la música se apague mucho respecto a como empezó también (test10)', () => {
+    const quiet = (k: number) => (t: number) => k * song(t)
+    // 14 dB por debajo durante 10 s: el tramo siguiente nacería vacío.
+    expect(findCollapse(signal([5, song], [10, quiet(0.2)]), SR)).toBe(5)
+    // 6 dB es solo una parte más tranquila.
+    expect(findCollapse(signal([5, song], [10, quiet(0.5)]), SR)).toBeNull()
   })
 
   it('un silencio largo a mitad de tramo también', () => {
