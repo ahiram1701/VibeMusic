@@ -96,7 +96,13 @@ function buildGraph(
         fade.gain.setValueAtTime(1, when + duration - region.fadeOutSec)
         fade.gain.linearRampToValueAtTime(0, when + duration)
       }
-      fade.connect(gain)
+      if (region.gainDb) {
+        const level = ctx.createGain()
+        level.gain.value = Math.pow(10, region.gainDb / 20)
+        fade.connect(level).connect(gain)
+      } else {
+        fade.connect(gain)
+      }
 
       const src = ctx.createBufferSource()
       src.buffer = buffer

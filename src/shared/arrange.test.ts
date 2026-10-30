@@ -1,20 +1,28 @@
 import { describe, expect, it } from 'vitest'
 import {
   chunkBars,
+  energyHint,
   clampWords,
   fillSections,
   lastRegionIn,
   layerPrompt,
   lyricsTag,
   loopBars,
+  loopRegion,
   parseSongSpec,
   planChunks,
   polishSong,
   reviewProject,
   sectionCoverage,
+  sectionGains,
   tileRegions,
   trackBusy,
   vocalSongRequest,
+  withoutFilterWords,
+  withoutPercussion,
+  bedText,
+  withRegionGains,
+  withoutStyleRepeats,
   type ChunkStep
 } from './arrange'
 import { createProject, createTrack, type Project, type Region } from './project'
@@ -392,5 +400,232 @@ describe('letra', () => {
     expect(req.prompt).toBe(
       'reggaeton, male vocal, bilingual Spanish and English lyrics, English lines sung with native English pronunciation'
     )
+  })
+})
+
+describe('cama con batería programada', () => {
+  it('quita las palabras de filtro del arreglo y el "soft" de la calma', () => {
+    expect(withoutFilterWords('filtered kick and metallic percussion, muffled pad')).toBe(
+      'kick and metallic percussion, pad'
+    )
+    expect(withoutFilterWords('lowpassed, bass')).toBe('bass')
+    expect(energyHint(2, { drums: true })).toBe('groove')
+    expect(energyHint(2)).toBe('soft drums, groove')
+  })
+})
+
+describe('cama sin percusión', () => {
+  it('quita los trozos que nombran percusión y deja el resto', () => {
+    expect(withoutPercussion('kick and rolling bassline, congas, distorted synth stabs')).toBe(
+      'rolling bassline, distorted synth stabs'
+    )
+    expect(
+      withoutPercussion('tech house, punchy four-on-the-floor kick, metallic percussion, cowbell')
+    ).toBe('tech house')
+    expect(withoutPercussion('full groove, synth riff with claps, energetic, full drums')).toBe(
+      'full groove, synth riff, energetic'
+    )
+    expect(bedText('filtered kick and metallic percussion, muffled pad')).toBe('pad')
+  })
+
+  it('la cama no pide graves que la hunden ni repite el estilo (test11)', () => {
+    expect(bedText('industrial tech house, distorted synth stabs, low rolling bassline')).toBe(
+      'tech house, distorted synth stabs, rolling bassline'
+    )
+    const style = 'tech house, distorted synth stabs, rolling bassline, acid synth riff'
+    expect(withoutStyleRepeats('acid synth riff and rolling bassline, simpler', style)).toBe(
+      'simpler'
+    )
+    expect(withoutStyleRepeats('full groove, Rolling  bassline, acid riff', style)).toBe(
+      'full groove, acid riff'
+    )
+  })
+
+  it('con batería, la energía y las transiciones se piden sin batería', () => {
+    expect(energyHint(5, { drums: true })).toBe('energetic, full groove')
+    expect(energyHint(3, { drums: true })).toBe('steady groove')
+    const steps = planChunks(
+      parseSongSpec(
+        song({
+          sections: [
+            { name: 'Intro', bars: 8, energy: 2, arrangement: 'kick and pad' },
+            { name: 'Coro', bars: 8, energy: 5, arrangement: 'acid lead, claps' },
+            { name: 'Coro', bars: 8, reuse: true }
+          ]
+        })
+      ),
+      8,
+      { bpm: 128, drums: true }
+    )
+    const [intro, coro, again] = steps
+    expect(intro).toMatchObject({
+      prompt: 'techno, pad, intro, groove, 128 bpm, build-up at the end'
+    })
+    expect(coro).toMatchObject({
+      prompt: 'techno, acid lead, energetic, full groove, 128 bpm'
+    })
+    // La repetición lleva, por si acaso, los tramos para grabarla igual que la original.
+    expect(again).toMatchObject({
+      kind: 'reuse',
+      from: 1,
+      fallback: [
+        {
+          startBar: 17,
+          bars: 8,
+          prompt: 'techno, acid lead, energetic, full groove, 128 bpm, fade out ending'
+        }
+      ]
+    })
+  })
+})
+
+describe('mezcla por sección', () => {
+  // test9: intro, verso, coro (repetido tres veces), verso, break y outro.
+  const plan = [
+    { startBar: 1, bars: 8, energy: 2 },
+    { startBar: 9, bars: 8, energy: 3 },
+    { startBar: 17, bars: 8, energy: 5 },
+    { startBar: 25, bars: 8, energy: 3 },
+    { startBar: 33, bars: 8, energy: 5 },
+    { startBar: 41, bars: 8, energy: 3 },
+    { startBar: 49, bars: 8, energy: 5 },
+    { startBar: 57, bars: 8, energy: 2 }
+  ]
+  const at = (bar: number, clipId: string, db: number) => ({
+    id: `r${bar}`,
+    clipId,
+    offsetSec: 0.5,
+    startBeat: (bar - 1) * 4,
+    lengthSec: 15.2,
+    db
+  })
+  const regions = [
+    at(1, 'intro', -16.6),
+    at(9, 'verso', -19.1),
+    at(17, 'coro', -29),
+    at(25, 'verso2', -18.9),
+    at(33, 'coro', -29),
+    at(41, 'break', -24.7),
+    at(49, 'coro', -29),
+    at(57, 'outro', -26.8)
+  ]
+
+  it('sube el coro apagado y lo deja junto al verso, sin pasarse', () => {
+    const g = sectionGains(plan, regions, 4)
+    // Hacía falta casi +12 dB: sube el máximo y el resto baja 3 dB para compensar.
+    for (const id of ['r17', 'r33', 'r49']) expect(g.get(id)).toBe(6)
+    expect(g.get('r9')).toBe(-3)
+    expect(g.get('r1')).toBe(-6)
+    expect(g.get('r57')).toBe(3.5)
+    const after = (id: string) => regions.find((r) => r.id === id)!.db + g.get(id)!
+    expect(after('r17')).toBeGreaterThan(after('r9') - 1)
+  })
+
+  it('un coro repetido sin energía usa la del primero', () => {
+    const named = [
+      { name: 'Verso', startBar: 1, bars: 8, energy: 3 },
+      { name: 'Coro', startBar: 9, bars: 8, energy: 5 },
+      { name: 'Coro', startBar: 17, bars: 8 }
+    ]
+    const g = sectionGains(named, [at(1, 'v', -19), at(9, 'c', -29), at(17, 'c', -29)], 4)
+    expect(g.get('r17')).toBe(g.get('r9'))
+  })
+
+  it('una canción ya pareja no se toca', () => {
+    const even = regions.map((r, i) => ({ ...r, clipId: `c${i}`, db: -18 + (plan[i].energy - 3) }))
+    expect([...sectionGains(plan, even, 4).values()].every((g) => g === 0)).toBe(true)
+  })
+
+  it('no sube el siseo: una sección bajita y de puros agudos se queda', () => {
+    const g = sectionGains(
+      plan.slice(0, 3),
+      [
+        { ...at(1, 'intro', -18), highDb: -20 },
+        { ...at(9, 'verso', -18), highDb: -20 },
+        { ...at(17, 'coro', -30), highDb: -6 }
+      ],
+      4
+    )
+    expect(g.get('r17')).toBe(0)
+  })
+
+  it('la ganancia no agranda una unión (test11: break a −4 y verso a +6)', () => {
+    const sections = [
+      { startBar: 1, bars: 8, energy: 5 },
+      { startBar: 9, bars: 8, energy: 2 },
+      { startBar: 17, bars: 8, energy: 3 }
+    ]
+    const g = sectionGains(
+      sections,
+      [
+        { ...at(1, 'drop', -14), headDb: -14, tailDb: -14 },
+        { ...at(9, 'break', -15), headDb: -14, tailDb: -38 },
+        { ...at(17, 'verso', -31), headDb: -29, tailDb: -30 }
+      ],
+      4
+    )
+    const heard = -29 + g.get('r17')! - (-38 + g.get('r9')!)
+    // El salto crudo era de 9 dB: la mezcla no lo empeora.
+    expect(heard).toBeLessThanOrEqual(9)
+  })
+
+  it('pone y quita la ganancia de las regiones', () => {
+    const p = createProject('X')
+    const t = createTrack('Canción', 'full')
+    const r: Region = {
+      id: 'a',
+      clipId: 'c',
+      startBeat: 0,
+      offsetSec: 0,
+      lengthSec: 4,
+      fadeInSec: 0,
+      fadeOutSec: 0
+    }
+    const withGain = withRegionGains(
+      { ...p, tracks: [{ ...t, regions: [r] }] },
+      new Map([['a', 4]])
+    )
+    expect(withGain.tracks[0].regions[0].gainDb).toBe(4)
+    const cleared = withRegionGains(withGain, new Map([['a', 0]]))
+    expect('gainDb' in cleared.tracks[0].regions[0]).toBe(false)
+  })
+
+  it('tapa una región con compases sanos de otra, en su posición de la frase', () => {
+    const p = { ...createProject('X'), bpm: 120 } // un compás = 2 s
+    const t = createTrack('Canción', 'full')
+    const good: Region = {
+      id: 'good',
+      clipId: 'sano',
+      startBeat: 32,
+      offsetSec: 0.5,
+      lengthSec: 16,
+      fadeInSec: 0,
+      fadeOutSec: 0,
+      gainDb: 2
+    }
+    const bad: Region = {
+      id: 'bad',
+      clipId: 'mudo',
+      startBeat: 68,
+      offsetSec: 0.5,
+      lengthSec: 14,
+      fadeInSec: 0,
+      fadeOutSec: 0
+    }
+    const { project, regionId } = loopRegion(
+      { ...p, tracks: [{ ...t, regions: [good, bad] }] },
+      'bad',
+      good,
+      { atBeat: 68, offsetBars: 1, bars: 7 }
+    )
+    const regions = project.tracks[0].regions
+    expect(regions.map((r) => r.id)).toEqual(['good', regionId])
+    expect(regions[1]).toMatchObject({
+      clipId: 'sano',
+      startBeat: 68,
+      offsetSec: 2.5,
+      lengthSec: 14,
+      gainDb: 2
+    })
   })
 })

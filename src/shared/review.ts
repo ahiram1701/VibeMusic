@@ -10,6 +10,8 @@ export interface RegionSound extends SoundSummary {
   startBeat: number
   endBeat: number
   lengthSec: number
+  /** De qué audio sale (clip y desde dónde): dos secciones con el mismo son una repetición. */
+  source?: string
 }
 
 export interface ReviewSection {
@@ -133,7 +135,11 @@ export function reviewSong(
         .map((r) => ({ stats: r.mean, weight: Math.min(b, r.endBeat) - Math.max(a, r.startBeat) }))
         .filter((p) => p.weight > 0)
     )
-    return { section: s, stats }
+    const inside = sorted.filter((r) => Math.min(b, r.endBeat) - Math.max(a, r.startBeat) > 0)
+    const key = inside.every((r) => r.source)
+      ? inside.map((r) => r.source).join(' ')
+      : `${s.startBar}`
+    return { section: s, stats, key }
   })
   for (const { section, stats } of measured) {
     if (stats && stats.highDb < DULL_DB) {
@@ -141,11 +147,12 @@ export function reviewSong(
     }
   }
 
-  // Secciones que se apagaron: muy por debajo del volumen típico (la mediana).
-  const levels = measured
-    .filter((m) => m.stats)
-    .map((m) => m.stats!.db)
-    .sort((a, b) => a - b)
+  // Secciones que se apagaron: muy por debajo del volumen típico (la mediana). Un coro
+  // repetido cuenta una vez: tres copias de un coro apagado bajaban la mediana hasta él
+  // y nunca se marcaba (test9).
+  const levels = [
+    ...new Map(measured.filter((m) => m.stats).map((m) => [m.key, m.stats!.db])).values()
+  ].sort((a, b) => a - b)
   const typical = levels[Math.floor(levels.length / 2)]
   for (const { section, stats } of measured) {
     if (stats && stats.db < typical - FADED_DB) {

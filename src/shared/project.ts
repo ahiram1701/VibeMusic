@@ -73,6 +73,11 @@ export interface Region {
    * Los límites de la región (startBeat, lengthSec) no los incluyen.
    */
   leadInSec?: number
+  /**
+   * Volumen de la región (dB), aparte del de la pista: el productor iguala así las
+   * secciones de la canción para que un coro no suene más bajo que el verso.
+   */
+  gainDb?: number
 }
 
 /** Un punto de una automatización: en ese pulso de la canción, ese valor. */
