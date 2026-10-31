@@ -10,6 +10,7 @@ import {
   loopBars,
   loopRegion,
   parseSongSpec,
+  phraseBars,
   planChunks,
   polishSong,
   reviewProject,
@@ -627,5 +628,24 @@ describe('mezcla por sección', () => {
       lengthSec: 14,
       gainDb: 2
     })
+    // Sin región que reemplazar se añade a la pista de la fuente y no se quita nada.
+    const added = loopRegion({ ...p, tracks: [{ ...t, regions: [good, bad] }] }, null, good, {
+      atBeat: 96,
+      offsetBars: 7,
+      bars: 1
+    })
+    expect(added.project.tracks[0].regions.map((r) => r.id)).toEqual([
+      'good',
+      'bad',
+      added.regionId
+    ])
+  })
+})
+
+describe('phraseBars', () => {
+  it('completa la última frase de 4 compases y respeta los remates cortos', () => {
+    expect([22, 16, 13, 64, 3, 2, 1].map(phraseBars)).toEqual([24, 16, 16, 64, 3, 2, 1])
+    const spec = parseSongSpec(song({ sections: [{ name: 'Verso', bars: 22, arrangement: 'x' }] }))
+    expect(spec.sections[0].bars).toBe(24)
   })
 })
