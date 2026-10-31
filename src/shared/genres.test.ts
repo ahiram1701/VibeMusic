@@ -4,7 +4,9 @@ import { findGenre, GENERIC_STRUCTURE, GENRES, PROMPT_EXAMPLES } from './genres'
 
 const words = (s: string): number => s.split(/\s+/).filter(Boolean).length
 // Lo que lleva a MusicGen al drone o al balbuceo (ver drone.ts y producer-prompt.ts).
-const BAD = /\b(dark|ambient|atmospheric|cinematic|drone|warehouse|reverb|vocals?|not|no)\b/
+// "heavy", "pounding" y "aggressive" lo hunden en un muro grave de distorsión (test14).
+const BAD =
+  /\b(dark|ambient|atmospheric|cinematic|drone|warehouse|reverb|vocals?|not|no|heavy|pounding|aggressive)\b/
 
 describe('guía de géneros', () => {
   it('cada género trae tempo, estructura y un estilo corto que MusicGen entiende', () => {

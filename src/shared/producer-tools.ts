@@ -24,7 +24,7 @@ import {
   type ChunkStep,
   type GenerateStep
 } from './arrange'
-import { fadedEnd, hasStartGap, type CollapseOptions, type SoundSummary } from './drone'
+import { darkEnd, fadedEnd, hasStartGap, type CollapseOptions, type SoundSummary } from './drone'
 import { DRUM_PATTERNS, findPattern } from './drums'
 import { findGenre, GENERIC_STRUCTURE, GENRES, PROMPT_EXAMPLES, type GenreGuide } from './genres'
 import type { ProviderInfo, SingingEngine } from './generation'
@@ -454,6 +454,10 @@ const PHRASE_BARS = 4
  * Arreglos que piden acabar apagándose a propósito: ese final no se tapa. Solo frases
  * de salida ("fade in" en una intro no cuenta).
  */
+/** Segundos finales que se tapan: lo que dura un final apagado y uno hundido en drone. */
+const FADED_TAIL_SEC = 1
+const DARK_TAIL_SEC = 3
+
 const SOFT_ENDING =
   /\b(fade[sd]? out|fading out|fadeout|stops?|silence|breakdown|ritardando|ending|final hit)\b/i
 
@@ -524,7 +528,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
     const tails = new Map<string, Tail>()
     const tailFrom = (collapseAtSec: number | null, sound?: SoundSummary | null): Tail => ({
       db: sound?.tail.db ?? null,
-      ok: collapseAtSec === null && !(sound && fadedEnd(sound))
+      ok: collapseAtSec === null && !(sound && (fadedEnd(sound) || darkEnd(sound)))
     })
     const tailOf = async (id: string): Promise<Tail> => {
       if (!tails.has(id)) {
@@ -590,18 +594,30 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
     // Un tramo sano que termina apagándose (el último segundo muy por debajo del
     // primero): el siguiente no puede fundirse con él, así que ese bajón se oiría entero
     // en la unión, y cada coro repetido lo copia (test13: el coro moría en su último
-    // compás y la canción "volvía a empezar" tres veces). Se tapan los compases finales
-    // con compases sanos de la sección; así el siguiente sí se funde. No regenera nada.
+    // compás y la canción "volvía a empezar" tres veces). Igual con uno que se hunde en
+    // un drone al final, que además contagiaba al siguiente (test14). Se tapan los
+    // compases finales (`sec` segundos) con compases sanos de la sección; así el
+    // siguiente sí se funde y escucha música sana. No regenera nada.
     const healTail = async (
       section: Section,
       step: GenerateStep,
       made: string,
-      atBeat: number
+      atBeat: number,
+      sec: number
     ): Promise<string | null> => {
-      const n = Math.max(1, Math.ceil(1 / secPerBar))
+      const n = Math.max(1, Math.ceil(sec / secPerBar))
       if (n >= step.bars) return null
       const startBar = step.startBar + step.bars - n
-      const loop = await healthyLoop(section, startBar, n, made)
+      // Si la sección no tiene otros compases sanos (es su primer tramo), sirven los del
+      // propio tramo una frase antes, que aún sonaban bien.
+      const own = host
+        .getProject()
+        .tracks.flatMap((t) => t.regions)
+        .find((r) => r.id === made)
+      const early = step.bars - n - PHRASE_BARS
+      const loop =
+        (await healthyLoop(section, startBar, n, made)) ??
+        (own && early >= 0 ? { region: own, offsetBars: early } : null)
       if (!loop) return null
       const trimmed = trimRegion(host.getProject(), made, (step.bars - n) * secPerBar)
       const r = loopRegion(trimmed, null, loop.region, {
@@ -609,7 +625,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         offsetBars: loop.offsetBars,
         bars: n
       })
-      await commit(r.project, `${section.name}: final apagado tapado con compases sanos`)
+      await commit(r.project, `${section.name}: final dañado tapado con compases sanos`)
       healed.push({ section: section.name, start_bar: startBar, bars: n })
       tails.set(made, { db: null, ok: true })
       tails.set(r.regionId, { db: null, ok: true })
@@ -707,9 +723,16 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       const collapseAtSec = gap ? 0 : inspected.collapseAtSec
       tails.set(made, tailFrom(collapseAtSec, inspected.sound))
       if (collapseAtSec === null) {
+        const sound = inspected.sound
+        // Un final que se apaga puede ser a propósito; uno que se hunde en drone, nunca.
         const softEnd = endsSong || SOFT_ENDING.test(step.prompt)
-        const faded = !!inspected.sound && fadedEnd(inspected.sound)
-        last = (faded && !softEnd && (await healTail(section, step, made, atBeat))) || made
+        const sec =
+          sound && !endsSong && darkEnd(sound)
+            ? DARK_TAIL_SEC
+            : sound && !softEnd && fadedEnd(sound)
+              ? FADED_TAIL_SEC
+              : 0
+        last = (sec > 0 && (await healTail(section, step, made, atBeat, sec))) || made
         continue
       }
       // Pasado el tope de reparaciones, un atasco se trata como una reparación fallida:

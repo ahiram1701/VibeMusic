@@ -698,7 +698,7 @@ describe('productor · canciones completas', () => {
     expect(calls.find((c) => c.atBeat === 64)).toMatchObject({ from: intro, crossfade: false })
   })
 
-  it('compose_song no continúa un tramo que termina apagado', async () => {
+  it('compose_song no continúa un tramo que termina apagado (y que no se tapa)', async () => {
     const h = fakeHost(createProject('X'))
     const calls = chainable(h)
     const sound = (head: number, tail: number) => ({
@@ -708,12 +708,16 @@ describe('productor · canciones completas', () => {
       staticRun: null,
       opening: [head, head, head, head, head, head]
     })
-    // El tramo del beat 32 acaba 18 dB por debajo de como empezó (test11: el break).
+    // El tramo del beat 32 acaba 18 dB por debajo de como empezó (test11: el break), y su
+    // arreglo pide apagarse, así que se deja como está.
     h.host.inspectRegion = async (regionId) => {
       const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
       return { collapseAtSec: null, sound: r.startBeat === 32 ? sound(-20, -38) : sound(-20, -20) }
     }
-    const res = (await h.run('compose_song', songInput)) as Repaired
+    const sections = songInput.sections.map((s) =>
+      s.name === 'Verso' ? { ...s, arrangement: 'bass and hats, fade out' } : s
+    )
+    const res = (await h.run('compose_song', { ...songInput, sections })) as Repaired
     expect(res.repaired).toBeUndefined()
     const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
     const intro = song.regions.find((r) => r.startBeat === 0)!.id
@@ -755,6 +759,55 @@ describe('productor · canciones completas', () => {
       const patch = song.regions.find((r) => r.startBeat === 92)!
       expect(patch.clipId).toBe(first.clipId)
       expect(patch.offsetSec).toBeCloseTo(first.offsetSec + 7 * bar)
+      expect(calls.find((c) => c.atBeat === 96)).toMatchObject({ from: patch.id, crossfade: true })
+    })
+
+    it('el primer tramo de la sección se tapa con sus propios compases de una frase antes', async () => {
+      const h = fakeHost(createProject('X'))
+      const calls = chainable(h)
+      h.host.inspectRegion = async (regionId) => {
+        const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+        return {
+          collapseAtSec: null,
+          sound: r.startBeat === 32 ? sound(-15, -30) : sound(-15, -15)
+        }
+      }
+      const res = (await h.run('compose_song', songInput)) as Healed
+      expect(res.healed).toEqual([{ section: 'Verso', start_bar: 16, bars: 1 }])
+      const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
+      const bar = barsToSeconds(1, h.state.project)
+      const first = song.regions.find((r) => r.startBeat === 32)!
+      const patch = song.regions.find((r) => r.startBeat === 60)!
+      expect(patch.clipId).toBe(first.clipId)
+      expect(patch.offsetSec).toBeCloseTo(first.offsetSec + 3 * bar)
+      expect(calls.find((c) => c.atBeat === 64)).toMatchObject({ from: patch.id, crossfade: true })
+    })
+
+    it('un final que se hunde en un drone se tapa aunque no baje de volumen (test14)', async () => {
+      const h = fakeHost(createProject('X'))
+      const calls = chainable(h)
+      const bright = { db: -15, highDb: -19, pulseDb: 2 }
+      const sunk = { db: -10, highDb: -35, pulseDb: 1.2 }
+      h.host.inspectRegion = async (regionId) => {
+        const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+        const tail = r.startBeat === 64 ? sunk : bright
+        return {
+          collapseAtSec: null,
+          sound: {
+            head: bright,
+            tail,
+            mean: bright,
+            staticRun: null,
+            opening: [-15, -15, -15, -15]
+          }
+        }
+      }
+      const res = (await h.run('compose_song', songInput)) as Healed
+      // A 124 BPM, 3 s son 2 compases.
+      expect(res.healed).toEqual([{ section: 'Verso', start_bar: 23, bars: 2 }])
+      const patch = h.state.project.tracks
+        .find((t) => t.name === 'Canción')!
+        .regions.find((r) => r.startBeat === 88)!
       expect(calls.find((c) => c.atBeat === 96)).toMatchObject({ from: patch.id, crossfade: true })
     })
 

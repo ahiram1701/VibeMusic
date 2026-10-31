@@ -218,6 +218,18 @@ export function fadedEnd(sound: SoundSummary, dropDb = DEFAULTS.fadeDb): boolean
   return sound.tail.db < sound.head.db - dropDb
 }
 
+/**
+ * ¿Termina hundido en un drone? El último segundo casi no tiene agudos (como un drone,
+ * ver `highDbMin`) y bastantes menos que el primero: el tramo se fue oscureciendo sin
+ * bajar de volumen. Son menos segundos de los que pide findCollapse, pero el siguiente
+ * nacía atascado de ese final (test14: un riff de −19 a −35 dB de agudos en 15 s, y
+ * cuatro tramos atascados dos veces). Que sea relativo deja en paz las camas de puro
+ * bajo y pads (con batería programada), que son graves de principio a fin.
+ */
+export function darkEnd(sound: SoundSummary, dropDb = 8): boolean {
+  return sound.tail.highDb < DEFAULTS.highDbMin && sound.tail.highDb < sound.head.highDb - dropDb
+}
+
 /** Cuartos de segundo del principio que mira `hasStartGap` (1,5 s). */
 const OPENING_PARTS = 6
 

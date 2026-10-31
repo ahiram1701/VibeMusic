@@ -435,8 +435,12 @@ export const GENRES: GenreGuide[] = [
       'thrash metal',
       'metal pesado'
     ],
-    bpm: [120, 150],
-    style: 'hard rock, heavy distorted guitar riffs, pounding live drums, bass guitar, aggressive',
+    // Con "heavy", "pounding" y "aggressive" (test14) cada tramo se iba hundiendo en un
+    // muro grave de distorsión (agudos de −19 a −35 dB en 15 s) y los que lo continuaban
+    // nacían atascados. Este es el vocabulario de test13, que sonó limpio, más platillos.
+    bpm: [120, 140],
+    style:
+      'hard rock, distorted electric guitar riff, live drums, driving bass guitar, crash cymbals, energetic',
     structure: [
       ['Intro', 8, 3],
       ['Verso', 16, 3],
@@ -448,13 +452,13 @@ export const GENRES: GenreGuide[] = [
       ['Outro', 4, 3]
     ],
     arrangements: {
-      intro: 'heavy guitar riff alone, drums enter',
-      verse: 'driving drums, bass, chugging guitar riff',
+      intro: 'guitar riff alone, live drums enter',
+      verse: 'driving drums, bass, palm-muted guitar riff, hi-hats',
       chorus: 'open power chords, crash cymbals, full drums',
-      solo: 'shredding electric guitar solo over full band',
+      solo: 'electric guitar solo over full band',
       outro: 'main riff, final hit'
     },
-    avoid: 'synths, 808, soft piano'
+    avoid: 'synths, 808, soft piano, heavy, aggressive, pounding'
   },
   {
     id: 'salsa',
@@ -815,7 +819,7 @@ export const GENRES: GenreGuide[] = [
     arrangements: {
       intro: 'kick and synth chords',
       build: 'snare roll, rising synth, claps',
-      drop: 'big synth lead, punchy kick, heavy bass',
+      drop: 'big synth lead, punchy kick, driving bassline',
       break: 'piano chords and synth melody',
       outro: 'kick and synth chords'
     },
