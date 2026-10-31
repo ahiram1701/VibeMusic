@@ -21,11 +21,12 @@ import {
   trimRegion,
   vocalSongRequest,
   withRegionGains,
-  type ChunkStep
+  type ChunkStep,
+  type GenerateStep
 } from './arrange'
 import { fadedEnd, hasStartGap, type CollapseOptions, type SoundSummary } from './drone'
 import { DRUM_PATTERNS, findPattern } from './drums'
-import { findGenre, GENRES, PROMPT_EXAMPLES, type GenreGuide } from './genres'
+import { findGenre, GENERIC_STRUCTURE, GENRES, PROMPT_EXAMPLES, type GenreGuide } from './genres'
 import type { ProviderInfo, SingingEngine } from './generation'
 import { buildUstx, melodyForLyrics, placeMelody } from './melody'
 import { SINGER_PROVIDER, SINGER_VOICE } from './singer'
@@ -442,7 +443,19 @@ interface ChunkReport {
   drone: { section: string; start_bar: number }[]
   /** Tramos atascados dos veces que ahora repiten compases sanos de su sección. */
   filled: { section: string; start_bar: number; bars: number }[]
+  /** Finales apagados tapados con compases sanos de su sección (ver healTail). */
+  healed: { section: string; start_bar: number; bars: number }[]
 }
+
+/** Las frases de casi cualquier género van de 4 en 4 compases. */
+const PHRASE_BARS = 4
+
+/**
+ * Arreglos que piden acabar apagándose a propósito: ese final no se tapa. Solo frases
+ * de salida ("fade in" en una intro no cuenta).
+ */
+const SOFT_ENDING =
+  /\b(fade[sd]? out|fading out|fadeout|stops?|silence|breakdown|ritardando|ending|final hit)\b/i
 
 /** Pista de la canción: la de tipo "full" con más audio generado. */
 function songTrackOf(p: Project): Track | undefined {
@@ -502,6 +515,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
     const repaired: ChunkReport['repaired'] = []
     const drone: ChunkReport['drone'] = []
     const filled: ChunkReport['filled'] = []
+    const healed: ChunkReport['healed'] = []
     let generated = 0
     let last: string | null = null
     // Final de cada región: su volumen (para ver un hueco tras la unión) y si está sana
@@ -535,7 +549,8 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
     }
     // Para tapar un tramo que sigue atascado: compases sanos ya grabados de la misma
     // sección (o de otra igual de antes), de los que se toman los que tocan en esa
-    // posición de la frase. La más cercana primero.
+    // posición de la frase de 4 compases (un final de frase se tapa con otro final, no
+    // con un compás de en medio). La más cercana primero.
     const healthyLoop = async (
       section: Section,
       startBar: number,
@@ -558,12 +573,47 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         }))
         .filter((c) => inLike(c.bar) && c.length >= bars)
         .sort((a, b) => b.r.startBeat - a.r.startBeat)
+      const want = (startBar - section.startBar) % PHRASE_BARS
       for (const c of candidates) {
         if (!(await tailOf(c.r.id)).ok) continue
-        const k = (startBar - c.bar) % c.length
-        return { region: c.r, offsetBars: k + bars <= c.length ? k : 0 }
+        const k0 = (startBar - c.bar) % c.length
+        const k = k0 + bars <= c.length ? k0 : 0
+        const home = like.find((s) => c.bar >= s.startBar && c.bar < s.startBar + s.bars)
+        const inPhrase = Array.from({ length: c.length - bars + 1 }, (_, j) => j).filter(
+          (j) => home && (c.bar + j - home.startBar) % PHRASE_BARS === want
+        )
+        const best = inPhrase.sort((a, b) => Math.abs(a - k) - Math.abs(b - k))[0]
+        return { region: c.r, offsetBars: best ?? k }
       }
       return null
+    }
+    // Un tramo sano que termina apagándose (el último segundo muy por debajo del
+    // primero): el siguiente no puede fundirse con él, así que ese bajón se oiría entero
+    // en la unión, y cada coro repetido lo copia (test13: el coro moría en su último
+    // compás y la canción "volvía a empezar" tres veces). Se tapan los compases finales
+    // con compases sanos de la sección; así el siguiente sí se funde. No regenera nada.
+    const healTail = async (
+      section: Section,
+      step: GenerateStep,
+      made: string,
+      atBeat: number
+    ): Promise<string | null> => {
+      const n = Math.max(1, Math.ceil(1 / secPerBar))
+      if (n >= step.bars) return null
+      const startBar = step.startBar + step.bars - n
+      const loop = await healthyLoop(section, startBar, n, made)
+      if (!loop) return null
+      const trimmed = trimRegion(host.getProject(), made, (step.bars - n) * secPerBar)
+      const r = loopRegion(trimmed, null, loop.region, {
+        atBeat: atBeat + (step.bars - n) * perBar(trimmed),
+        offsetBars: loop.offsetBars,
+        bars: n
+      })
+      await commit(r.project, `${section.name}: final apagado tapado con compases sanos`)
+      healed.push({ section: section.name, start_bar: startBar, bars: n })
+      tails.set(made, { db: null, ok: true })
+      tails.set(r.regionId, { db: null, ok: true })
+      return r.regionId
     }
     const queue: (ChunkStep & { repair?: boolean })[] = [...run.steps]
     let total = queue.filter((s) => s.kind === 'generate').length
@@ -657,7 +707,9 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       const collapseAtSec = gap ? 0 : inspected.collapseAtSec
       tails.set(made, tailFrom(collapseAtSec, inspected.sound))
       if (collapseAtSec === null) {
-        last = made
+        const softEnd = endsSong || SOFT_ENDING.test(step.prompt)
+        const faded = !!inspected.sound && fadedEnd(inspected.sound)
+        last = (faded && !softEnd && (await healTail(section, step, made, atBeat))) || made
         continue
       }
       // Pasado el tope de reparaciones, un atasco se trata como una reparación fallida:
@@ -712,7 +764,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         repair: true
       })
     }
-    return { generated, failed, repaired, drone, filled }
+    return { generated, failed, repaired, drone, filled, healed }
   }
 
   /**
@@ -913,6 +965,9 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           return {
             found: false,
             known_genres: GENRES.map((x) => x.id),
+            // Sin guía, el LLM se inventaba compases (un verso de 22): una estructura
+            // genérica en frases de 4 que sirve para casi cualquier género.
+            structure: GENERIC_STRUCTURE.map(([name, bars, energy]) => ({ name, bars, energy })),
             example_prompts: PROMPT_EXAMPLES,
             hint: 'Not in the guide: describe it with the closest known genres and concrete instruments, in the same short style as the examples (use web_search if you do not know its sound).'
           }
@@ -1163,7 +1218,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         // Con cantante local, el instrumental no debe traer voces propias.
         const backing = local ? { ...spec, style: `instrumental, ${spec.style}` } : spec
         const tempo = host.getProject()
-        const { generated, failed, repaired, drone, filled } = await recordChunks({
+        const { generated, failed, repaired, drone, filled, healed } = await recordChunks({
           steps: planChunks(backing, bars, { bpm: tempo.bpm, key: tempo.key, drums: !!drums }),
           sections,
           trackId: song.id,
@@ -1237,6 +1292,11 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             filled,
             filled_note:
               'These parts got stuck twice, so they now repeat healthy bars of the same section and play fine. No need to mention it; if the user wants more variety there, offer create_variation.'
+          }),
+          ...(healed.length > 0 && {
+            healed,
+            healed_note:
+              'These bars faded out at the end of a part, so they now repeat healthy bars of the same section and the next part blends in. No need to mention it.'
           }),
           sections: sectionCoverage(final)
             .filter((c) => ids.has(c.section.id))
@@ -1441,6 +1501,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           ...(report.failed.length > 0 && { failed: report.failed }),
           ...(report.repaired.length > 0 && { repaired: report.repaired }),
           ...(report.filled.length > 0 && { filled: report.filled }),
+          ...(report.healed.length > 0 && { healed: report.healed }),
           ...(report.drone.length > 0 && {
             drone: report.drone,
             drone_note: 'These parts still sound stuck after one repair. Tell the user.'

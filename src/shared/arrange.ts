@@ -75,6 +75,16 @@ function toNumber(raw: unknown): number {
   return typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : (raw as number)
 }
 
+/**
+ * Compases de una sección en frases enteras de 4, como en casi cualquier género: el LLM
+ * a veces pide un verso de 22 (test13) y la última frase queda coja. Se completa hacia
+ * arriba (nunca se acorta una letra); menos de 4 compases (un remate) se respeta.
+ */
+export function phraseBars(bars: number): number {
+  const n = Math.round(bars)
+  return n < 4 ? n : Math.ceil(n / 4) * 4
+}
+
 export const sameName = (a: string, b: string): boolean =>
   a.trim().toLowerCase() === b.trim().toLowerCase()
 
@@ -125,7 +135,7 @@ export function parseSongSpec(input: Input): SongSpec {
       : typeof it.lyrics === 'string' && it.lyrics.trim()
         ? cleanLyrics(it.lyrics)
         : null
-    sections.push({ name, bars: Math.round(bars), arrangement, energy, reuse, lyrics, melody })
+    sections.push({ name, bars: phraseBars(bars), arrangement, energy, reuse, lyrics, melody })
   }
   if (sections.every((s) => s.reuse)) throw new Error('Alguna sección tiene que generarse')
   const vocals =
@@ -530,11 +540,12 @@ export function trimRegion(p: Project, regionId: string, lengthSec: number): Pro
 /**
  * Cambia la región `replaceId` por `bars` compases de `src` (desde su compás
  * `offsetBars`) colocados en `atBeat`: el loop con que un productor tapa un tramo que no
- * sirve. Devuelve también el id de la región nueva.
+ * sirve. Con `replaceId` null no se quita nada: se añade a la pista de `src` (para tapar
+ * solo el final de un tramo ya recortado). Devuelve también el id de la región nueva.
  */
 export function loopRegion(
   p: Project,
-  replaceId: string,
+  replaceId: string | null,
   src: Region,
   opts: { atBeat: number; offsetBars: number; bars: number }
 ): { project: Project; regionId: string } {
@@ -554,7 +565,7 @@ export function loopRegion(
     project: {
       ...p,
       tracks: p.tracks.map((t) =>
-        t.regions.some((r) => r.id === replaceId)
+        t.regions.some((r) => r.id === (replaceId ?? src.id))
           ? { ...t, regions: [...t.regions.filter((r) => r.id !== replaceId), region] }
           : t
       )

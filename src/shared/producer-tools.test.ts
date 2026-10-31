@@ -720,6 +720,57 @@ describe('productor · canciones completas', () => {
     expect(calls.find((c) => c.atBeat === 64)).toMatchObject({ from: intro, crossfade: false })
   })
 
+  describe('final apagado de un tramo', () => {
+    const sound = (head: number, tail: number) => ({
+      head: { db: head, highDb: -15, pulseDb: 5 },
+      tail: { db: tail, highDb: -15, pulseDb: 5 },
+      mean: { db: head, highDb: -15, pulseDb: 5 },
+      staticRun: null,
+      opening: [head, head, head, head, head, head]
+    })
+    /** El segundo tramo del verso (beat 64) termina 15 dB por debajo de como empezó. */
+    function fadingVerse(h: ReturnType<typeof fakeHost>) {
+      h.host.inspectRegion = async (regionId) => {
+        const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+        return {
+          collapseAtSec: null,
+          sound: r.startBeat === 64 ? sound(-15, -30) : sound(-15, -15)
+        }
+      }
+    }
+    type Healed = Repaired & { healed?: { section: string; start_bar: number; bars: number }[] }
+
+    it('se tapa con un final de frase sano de la sección y el coro se funde con él', async () => {
+      const h = fakeHost(createProject('X'))
+      const calls = chainable(h)
+      fadingVerse(h)
+      const res = (await h.run('compose_song', songInput)) as Healed
+      expect(res.healed).toEqual([{ section: 'Verso', start_bar: 24, bars: 1 }])
+      expect(res.repaired).toBeUndefined()
+      const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
+      const bar = barsToSeconds(1, h.state.project)
+      expect(song.regions.find((r) => r.startBeat === 64)!.lengthSec).toBeCloseTo(7 * bar)
+      // El compás 24 (último de una frase) lo toca el compás 16, también fin de frase.
+      const first = song.regions.find((r) => r.startBeat === 32)!
+      const patch = song.regions.find((r) => r.startBeat === 92)!
+      expect(patch.clipId).toBe(first.clipId)
+      expect(patch.offsetSec).toBeCloseTo(first.offsetSec + 7 * bar)
+      expect(calls.find((c) => c.atBeat === 96)).toMatchObject({ from: patch.id, crossfade: true })
+    })
+
+    it('no se toca si el arreglo pide acabar apagándose', async () => {
+      const h = fakeHost(createProject('X'))
+      const calls = chainable(h)
+      fadingVerse(h)
+      const sections = songInput.sections.map((s) =>
+        s.name === 'Verso' ? { ...s, arrangement: 'bass and hats, fade out' } : s
+      )
+      const res = (await h.run('compose_song', { ...songInput, sections })) as Healed
+      expect(res.healed).toBeUndefined()
+      expect(calls.find((c) => c.atBeat === 96)).toMatchObject({ crossfade: false })
+    })
+  })
+
   it('compose_song repara como mucho cuatro tramos', async () => {
     const h = fakeHost(createProject('X'))
     const calls = chainable(h)
