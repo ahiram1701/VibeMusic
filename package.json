@@ -26,7 +26,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.1.0",
-    "@gradio/client": "2.7.1",
+    "@gradio/client": "2.7.2",
     "electron-updater": "^6.8.11",
     "lucide-react": "1.55.0",
     "undici": "^8.12.3"
