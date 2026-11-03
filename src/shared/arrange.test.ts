@@ -15,6 +15,8 @@ import {
   polishSong,
   reviewProject,
   sectionCoverage,
+  brightened,
+  sectionBrightness,
   sectionGains,
   tileRegions,
   trackBusy,
@@ -22,6 +24,7 @@ import {
   withoutFilterWords,
   withoutPercussion,
   bedText,
+  withRegionBright,
   withRegionGains,
   withoutStyleRepeats,
   type ChunkStep
@@ -589,6 +592,63 @@ describe('mezcla por sección', () => {
     expect(withGain.tracks[0].regions[0].gainDb).toBe(4)
     const cleared = withRegionGains(withGain, new Map([['a', 0]]))
     expect('gainDb' in cleared.tracks[0].regions[0]).toBe(false)
+  })
+
+  describe('brillo por sección (test15: coros opacos)', () => {
+    const sections = [
+      { name: 'Intro', startBar: 1, bars: 8, energy: 3 },
+      { name: 'Verso', startBar: 9, bars: 8, energy: 3 },
+      { name: 'Coro', startBar: 17, bars: 8, energy: 5 },
+      { name: 'Puente', startBar: 25, bars: 8, energy: 2 }
+    ]
+    const bright = (bar: number, db: number, highDb: number) => ({
+      ...at(bar, `c${bar}`, db),
+      highDb
+    })
+
+    it('realza lo que se oscureció respecto al primer tramo, con tope', () => {
+      const b = sectionBrightness(
+        sections,
+        [bright(1, -18, -14), bright(9, -19, -18), bright(17, -17, -29), bright(25, -20, -30)],
+        4
+      )
+      // El verso está dentro del margen; el coro sube el tope; el puente tranquilo, nada.
+      expect(b.get('r1')).toBe(0)
+      expect(b.get('r9')).toBe(0)
+      expect(b.get('r17')).toBe(6)
+      expect(b.get('r25')).toBe(0)
+    })
+
+    it('no realza el siseo ni una canción con un solo tramo', () => {
+      const b = sectionBrightness(sections, [bright(1, -18, -2), bright(9, -30, -9)], 4)
+      expect(b.get('r9')).toBe(0)
+      expect(sectionBrightness(sections, [bright(1, -18, -14)], 4).size).toBe(0)
+    })
+
+    it('lo realzado se mide con más agudos, y se pone y se quita', () => {
+      const lit = brightened({ db: -20, highDb: -28 }, 6)
+      expect(lit.highDb).toBeCloseTo(-22, 0)
+      expect(lit.db).toBeGreaterThan(-20)
+      expect(brightened({ db: -20, highDb: -28 }, 0)).toEqual({ db: -20, highDb: -28 })
+      const t = createTrack('Canción', 'full')
+      const r: Region = {
+        id: 'a',
+        clipId: 'c',
+        startBeat: 0,
+        offsetSec: 0,
+        lengthSec: 4,
+        fadeInSec: 0,
+        fadeOutSec: 0
+      }
+      const p = withRegionBright(
+        { ...createProject('X'), tracks: [{ ...t, regions: [r] }] },
+        new Map([['a', 4]])
+      )
+      expect(p.tracks[0].regions[0].brightDb).toBe(4)
+      expect('brightDb' in withRegionBright(p, new Map([['a', 0]])).tracks[0].regions[0]).toBe(
+        false
+      )
+    })
   })
 
   it('tapa una región con compases sanos de otra, en su posición de la frase', () => {

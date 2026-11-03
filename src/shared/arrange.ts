@@ -558,7 +558,8 @@ export function loopRegion(
     lengthSec: opts.bars * bar,
     fadeInSec: 0.01,
     fadeOutSec: 0.01,
-    ...(src.gainDb !== undefined && { gainDb: src.gainDb })
+    ...(src.gainDb !== undefined && { gainDb: src.gainDb }),
+    ...(src.brightDb !== undefined && { brightDb: src.brightDb })
   }
   return {
     regionId: region.id,
@@ -684,23 +685,98 @@ export function sectionGains(
 
 /** Pone la ganancia de cada región de `gains` (0 la quita). */
 export function withRegionGains(p: Project, gains: Map<string, number>): Project {
+  return withRegionDb(p, 'gainDb', gains)
+}
+
+/** Pone el realce de agudos de cada región de `bright` (0 lo quita). */
+export function withRegionBright(p: Project, bright: Map<string, number>): Project {
+  return withRegionDb(p, 'brightDb', bright)
+}
+
+function withRegionDb(
+  p: Project,
+  field: 'gainDb' | 'brightDb',
+  values: Map<string, number>
+): Project {
   return {
     ...p,
     tracks: p.tracks.map((t) =>
-      t.regions.some((r) => gains.has(r.id))
+      t.regions.some((r) => values.has(r.id))
         ? {
             ...t,
             regions: t.regions.map((r) => {
-              const g = gains.get(r.id)
-              if (g === undefined) return r
-              const next: Region = { ...r, gainDb: g }
-              if (g === 0) delete next.gainDb
+              const v = values.get(r.id)
+              if (v === undefined) return r
+              const next: Region = { ...r, [field]: v }
+              if (v === 0) delete next[field]
               return next
             })
           }
         : t
     )
   }
+}
+
+/** Lo más que se realzan los agudos de una sección. */
+export const MAX_BRIGHT_DB = 6
+/** Lo que una sección puede quedar más apagada que la referencia sin tocarla. */
+const BRIGHT_MARGIN_DB = 3
+
+/**
+ * Realce de agudos de cada región para que ninguna sección suene opaca. Cada tramo
+ * continúa el audio del anterior y hereda su timbre, así que un poco de oscuridad se
+ * va acumulando (test15: el intro con los agudos a −14 dB y los coros a −26/−31). La
+ * referencia es la primera región de la canción, la única que sale solo del texto: es
+ * como cree el modelo que suena ese género. Una sección más apagada que ella (con
+ * margen) se realza hasta MAX_BRIGHT_DB, como haría un ingeniero con un ecualizador.
+ * Solo se sube: nunca el siseo (bajito y de puros agudos), ni una sección tranquila
+ * (energía ≤ 2: puede ser apagada a propósito). `highDb`: agudos de la región
+ * respecto a su total, en dB (ver drone.ts).
+ */
+export function sectionBrightness(
+  sections: { name?: string; startBar: number; bars: number; energy?: number }[],
+  regions: { id: string; startBeat: number; lengthSec: number; db: number; highDb: number }[],
+  beatsPerBar: number
+): Map<string, number> {
+  const out = new Map<string, number>()
+  const sorted = [...regions].sort((a, b) => a.startBeat - b.startBeat)
+  if (sorted.length < 2) return out
+  const reference = sorted[0].highDb
+  const energyOf = (s: (typeof sections)[number]): number =>
+    s.energy ??
+    sections.find((o) => o.name && o.name === s.name && o.energy !== undefined)?.energy ??
+    3
+  for (const s of sections) {
+    const a = (s.startBar - 1) * beatsPerBar
+    const b = a + s.bars * beatsPerBar
+    const inside = sorted.filter((r) => r.startBeat >= a - 0.05 && r.startBeat < b - 0.05)
+    const power = inside.reduce((n, r) => n + Math.pow(10, r.db / 10) * r.lengthSec, 0)
+    if (power <= 0) continue
+    const high = inside.reduce((n, r) => n + Math.pow(10, (r.db + r.highDb) / 10) * r.lengthSec, 0)
+    const db = 10 * Math.log10(power / inside.reduce((n, r) => n + r.lengthSec, 0))
+    const highDb = 10 * Math.log10(high / power)
+    const hiss = db < THIN_DB && highDb > THIN_HIGH_DB
+    const wanted = reference - BRIGHT_MARGIN_DB - highDb
+    const lift =
+      hiss || energyOf(s) <= 2 || wanted < MIN_CHANGE_DB
+        ? 0
+        : Math.round(Math.min(MAX_BRIGHT_DB, wanted) * 2) / 2
+    for (const r of inside) out.set(r.id, lift)
+  }
+  return out
+}
+
+/**
+ * Lo que se mide de un segundo tras realzar sus agudos `brightDb`: la parte aguda
+ * (`highDb`, respecto al total) sube y con ella un poco el total. Aproxima el realce
+ * como si subiera todo lo que hay por encima de 1 kHz.
+ */
+export function brightened<T extends { db: number; highDb: number }>(w: T, brightDb: number): T {
+  if (!brightDb) return w
+  const r = Math.pow(10, w.highDb / 10)
+  const g2 = Math.pow(10, brightDb / 10)
+  const total = 10 * Math.log10(1 + r * (g2 - 1))
+  return { ...w, db: w.db + total, highDb: w.highDb + brightDb - total }
 }
 
 /** Compases de un loop para una capa encima: 8 si caben, si no 4 o lo que quepa. */

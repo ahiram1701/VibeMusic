@@ -78,6 +78,11 @@ export interface Region {
    * secciones de la canción para que un coro no suene más bajo que el verso.
    */
   gainDb?: number
+  /**
+   * Realce de agudos de la región (dB, en un filtro de estantería): el productor aclara
+   * así una sección que salió opaca (ver sectionBrightness).
+   */
+  brightDb?: number
 }
 
 /** Un punto de una automatización: en ese pulso de la canción, ese valor. */

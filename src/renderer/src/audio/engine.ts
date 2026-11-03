@@ -1,5 +1,5 @@
 import type { Clip, Project } from '@shared/project'
-import { dbToGain, isTrackAudible } from '@shared/mixer'
+import { BRIGHT_SHELF_HZ, dbToGain, isTrackAudible } from '@shared/mixer'
 import { projectEndSec } from '@shared/timeline'
 import { duckEvents, regionPlayback, sweepEvents, type ParamEvent } from '@shared/playback'
 
@@ -96,13 +96,20 @@ function buildGraph(
         fade.gain.setValueAtTime(1, when + duration - region.fadeOutSec)
         fade.gain.linearRampToValueAtTime(0, when + duration)
       }
+      let out: AudioNode = fade
       if (region.gainDb) {
         const level = ctx.createGain()
         level.gain.value = Math.pow(10, region.gainDb / 20)
-        fade.connect(level).connect(gain)
-      } else {
-        fade.connect(gain)
+        out = out.connect(level)
       }
+      if (region.brightDb) {
+        const shelf = ctx.createBiquadFilter()
+        shelf.type = 'highshelf'
+        shelf.frequency.value = BRIGHT_SHELF_HZ
+        shelf.gain.value = region.brightDb
+        out = out.connect(shelf)
+      }
+      out.connect(gain)
 
       const src = ctx.createBufferSource()
       src.buffer = buffer

@@ -96,6 +96,14 @@ describe('drone', () => {
     expect(soundSummary(new Float32Array(10), SR)).toBeNull()
   })
 
+  it('el volumen típico (body) no lo manda un final fuerte (test15)', () => {
+    const loud = (t: number): number => 8 * song(t)
+    const sum = soundSummary(signal([10, song], [3, loud]), SR)!
+    // La media en potencia sube hacia la subida final; la mediana se queda en el cuerpo.
+    expect(sum.mean.db - sum.body!).toBeGreaterThan(6)
+    expect(Math.abs(sum.body! - sum.head.db)).toBeLessThan(3)
+  })
+
   it('un siseo estático (sin pulso) también es colapso, aunque tenga agudos', () => {
     const stats = windowStats(signal([2, song], [2, hiss]), SR)
     expect(stats[0].pulseDb).toBeGreaterThan(2)

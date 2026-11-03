@@ -12,21 +12,31 @@ import {
   parseSongSpec,
   planChunks,
   bedText,
+  brightened,
   polishSong,
   reviewProject,
   sameName,
   sectionCoverage,
+  sectionBrightness,
   sectionGains,
   trackBusy,
   trimRegion,
   vocalSongRequest,
+  withRegionBright,
   withRegionGains,
   type ChunkStep,
   type GenerateStep
 } from './arrange'
 import { darkEnd, fadedEnd, hasStartGap, type CollapseOptions, type SoundSummary } from './drone'
 import { DRUM_PATTERNS, findPattern } from './drums'
-import { findGenre, GENERIC_STRUCTURE, GENRES, PROMPT_EXAMPLES, type GenreGuide } from './genres'
+import {
+  findGenre,
+  GENERIC_STRUCTURE,
+  GENRES,
+  guideLengths,
+  PROMPT_EXAMPLES,
+  type GenreGuide
+} from './genres'
 import type { ProviderInfo, SingingEngine } from './generation'
 import { buildUstx, melodyForLyrics, placeMelody } from './melody'
 import { SINGER_PROVIDER, SINGER_VOICE } from './singer'
@@ -791,8 +801,10 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
   }
 
   /**
-   * Iguala las secciones de la pista (ver sectionGains): se escucha cada región tal
-   * como sale del clip y se le pone su ganancia. Sin medidas no cambia nada.
+   * Iguala las secciones de la pista (ver sectionGains y sectionBrightness): se escucha
+   * cada región tal como sale del clip y se le pone su ganancia y su realce de agudos.
+   * Con batería programada no se realza: la pista de la canción es entonces una cama de
+   * bajo y pads, grave a propósito. Sin medidas no cambia nada.
    */
   const levelTrack = async (trackId: string): Promise<void> => {
     const p = host.getProject()
@@ -802,7 +814,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       if (sound && Number.isFinite(sound.mean.db)) {
         measured.push({
           ...r,
-          db: sound.mean.db,
+          db: sound.body ?? sound.mean.db,
           highDb: sound.mean.highDb,
           headDb: sound.head.db,
           tailDb: sound.tail.db
@@ -810,11 +822,23 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       }
     }
     const gains = sectionGains(sectionsOf(p), measured, perBar(p))
+    const bright = p.tracks.some((t) => t.drums)
+      ? new Map<string, number>()
+      : sectionBrightness(sectionsOf(p), measured, perBar(p))
     const now = host.getProject()
-    const gainOf = (id: string): number =>
-      now.tracks.flatMap((t) => t.regions).find((r) => r.id === id)?.gainDb ?? 0
-    if ([...gains].some(([id, g]) => gainOf(id) !== g)) {
-      await commit(withRegionGains(now, gains), 'mezcla: volumen igualado por sección')
+    const regionOf = (id: string): Region | undefined =>
+      now.tracks.flatMap((t) => t.regions).find((r) => r.id === id)
+    const changed =
+      [...gains].some(([id, g]) => (regionOf(id)?.gainDb ?? 0) !== g) ||
+      [...bright].some(([id, b]) => (regionOf(id)?.brightDb ?? 0) !== b)
+    if (changed) {
+      const lifted = [...bright.values()].some((b) => b > 0)
+      await commit(
+        withRegionBright(withRegionGains(now, gains), bright),
+        lifted
+          ? 'mezcla: volumen y brillo igualados por sección'
+          : 'mezcla: volumen igualado por sección'
+      )
     }
   }
 
@@ -827,7 +851,10 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       if (sound) {
         // Se mide el clip; lo que se oye lleva además la ganancia de la región.
         const g = r.gainDb ?? 0
-        const up = (w: SoundSummary['mean']): SoundSummary['mean'] => ({ ...w, db: w.db + g })
+        const up = (w: SoundSummary['mean']): SoundSummary['mean'] => {
+          const lit = brightened(w, r.brightDb ?? 0)
+          return { ...lit, db: lit.db + g }
+        }
         regions.push({
           startBeat: r.startBeat,
           endBeat: r.startBeat + secondsToBeats(r.lengthSec, p.bpm),
@@ -1094,7 +1121,14 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         // "industrial techno" para un house tumbado), se usa el de la guía.
         const head = guide?.style.split(',')[0].trim().toLowerCase()
         const offStyle = !!head && !parsed.style.toLowerCase().includes(head)
-        const styled = offStyle ? { ...parsed, style: guide!.style } : parsed
+        const styledOnly = offStyle ? { ...parsed, style: guide!.style } : parsed
+        // Y con la duración: secciones más cortas que las del género dejan una canción
+        // de 2 minutos (ver guideLengths).
+        const sized = guide ? guideLengths(styledOnly.sections, guide) : null
+        const styled = sized ? { ...styledOnly, sections: sized.sections } : styledOnly
+        const lengthNote = sized?.lengthened.length
+          ? `sections shorter than the ${guide!.id} guide were lengthened: ${sized.lengthened.map((l) => `${l.name} ${l.from}→${l.to} bars`).join(', ')}. Ask for short sections only if the user wants a short song.`
+          : null
         // Con batería programada, los coros que se repiten reutilizan el audio del
         // primero (como en el house real): la variación la ponen la batería y los filtros,
         // y se ahorran varios minutos de generación por coro.
@@ -1221,6 +1255,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             bpm: final.bpm,
             ...(tempoNote && { tempo_note: tempoNote }),
             ...(styleNote && { style_note: styleNote }),
+            ...(lengthNote && { length_note: lengthNote }),
             key: final.key,
             ...(error && { error }),
             sections: sectionsOf(final).map((s) => ({
@@ -1297,6 +1332,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           bpm: final.bpm,
           ...(tempoNote && { tempo_note: tempoNote }),
           ...(styleNote && { style_note: styleNote }),
+          ...(lengthNote && { length_note: lengthNote }),
           key: final.key,
           bars_per_part: bars,
           parts_generated: generated,

@@ -197,11 +197,23 @@ function powerMean(stats: WindowStats[]): WindowStats {
   }
 }
 
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+}
+
 /** Resumen de un audio para revisar la canción (ver soundSummary). */
 export interface SoundSummary {
   head: WindowStats
   tail: WindowStats
   mean: WindowStats
+  /**
+   * Volumen típico (dBFS): la mediana de sus segundos. La media en potencia la manda lo
+   * más fuerte: en test15, 2-3 s de subida al final del verso la dejaban en −17 dB y
+   * los 10 s anteriores, que eran casi todo lo que se oía, sonaban a −24.
+   */
+  body?: number
   /** Racha más larga de segundos estáticos (suena, pero sin pulso), o null. */
   staticRun: { startSec: number; sec: number } | null
   /** Volumen (dBFS) de los primeros cuartos de segundo, para ver un hueco al empezar. */
@@ -260,6 +272,7 @@ export function soundSummary(samples: Float32Array, sampleRate: number): SoundSu
     head: powerMean(edge.slice(0, EDGE_PARTS)),
     tail: powerMean(edge.slice(-EDGE_PARTS)),
     mean: powerMean(stats),
+    body: median(stats.map((w) => w.db)),
     staticRun,
     opening: edge.slice(0, OPENING_PARTS).map((w) => w.db)
   }

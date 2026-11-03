@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { STYLE_WORDS } from './arrange'
-import { findGenre, GENERIC_STRUCTURE, GENRES, PROMPT_EXAMPLES } from './genres'
+import { findGenre, GENERIC_STRUCTURE, GENRES, guideLengths, PROMPT_EXAMPLES } from './genres'
 
 const words = (s: string): number => s.split(/\s+/).filter(Boolean).length
 // Lo que lleva a MusicGen al drone o al balbuceo (ver drone.ts y producer-prompt.ts).
@@ -80,5 +80,28 @@ describe('guía de géneros', () => {
 
   it('la estructura genérica va en frases de 4 compases', () => {
     for (const [, bars] of GENERIC_STRUCTURE) expect(bars % 4).toBe(0)
+  })
+
+  it('alarga versos y coros más cortos que la guía (test15: 2 minutos)', () => {
+    const rock = findGenre('hard rock')!
+    const sec = (name: string, bars: number, melody: unknown = null) => ({ name, bars, melody })
+    const { sections, lengthened } = guideLengths(
+      [
+        sec('Intro', 4),
+        sec('Verso 1', 8),
+        sec('Chorus', 8),
+        sec('Verso 2', 8, []),
+        sec('Outro', 2)
+      ],
+      rock
+    )
+    expect(sections.map((s) => s.bars)).toEqual([4, 16, 16, 8, 2])
+    expect(lengthened).toEqual([
+      { name: 'Verso 1', from: 8, to: 16 },
+      { name: 'Chorus', from: 8, to: 16 }
+    ])
+    // Una canción ya tan larga como la de la guía se respeta.
+    const long = Array.from({ length: 13 }, (_, i) => sec(`Verso ${i}`, 8))
+    expect(guideLengths(long, rock).lengthened).toEqual([])
   })
 })

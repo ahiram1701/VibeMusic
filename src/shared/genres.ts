@@ -437,10 +437,11 @@ export const GENRES: GenreGuide[] = [
     ],
     // Con "heavy", "pounding" y "aggressive" (test14) cada tramo se iba hundiendo en un
     // muro grave de distorsión (agudos de −19 a −35 dB en 15 s) y los que lo continuaban
-    // nacían atascados. Este es el vocabulario de test13, que sonó limpio, más platillos.
+    // nacían atascados. Y "distorted" (test15) daba un muro de distorsión opaco: el hard
+    // rock clásico es crunch abierto y brillante, con caja seca y platillos.
     bpm: [120, 140],
     style:
-      'hard rock, distorted electric guitar riff, live drums, driving bass guitar, crash cymbals, energetic',
+      'classic hard rock, crunchy overdriven guitar riff, straight rock beat, punchy snare, bass, crash cymbals',
     structure: [
       ['Intro', 8, 3],
       ['Verso', 16, 3],
@@ -950,4 +951,47 @@ export function findGenre(query: string): GenreGuide | null {
     }
   }
   return best?.g ?? null
+}
+
+/** Nombres de sección en inglés u otros sinónimos → el de la guía. */
+const SECTION_BASE: Record<string, string> = {
+  verse: 'verso',
+  estrofa: 'verso',
+  chorus: 'coro',
+  estribillo: 'coro',
+  hook: 'coro',
+  bridge: 'puente'
+}
+
+/** "Verso 2", "verse" y "VERSO" son la misma sección de la guía. */
+const baseName = (name: string): string => {
+  const n = normalize(name).replace(/\s*\d+$/, '')
+  return SECTION_BASE[n] ?? n
+}
+
+/**
+ * Alarga las secciones más cortas que las de la guía (test15: el LLM puso versos y
+ * coros de 8 compases y la canción duró 2 minutos, con la guía en 16). Solo si la
+ * canción entera queda más corta que la de la guía: una estructura larga propia se
+ * respeta. No se tocan el intro y el outro (cortos son una elección normal) ni las
+ * secciones cantadas por el cantante local (su melodía va nota a nota).
+ */
+export function guideLengths<S extends { name: string; bars: number; melody: unknown }>(
+  sections: S[],
+  guide: GenreGuide
+): { sections: S[]; lengthened: { name: string; from: number; to: number }[] } {
+  const total = (bars: number[]): number => bars.reduce((a, b) => a + b, 0)
+  const lengthened: { name: string; from: number; to: number }[] = []
+  if (total(sections.map((s) => s.bars)) >= total(guide.structure.map(([, b]) => b))) {
+    return { sections, lengthened }
+  }
+  const out = sections.map((s) => {
+    const base = baseName(s.name)
+    if (base === 'intro' || base === 'outro' || s.melody) return s
+    const typical = guide.structure.find(([n]) => baseName(n) === base)?.[1]
+    if (typical === undefined || s.bars >= typical) return s
+    lengthened.push({ name: s.name, from: s.bars, to: typical })
+    return { ...s, bars: typical }
+  })
+  return { sections: out, lengthened }
 }
