@@ -1082,7 +1082,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
                   reuse: {
                     type: 'boolean',
                     description:
-                      'true to repeat the audio of the previous section with the same name instead of generating it again. Use it for repeated choruses and drops, like real songs do; it also saves several minutes. Ignored when the cloud engine sings the song.'
+                      'Repeated sections (same name and bars, e.g. "Verso" again) already repeat the audio of the first one, like real songs do; their lyrics still change. To get a new take instead, give it another name (e.g. "Coro final"). Ignored when the cloud engine sings the song.'
                   },
                   lyrics: {
                     type: 'string',
@@ -1129,21 +1129,24 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         const lengthNote = sized?.lengthened.length
           ? `sections shorter than the ${guide!.id} guide were lengthened: ${sized.lengthened.map((l) => `${l.name} ${l.from}→${l.to} bars`).join(', ')}. Ask for short sections only if the user wants a short song.`
           : null
-        // Con batería programada, los coros que se repiten reutilizan el audio del
-        // primero (como en el house real): la variación la ponen la batería y los filtros,
-        // y se ahorran varios minutos de generación por coro.
+        // Los versos y coros que se repiten reutilizan el audio del primero, como en
+        // una canción real (el segundo verso lleva el mismo riff; cambian la letra, que
+        // va en su pista, y la energía, que pone la mezcla). Generarlos de nuevo los
+        // hacía continuar lo anterior y la canción se iba desviando (test16: desde el
+        // segundo verso, oscuro, un muro de platillos y un coro que se apagaba compás sí,
+        // compás no). Además ahorra un tramo de 6-7 minutos por repetición. Solo con la
+        // misma duración: la copia no rellena compases que el original no tiene. Con
+        // batería programada, solo los coros (la variación la ponen batería y filtros).
         const drums = findPattern(guide?.drums)
-        const spec = drums
-          ? {
-              ...styled,
-              sections: styled.sections.map((s, i) =>
-                (s.energy ?? 0) >= 4 &&
-                styled.sections.slice(0, i).some((o) => sameName(o.name, s.name))
-                  ? { ...s, reuse: true }
-                  : s
-              )
-            }
-          : styled
+        const spec = {
+          ...styled,
+          sections: styled.sections.map((s, i) =>
+            (!drums || (s.energy ?? 0) >= 4) &&
+            styled.sections.slice(0, i).some((o) => sameName(o.name, s.name) && o.bars === s.bars)
+              ? { ...s, reuse: true }
+              : s
+          )
+        }
         const styleNote = offStyle
           ? `style "${parsed.style}" did not match the ${guide!.id} guide; used "${guide!.style}". Put extra flavour in the sections' arrangement instead.`
           : null

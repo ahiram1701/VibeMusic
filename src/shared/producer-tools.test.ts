@@ -943,11 +943,11 @@ describe('productor · canciones completas', () => {
     expect(calls.some((c) => c.atBeat === 96)).toBe(false)
     const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
     expect(song.regions.some((r) => r.startBeat === 96)).toBe(true)
-    // Sin guía de un género con batería, se graba como siempre.
+    // Sin batería también se repite (test16): grabarlo otra vez lo desviaba.
     const plain = fakeHost(createProject('Y'))
     const plainCalls = chainable(plain)
     await plain.run('compose_song', houseSong)
-    expect(plainCalls.some((c) => c.atBeat === 96)).toBe(true)
+    expect(plainCalls.some((c) => c.atBeat === 96)).toBe(false)
   })
 
   it('con batería, la cama no pide filtro ni percusión (lo hacen la mezcla y la batería)', async () => {
@@ -1060,6 +1060,29 @@ describe('productor · canciones completas', () => {
     expect(progress[1]).toMatch(/^Parte 2 de 2 · Verso/)
   })
 
+  it('los versos y coros repetidos reutilizan el primero, con o sin número (test16)', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    await h.run('compose_song', {
+      ...songInput,
+      sections: [
+        { name: 'Verso 1', bars: 8, energy: 3, arrangement: 'groove' },
+        { name: 'Coro', bars: 8, energy: 5, arrangement: 'hook' },
+        { name: 'Verso 2', bars: 8, energy: 3, arrangement: 'groove, new lyrics' },
+        { name: 'Coro', bars: 8, energy: 5, arrangement: 'hook' },
+        { name: 'Coro', bars: 4, energy: 5, arrangement: 'short hook' }
+      ]
+    })
+    // Verso 2 (pulso 64) y el segundo coro (96) se copian; el coro corto se graba.
+    const generatedAt = [...h.generated.map(() => 0), ...calls.map((c) => c.atBeat)]
+    expect(generatedAt).not.toContain(64)
+    expect(generatedAt).not.toContain(96)
+    expect(generatedAt).toContain(128)
+    const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
+    expect(song.regions.some((r) => r.startBeat === 64)).toBe(true)
+    expect(song.regions.some((r) => r.startBeat === 96)).toBe(true)
+  })
+
   it('compose_song continúa un coro repetido sin copiar desde lo que suena antes', async () => {
     const h = fakeHost(createProject('X'))
     const calls = chainable(h)
@@ -1068,7 +1091,7 @@ describe('productor · canciones completas', () => {
       sections: [
         { name: 'Coro', bars: 8, energy: 5, arrangement: 'hook' },
         { name: 'Verso', bars: 8, energy: 3, arrangement: 'groove' },
-        { name: 'Coro 2', bars: 8, energy: 5, arrangement: 'hook bigger' }
+        { name: 'Coro final', bars: 8, energy: 5, arrangement: 'hook bigger' }
       ]
     })
     const song = h.state.project.tracks.find((t) => t.name === 'Canción')!

@@ -85,8 +85,14 @@ export function phraseBars(bars: number): number {
   return n < 4 ? n : Math.ceil(n / 4) * 4
 }
 
-export const sameName = (a: string, b: string): boolean =>
-  a.trim().toLowerCase() === b.trim().toLowerCase()
+/** Nombre de sección sin número: "Verso 2" es otra vez "verso". */
+const sectionBase = (name: string): string =>
+  name
+    .trim()
+    .toLowerCase()
+    .replace(/\s*\d+$/, '')
+
+export const sameName = (a: string, b: string): boolean => sectionBase(a) === sectionBase(b)
 
 /**
  * Valida y normaliza la canción que manda el LLM. Los errores dicen exactamente qué
