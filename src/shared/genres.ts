@@ -953,6 +953,16 @@ export function findGenre(query: string): GenreGuide | null {
   return best?.g ?? null
 }
 
+/**
+ * ¿Es `g` un subgénero de lo que consultó el LLM? Para "un rock tipo AC/DC" el LLM
+ * preguntaba solo por "rock" (test17) y se llevaba la guía genérica, con el
+ * "distorted" que daba un muro opaco, en vez de la de hard rock.
+ */
+export function narrows(g: GenreGuide, query: string): boolean {
+  const q = normalize(query)
+  return !!q && !g.aliases.includes(q) && g.aliases.some((a) => ` ${a} `.includes(` ${q} `))
+}
+
 /** Nombres de sección en inglés u otros sinónimos → el de la guía. */
 const SECTION_BASE: Record<string, string> = {
   verse: 'verso',

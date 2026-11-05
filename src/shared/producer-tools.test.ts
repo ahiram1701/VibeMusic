@@ -598,6 +598,11 @@ describe('productor · canciones completas', () => {
     expect(((await h.run('genre_guide', { genre: 'techno' })) as { genre: string }).genre).toBe(
       'techno'
     )
+    // Un subgénero en sus palabras gana a la consulta genérica (test17).
+    h.host.userMessages = () => ['crea un rock tipo AC/DC']
+    expect(((await h.run('genre_guide', { genre: 'rock' })) as { genre: string }).genre).toBe(
+      'hard-rock'
+    )
   })
 
   it('compose_song lleva el tempo al rango del género consultado', async () => {

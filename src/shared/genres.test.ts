@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { STYLE_WORDS } from './arrange'
-import { findGenre, GENERIC_STRUCTURE, GENRES, guideLengths, PROMPT_EXAMPLES } from './genres'
+import { findGenre, GENERIC_STRUCTURE, GENRES, guideLengths, narrows, PROMPT_EXAMPLES } from './genres'
 
 const words = (s: string): number => s.split(/\s+/).filter(Boolean).length
 // Lo que lleva a MusicGen al drone o al balbuceo (ver drone.ts y producer-prompt.ts).
@@ -9,6 +9,14 @@ const BAD =
   /\b(dark|ambient|atmospheric|cinematic|drone|warehouse|reverb|vocals?|not|no|heavy|pounding|aggressive)\b/
 
 describe('guía de géneros', () => {
+  it('un subgénero afina la consulta genérica del LLM (test17)', () => {
+    const hard = findGenre('crea un rock tipo AC/DC')!
+    expect(hard.id).toBe('hard-rock')
+    expect(narrows(hard, 'rock')).toBe(true)
+    expect(narrows(hard, 'reggaeton')).toBe(false)
+    expect(narrows(findGenre('rock')!, 'rock')).toBe(false)
+  })
+
   it('cada género trae tempo, estructura y un estilo corto que MusicGen entiende', () => {
     for (const g of GENRES) {
       expect(g.bpm[0]).toBeLessThan(g.bpm[1])

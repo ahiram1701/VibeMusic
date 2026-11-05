@@ -31,6 +31,7 @@ import { darkEnd, fadedEnd, hasStartGap, type CollapseOptions, type SoundSummary
 import { DRUM_PATTERNS, findPattern } from './drums'
 import {
   findGenre,
+  narrows,
   GENERIC_STRUCTURE,
   GENRES,
   guideLengths,
@@ -1004,12 +1005,13 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         const genre = str(input, 'genre')
         // Si el usuario pidió una fusión ("house/techno bien tumbado"), manda esa guía
         // aunque el LLM pregunte solo por una parte ("techno"). Decide el mensaje más
-        // reciente que nombre algún género.
+        // reciente que nombre algún género. Lo mismo si el usuario nombró un subgénero
+        // de lo que pregunta el LLM ("rock tipo AC/DC" y el LLM pregunta "rock").
         const asked = host
           .userMessages?.()
           .map((m) => findGenre(m))
           .find((x) => x !== null)
-        const g = asked?.blend ? asked : findGenre(genre)
+        const g = asked && (asked.blend || narrows(asked, genre)) ? asked : findGenre(genre)
         guide = g
         if (!g) {
           return {
