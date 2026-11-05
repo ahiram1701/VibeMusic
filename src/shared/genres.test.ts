@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { STYLE_WORDS } from './arrange'
-import { findGenre, GENERIC_STRUCTURE, GENRES, guideLengths, narrows, PROMPT_EXAMPLES } from './genres'
+import {
+  findGenre,
+  GENERIC_STRUCTURE,
+  GENRES,
+  guideLengths,
+  narrows,
+  PROMPT_EXAMPLES
+} from './genres'
 
 const words = (s: string): number => s.split(/\s+/).filter(Boolean).length
 // Lo que lleva a MusicGen al drone o al balbuceo (ver drone.ts y producer-prompt.ts).
