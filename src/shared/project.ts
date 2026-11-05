@@ -83,6 +83,19 @@ export interface Region {
    * así una sección que salió opaca (ver sectionBrightness).
    */
   brightDb?: number
+  /**
+   * Correcciones dentro de la región, sumadas a `gainDb` y `brightDb`: en cada punto
+   * (segundo del clip, no de la región, para que recortes y copias sigan alineados) se
+   * llega a ese volumen y realce con una rampa desde el anterior (ver sectionCurves).
+   */
+  eq?: EqPoint[]
+}
+
+/** Un punto de la curva de mezcla de una región. */
+export interface EqPoint {
+  clipSec: number
+  gainDb: number
+  brightDb: number
 }
 
 /** Un punto de una automatización: en ese pulso de la canción, ese valor. */

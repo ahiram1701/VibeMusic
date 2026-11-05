@@ -17,6 +17,7 @@ import {
   sectionCoverage,
   brightened,
   sectionBrightness,
+  sectionCurves,
   sectionGains,
   tileRegions,
   trackBusy,
@@ -25,6 +26,7 @@ import {
   withoutPercussion,
   bedText,
   withRegionBright,
+  withRegionEq,
   withRegionGains,
   withoutStyleRepeats,
   type ChunkStep
@@ -707,5 +709,95 @@ describe('phraseBars', () => {
     expect([22, 16, 13, 64, 3, 2, 1].map(phraseBars)).toEqual([24, 16, 16, 64, 3, 2, 1])
     const spec = parseSongSpec(song({ sections: [{ name: 'Verso', bars: 22, arrangement: 'x' }] }))
     expect(spec.sections[0].bars).toBe(24)
+  })
+})
+
+describe('curva de mezcla dentro de la sección (test17)', () => {
+  const sections = [
+    { name: 'Intro', startBar: 1, bars: 8, energy: 3 },
+    { name: 'Verso', startBar: 9, bars: 8, energy: 3 },
+    { name: 'Puente', startBar: 17, bars: 8, energy: 2 }
+  ]
+  const flat = (n: number, db: number, highDb: number) =>
+    Array.from({ length: n }, () => ({ db, highDb }))
+  const region = (bar: number, seconds: { db: number; highDb: number }[], extra = {}) => ({
+    id: `r${bar}`,
+    startBeat: (bar - 1) * 4,
+    offsetSec: 1,
+    seconds,
+    ...extra
+  })
+  const intro = region(1, flat(16, -17, -5))
+
+  it('realza solo la mitad que se oscureció, hasta el tope', () => {
+    const verso = region(9, [...flat(8, -17, -4), ...flat(8, -17, -18)], { brightDb: 2 })
+    const eq = sectionCurves(sections, [intro, verso], 4, -5).get('r9')!
+    // Primera mitad sin tocar; la segunda sube lo que falta, sin pasar de 9 en total.
+    expect(eq.slice(0, 6).every((q) => q.brightDb === 0)).toBe(true)
+    expect(eq[14].brightDb).toBe(7)
+    expect(eq[14].clipSec).toBe(15.5)
+    expect(eq.every((q) => q.gainDb === 0)).toBe(true)
+  })
+
+  it('baja un golpe y sube un hueco, solo lo que pasa del margen', () => {
+    const s = flat(16, -17, -5)
+    s[7] = { db: -10, highDb: -5 }
+    s[8] = { db: -10, highDb: -5 }
+    s[9] = { db: -10, highDb: -5 }
+    const eq = sectionCurves(sections, [intro, region(9, s)], 4, -5).get('r9')!
+    expect(eq[8].gainDb).toBe(-4)
+    expect(eq[2].gainDb).toBe(0)
+  })
+
+  it('deja la sección tranquila, el siseo, los bordes de la canción y lo pequeño', () => {
+    const dark = flat(16, -17, -20)
+    const puente = region(17, dark, { eq: [{ clipSec: 1, gainDb: 3, brightDb: 3 }] })
+    const curves = sectionCurves(
+      sections,
+      [region(1, dark), region(9, flat(16, -40, -1)), puente],
+      4,
+      -5
+    )
+    // Energía 2: se quita la curva que tuviera.
+    expect(curves.get('r17')).toEqual([])
+    // Siseo: nada.
+    expect(curves.get('r9')).toEqual([])
+    // Primer segundo de la canción intacto aunque esté oscuro.
+    const intro = curves.get('r1')!
+    expect(intro[0].brightDb).toBe(0)
+    expect(intro[5].brightDb).toBeGreaterThan(0)
+    // Una diferencia de 1 dB no se corrige.
+    expect(sectionCurves(sections, [region(1, flat(16, -17, -9))], 4, -5).get('r1')).toEqual([])
+  })
+
+  it('sin referencia (batería programada) solo iguala el volumen', () => {
+    const eq = sectionCurves(sections, [intro, region(9, flat(16, -17, -25))], 4, null).get('r9')
+    expect(eq).toEqual([])
+  })
+
+  it('se guarda en la región y viaja con los loops', () => {
+    const p = createProject('X')
+    const t = {
+      ...createTrack('Canción', 'full'),
+      regions: [
+        {
+          id: 'a',
+          clipId: 'c',
+          startBeat: 0,
+          offsetSec: 0,
+          lengthSec: 16,
+          fadeInSec: 0,
+          fadeOutSec: 0
+        }
+      ]
+    }
+    const curve = [{ clipSec: 4.5, gainDb: 0, brightDb: 3 }]
+    const withEq = withRegionEq({ ...p, tracks: [t] }, new Map([['a', curve]]))
+    const src = withEq.tracks[0].regions[0] as Region
+    expect(src.eq).toEqual(curve)
+    const looped = loopRegion(withEq, null, src, { atBeat: 32, offsetBars: 2, bars: 1 })
+    const copy = looped.project.tracks[0].regions.find((r) => r.id === looped.regionId)!
+    expect(copy.eq).toEqual(curve)
+    expect(withRegionEq(withEq, new Map([['a', []]])).tracks[0].regions[0].eq).toBeUndefined()
   })
 })

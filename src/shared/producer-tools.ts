@@ -18,16 +18,26 @@ import {
   sameName,
   sectionCoverage,
   sectionBrightness,
+  sectionCurves,
   sectionGains,
   trackBusy,
   trimRegion,
   vocalSongRequest,
   withRegionBright,
+  withRegionEq,
   withRegionGains,
   type ChunkStep,
   type GenerateStep
 } from './arrange'
-import { darkEnd, fadedEnd, hasStartGap, type CollapseOptions, type SoundSummary } from './drone'
+import {
+  darkEnd,
+  fadedEnd,
+  hasStartGap,
+  powerMean,
+  type CollapseOptions,
+  type SoundSummary
+} from './drone'
+import { eqAt } from './playback'
 import { DRUM_PATTERNS, findPattern } from './drums'
 import {
   findGenre,
@@ -809,7 +819,13 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
    */
   const levelTrack = async (trackId: string): Promise<void> => {
     const p = host.getProject()
-    const measured: (Region & { db: number; highDb: number; headDb: number; tailDb: number })[] = []
+    const measured: (Region & {
+      db: number
+      highDb: number
+      headDb: number
+      tailDb: number
+      seconds: { db: number; highDb: number }[]
+    })[] = []
     for (const r of p.tracks.find((t) => t.id === trackId)?.regions ?? []) {
       const { sound } = await host.inspectRegion(r.id)
       if (sound && Number.isFinite(sound.mean.db)) {
@@ -818,27 +834,44 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           db: sound.body ?? sound.mean.db,
           highDb: sound.mean.highDb,
           headDb: sound.head.db,
-          tailDb: sound.tail.db
+          tailDb: sound.tail.db,
+          seconds: sound.seconds ?? []
         })
       }
     }
     const gains = sectionGains(sectionsOf(p), measured, perBar(p))
-    const bright = p.tracks.some((t) => t.drums)
+    const drums = p.tracks.some((t) => t.drums)
+    const bright = drums
       ? new Map<string, number>()
       : sectionBrightness(sectionsOf(p), measured, perBar(p))
+    // Y dentro de cada sección, segundo a segundo, sobre lo que ya pone la sección.
+    const first = [...measured].sort((a, b) => a.startBeat - b.startBeat)[0]
+    const curves = sectionCurves(
+      sectionsOf(p),
+      measured.map((r) => ({
+        ...r,
+        gainDb: gains.get(r.id) ?? r.gainDb,
+        brightDb: bright.get(r.id) ?? r.brightDb
+      })),
+      perBar(p),
+      drums || !first ? null : first.highDb
+    )
     const now = host.getProject()
     const regionOf = (id: string): Region | undefined =>
       now.tracks.flatMap((t) => t.regions).find((r) => r.id === id)
     const changed =
       [...gains].some(([id, g]) => (regionOf(id)?.gainDb ?? 0) !== g) ||
-      [...bright].some(([id, b]) => (regionOf(id)?.brightDb ?? 0) !== b)
+      [...bright].some(([id, b]) => (regionOf(id)?.brightDb ?? 0) !== b) ||
+      [...curves].some(([id, eq]) => JSON.stringify(regionOf(id)?.eq ?? []) !== JSON.stringify(eq))
     if (changed) {
-      const lifted = [...bright.values()].some((b) => b > 0)
+      const lifted =
+        [...bright.values()].some((b) => b > 0) ||
+        [...curves.values()].some((eq) => eq.some((q) => q.brightDb > 0))
       await commit(
-        withRegionBright(withRegionGains(now, gains), bright),
+        withRegionEq(withRegionBright(withRegionGains(now, gains), bright), curves),
         lifted
-          ? 'mezcla: volumen y brillo igualados por sección'
-          : 'mezcla: volumen igualado por sección'
+          ? 'mezcla: volumen y brillo igualados compás a compás'
+          : 'mezcla: volumen igualado compás a compás'
       )
     }
   }
@@ -852,20 +885,27 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       if (sound) {
         // Se mide el clip; lo que se oye lleva además la ganancia de la región.
         const g = r.gainDb ?? 0
-        const up = (w: SoundSummary['mean']): SoundSummary['mean'] => {
-          const lit = brightened(w, r.brightDb ?? 0)
-          return { ...lit, db: lit.db + g }
+        const curve = eqAt(r)
+        const up = (w: SoundSummary['mean'], sec: number): SoundSummary['mean'] => {
+          const c = curve(sec)
+          const lit = brightened(w, (r.brightDb ?? 0) + c.brightDb)
+          return { ...lit, db: lit.db + g + c.gainDb }
         }
+        // La media, con la curva de cada segundo si la hay.
+        const mean =
+          r.eq?.length && sound.seconds?.length
+            ? powerMean(sound.seconds.map((w, i) => up({ ...sound.mean, ...w }, i + 0.5)))
+            : up(sound.mean, r.lengthSec / 2)
         regions.push({
           startBeat: r.startBeat,
           endBeat: r.startBeat + secondsToBeats(r.lengthSec, p.bpm),
           lengthSec: r.lengthSec,
           source: `${r.clipId}@${r.offsetSec.toFixed(2)}`,
           ...sound,
-          head: up(sound.head),
-          tail: up(sound.tail),
-          mean: up(sound.mean),
-          opening: sound.opening.map((db) => db + g)
+          head: up(sound.head, 0.5),
+          tail: up(sound.tail, r.lengthSec - 0.5),
+          mean,
+          opening: sound.opening.map((db, i) => db + g + curve((i + 0.5) / 4).gainDb)
         })
       }
     }

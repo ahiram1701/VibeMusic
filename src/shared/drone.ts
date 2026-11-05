@@ -180,7 +180,7 @@ const EDGE_SEC = 0.25
 const EDGE_PARTS = 4
 
 /** Media en potencia de varias medidas. */
-function powerMean(stats: WindowStats[]): WindowStats {
+export function powerMean(stats: WindowStats[]): WindowStats {
   let power = 0
   let high = 0
   let pulse = 0
@@ -214,6 +214,12 @@ export interface SoundSummary {
    * los 10 s anteriores, que eran casi todo lo que se oía, sonaban a −24.
    */
   body?: number
+  /**
+   * Volumen y agudos de cada segundo (el i-ésimo empieza i s después del inicio medido).
+   * Dentro de una sección MusicGen cambia mucho (test17: un verso que pasa de −3 a −18
+   * dB de agudos a la mitad): con esto la mezcla corrige segundo a segundo.
+   */
+  seconds?: { db: number; highDb: number }[]
   /** Racha más larga de segundos estáticos (suena, pero sin pulso), o null. */
   staticRun: { startSec: number; sec: number } | null
   /** Volumen (dBFS) de los primeros cuartos de segundo, para ver un hueco al empezar. */
@@ -273,6 +279,7 @@ export function soundSummary(samples: Float32Array, sampleRate: number): SoundSu
     tail: powerMean(edge.slice(-EDGE_PARTS)),
     mean: powerMean(stats),
     body: median(stats.map((w) => w.db)),
+    seconds: stats.map((w) => ({ db: w.db, highDb: w.highDb })),
     staticRun,
     opening: edge.slice(0, OPENING_PARTS).map((w) => w.db)
   }

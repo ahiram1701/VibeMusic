@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { seamGainDb } from './conform'
-import { duckEvents, regionPlayback, sweepEvents } from './playback'
+import { duckEvents, eqAt, eqEvents, regionPlayback, sweepEvents } from './playback'
 import type { Region } from './project'
 
 const region = (over: Partial<Region> = {}): Region => ({
@@ -93,5 +93,31 @@ describe('automatización de filtros y sidechain', () => {
       { atSec: 0.7, value: 1, kind: 'linear' }
     ])
     expect(events).toHaveLength(7)
+  })
+})
+
+describe('curva de mezcla de una región', () => {
+  const region = {
+    offsetSec: 10,
+    gainDb: -6,
+    brightDb: 2,
+    eq: [
+      { clipSec: 10.5, gainDb: 0, brightDb: 0 },
+      { clipSec: 12.5, gainDb: 0, brightDb: 4 }
+    ]
+  }
+
+  it('suma la curva a los valores fijos, con rampas y el valor del momento', () => {
+    const ev = eqEvents(region, 11.5)!
+    expect(ev.bright[0]).toEqual({ atSec: 0, value: 4, kind: 'set' })
+    expect(ev.bright[1]).toEqual({ atSec: 1, value: 6, kind: 'linear' })
+    expect(ev.gain[0].value).toBeCloseTo(0.501, 3)
+    expect(eqEvents({}, 0)).toBeNull()
+  })
+
+  it('se lee en segundos de la región', () => {
+    expect(eqAt(region)(1.5).brightDb).toBe(2)
+    expect(eqAt(region)(0).brightDb).toBe(0)
+    expect(eqAt(region)(9).brightDb).toBe(4)
   })
 })

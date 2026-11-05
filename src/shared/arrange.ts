@@ -2,6 +2,7 @@ import {
   beatsToSeconds,
   newId,
   secondsToBeats,
+  type EqPoint,
   type Project,
   type Region,
   type Section,
@@ -565,7 +566,8 @@ export function loopRegion(
     fadeInSec: 0.01,
     fadeOutSec: 0.01,
     ...(src.gainDb !== undefined && { gainDb: src.gainDb }),
-    ...(src.brightDb !== undefined && { brightDb: src.brightDb })
+    ...(src.brightDb !== undefined && { brightDb: src.brightDb }),
+    ...(src.eq && { eq: src.eq })
   }
   return {
     regionId: region.id,
@@ -783,6 +785,137 @@ export function brightened<T extends { db: number; highDb: number }>(w: T, brigh
   const g2 = Math.pow(10, brightDb / 10)
   const total = 10 * Math.log10(1 + r * (g2 - 1))
   return { ...w, db: w.db + total, highDb: w.highDb + brightDb - total }
+}
+
+/** Lo más que se realzan los agudos de un segundo, contando el realce de su sección. */
+export const MAX_CURVE_BRIGHT_DB = 9
+/** Lo que un segundo puede apartarse del volumen de su sección sin tocarlo. */
+const CURVE_DEAD_DB = 3
+/** Lo más que la curva sube o baja el volumen de un segundo. */
+const MAX_CURVE_GAIN_DB = 6
+/** Segundos de la media móvil de la curva: más corta se oiría como un bombeo. */
+const CURVE_SMOOTH_SEC = 3
+/** Por debajo de esto un segundo es silencio: ni se mide ni se toca. */
+const CURVE_SILENCE_DB = -45
+
+/**
+ * Curva de mezcla dentro de cada región, encima de sectionGains y sectionBrightness.
+ * Un número por sección no basta: MusicGen cambia mucho dentro de un tramo (test17: un
+ * verso que pasa de −3 a −18 dB de agudos a la mitad, un coro que se apaga desde su
+ * tercer compás, un golpe grave 7 dB por encima de su solo). Cada segundo que se aparta
+ * más de CURVE_DEAD_DB del volumen típico de su sección se acerca a él, y cada uno más
+ * apagado que la referencia (los agudos de la primera región, ver sectionBrightness;
+ * null = no realzar, con batería programada) se realza, hasta MAX_CURVE_BRIGHT_DB en
+ * total. Suavizado y en pasos de 0,5 dB, como movería los faders un ingeniero. No toca
+ * secciones tranquilas (energía ≤ 2), el siseo, el silencio, ni el primer y el último
+ * segundo de la canción (el arranque y el final son así a propósito). `seconds` son las
+ * medidas del clip tal cual (ver drone.ts); `gainDb` y `brightDb`, los de su sección.
+ * Una región sin nada que corregir queda con la lista vacía (sin curva).
+ */
+export function sectionCurves(
+  sections: { name?: string; startBar: number; bars: number; energy?: number }[],
+  regions: {
+    id: string
+    startBeat: number
+    offsetSec: number
+    seconds: { db: number; highDb: number }[]
+    gainDb?: number
+    brightDb?: number
+  }[],
+  beatsPerBar: number,
+  reference: number | null
+): Map<string, EqPoint[]> {
+  const out = new Map<string, EqPoint[]>()
+  const sorted = [...regions].sort((a, b) => a.startBeat - b.startBeat)
+  if (sorted.length === 0) return out
+  const first = sorted[0]
+  const last = sorted[sorted.length - 1]
+  const energyOf = (s: (typeof sections)[number]): number =>
+    s.energy ??
+    sections.find((o) => o.name && o.name === s.name && o.energy !== undefined)?.energy ??
+    3
+  const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v))
+  const step = (v: number): number => {
+    const q = Math.round(v * 2) / 2
+    return Math.abs(q) < MIN_CHANGE_DB ? 0 : q
+  }
+  const half = Math.floor(CURVE_SMOOTH_SEC / 2)
+  for (const s of sections) {
+    const a = (s.startBar - 1) * beatsPerBar
+    const b = a + s.bars * beatsPerBar
+    const inside = sorted.filter((r) => r.startBeat >= a - 0.05 && r.startBeat < b - 0.05)
+    if (inside.length === 0) continue
+    if (energyOf(s) <= 2) {
+      for (const r of inside) out.set(r.id, [])
+      continue
+    }
+    // Lo que se oye de cada segundo, con el volumen y el realce de la sección.
+    const heard = inside.map((r) =>
+      r.seconds.map((w) => {
+        const lit = brightened(w, r.brightDb ?? 0)
+        const db = lit.db + (r.gainDb ?? 0)
+        const skip = db < CURVE_SILENCE_DB || (db < THIN_DB && lit.highDb > THIN_HIGH_DB)
+        return { db, highDb: lit.highDb, skip }
+      })
+    )
+    const levels = heard
+      .flat()
+      .filter((w) => !w.skip)
+      .map((w) => w.db)
+      .sort((x, y) => x - y)
+    if (levels.length === 0) {
+      for (const r of inside) out.set(r.id, [])
+      continue
+    }
+    const body = levels[Math.floor(levels.length / 2)]
+    inside.forEach((r, ri) => {
+      const room = Math.max(0, MAX_CURVE_BRIGHT_DB - (r.brightDb ?? 0))
+      const raw = heard[ri].map((w) => {
+        if (w.skip) return { g: 0, b: 0 }
+        const dev = body - w.db
+        const g =
+          Math.abs(dev) <= CURVE_DEAD_DB
+            ? 0
+            : clamp(dev - Math.sign(dev) * CURVE_DEAD_DB, -MAX_CURVE_GAIN_DB, MAX_CURVE_GAIN_DB)
+        const want = reference === null ? 0 : reference - BRIGHT_MARGIN_DB - w.highDb
+        return { g, b: clamp(want, 0, room) }
+      })
+      const points = raw.map((_, i) => {
+        const near = raw.slice(Math.max(0, i - half), i + half + 1)
+        const mean = (k: 'g' | 'b'): number => near.reduce((n, x) => n + x[k], 0) / near.length
+        const edge =
+          heard[ri][i].skip || (r === first && i === 0) || (r === last && i === raw.length - 1)
+        return {
+          clipSec: r.offsetSec + i + 0.5,
+          gainDb: edge ? 0 : step(mean('g')),
+          brightDb: edge ? 0 : step(mean('b'))
+        }
+      })
+      out.set(r.id, points.some((p) => p.gainDb !== 0 || p.brightDb !== 0) ? points : [])
+    })
+  }
+  return out
+}
+
+/** Pone a cada región su curva de mezcla (ver sectionCurves); vacía = sin curva. */
+export function withRegionEq(p: Project, curves: Map<string, EqPoint[]>): Project {
+  return {
+    ...p,
+    tracks: p.tracks.map((t) =>
+      t.regions.some((r) => curves.has(r.id))
+        ? {
+            ...t,
+            regions: t.regions.map((r) => {
+              const eq = curves.get(r.id)
+              if (eq === undefined) return r
+              const next: Region = { ...r, eq }
+              if (eq.length === 0) delete next.eq
+              return next
+            })
+          }
+        : t
+    )
+  }
 }
 
 /** Compases de un loop para una capa encima: 8 si caben, si no 4 o lo que quepa. */
