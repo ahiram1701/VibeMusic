@@ -89,6 +89,12 @@ export interface Region {
    * llega a ese volumen y realce con una rampa desde el anterior (ver sectionCurves).
    */
   eq?: EqPoint[]
+  /**
+   * Compás de la canción del que sale este audio, si tapa compases opacos (ver
+   * patch.ts): se mezcla como allí, no como la sección donde suena, para que suene
+   * igual que en su sitio.
+   */
+  patchFromBar?: number
 }
 
 /** Un punto de la curva de mezcla de una región. */

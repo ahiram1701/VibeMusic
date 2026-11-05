@@ -1005,3 +1005,12 @@ export function guideLengths<S extends { name: string; bars: number; melody: unk
   })
   return { sections: out, lengthened }
 }
+
+/**
+ * Familia de una sección: su primera palabra, con sinónimos ("Coro final" y "Chorus 2"
+ * son coros). Para tapar compases opacos con otros de una sección parecida.
+ */
+export function sectionFamily(name: string): string {
+  const w = normalize(name).split(' ')[0] ?? ''
+  return SECTION_BASE[w] ?? w
+}

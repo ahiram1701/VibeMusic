@@ -38,6 +38,7 @@ import {
   type SoundSummary
 } from './drone'
 import { eqAt } from './playback'
+import { planDullPatches, spliceBars, type BarPatch, type HeardRegion } from './patch'
 import { DRUM_PATTERNS, findPattern } from './drums'
 import {
   findGenre,
@@ -817,7 +818,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
    * Con batería programada no se realza: la pista de la canción es entonces una cama de
    * bajo y pads, grave a propósito. Sin medidas no cambia nada.
    */
-  const levelTrack = async (trackId: string): Promise<void> => {
+  const levelOnce = async (trackId: string): Promise<void> => {
     const p = host.getProject()
     const measured: (Region & {
       db: number
@@ -839,11 +840,23 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         })
       }
     }
-    const gains = sectionGains(sectionsOf(p), measured, perBar(p))
+    // Los compases tapados se mezclan como el sitio de donde salen (ver patchFromBar).
+    const own = measured.filter((r) => r.patchFromBar === undefined)
+    const gains = sectionGains(sectionsOf(p), own, perBar(p))
     const drums = p.tracks.some((t) => t.drums)
     const bright = drums
       ? new Map<string, number>()
-      : sectionBrightness(sectionsOf(p), measured, perBar(p))
+      : sectionBrightness(sectionsOf(p), own, perBar(p))
+    for (const r of measured) {
+      if (r.patchFromBar === undefined) continue
+      const beat = (r.patchFromBar - 1) * perBar(p)
+      const home = own.find(
+        (o) => o.startBeat <= beat + 0.05 && beat < o.startBeat + secondsToBeats(o.lengthSec, p.bpm)
+      )
+      if (!home) continue
+      gains.set(r.id, gains.get(home.id) ?? home.gainDb ?? 0)
+      if (!drums) bright.set(r.id, bright.get(home.id) ?? home.brightDb ?? 0)
+    }
     // Y dentro de cada sección, segundo a segundo, sobre lo que ya pone la sección.
     const first = [...measured].sort((a, b) => a.startBeat - b.startBeat)[0]
     const curves = sectionCurves(
@@ -874,6 +887,59 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           : 'mezcla: volumen igualado compás a compás'
       )
     }
+  }
+
+  /**
+   * Iguala la pista (levelOnce) y, si aun así quedan compases opacos, los tapa con
+   * compases sanos de una sección de la misma familia (ver planDullPatches) y vuelve a
+   * igualar. Con batería programada no: la cama es grave a propósito.
+   */
+  const levelTrack = async (trackId: string): Promise<BarPatch[]> => {
+    await levelOnce(trackId)
+    const p = host.getProject()
+    if (p.tracks.some((t) => t.drums)) return []
+    const track = p.tracks.find((t) => t.id === trackId)
+    if (!track) return []
+    const heard: HeardRegion[] = []
+    for (const r of track.regions) {
+      const { sound } = await host.inspectRegion(r.id)
+      if (sound?.seconds && Number.isFinite(sound.mean.db)) {
+        heard.push({ ...r, seconds: sound.seconds })
+      }
+    }
+    const first = [...heard].sort((a, b) => a.startBeat - b.startBeat)[0]
+    if (!first) return []
+    const firstSound = (await host.inspectRegion(first.id)).sound
+    if (!firstSound) return []
+    const patches = planDullPatches(sectionsOf(p), heard, perBar(p), p.bpm, firstSound.mean.highDb)
+    if (patches.length === 0) return []
+    let next = host.getProject()
+    for (const patch of patches) {
+      const donor = next.tracks.flatMap((t) => t.regions).find((r) => r.id === patch.regionId)
+      if (!donor) continue
+      next = spliceBars(
+        next,
+        trackId,
+        (patch.bar - 1) * perBar(next),
+        patch.bars * perBar(next),
+        donor,
+        patch.offsetSec,
+        patch.fromBar
+      )
+    }
+    await commit(
+      next,
+      'mezcla: compases opacos tapados con compases sanos (' +
+        patches
+          .map(
+            (x) =>
+              `${x.section} ${x.bar}${x.bars > 1 ? `–${x.bar + x.bars - 1}` : ''} ← ${x.fromBar}`
+          )
+          .join(', ') +
+        ')'
+    )
+    await levelOnce(trackId)
+    return patches
   }
 
   /** Escucha una pista entera: medidas por sección y por unión (ver review.ts). */
@@ -1329,12 +1395,13 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           signal,
           progress
         })
+        let patched: BarPatch[] = []
         if (generated > 0) {
           await commit(
             polishSong(host.getProject(), song.id),
             'pulido: fundidos de entrada y salida'
           )
-          await levelTrack(song.id)
+          patched = await levelTrack(song.id)
         }
         // La batería programada y la automatización de la cama: segundos, no minutos.
         let drumsError: string | null = null
@@ -1396,6 +1463,16 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             filled,
             filled_note:
               'These parts got stuck twice, so they now repeat healthy bars of the same section and play fine. No need to mention it; if the user wants more variety there, offer create_variation.'
+          }),
+          ...(patched.length > 0 && {
+            patched_bars: patched.map((x) => ({
+              section: x.section,
+              start_bar: x.bar,
+              bars: x.bars,
+              from_bar: x.fromBar
+            })),
+            patched_note:
+              'These bars had lost their highs (a dull wall of sound the mix could not brighten), so they now play healthy bars of a matching section. No need to mention it.'
           }),
           ...(healed.length > 0 && {
             healed,
@@ -1591,12 +1668,13 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           signal,
           progress
         })
+        let patched: BarPatch[] = []
         if (report.generated > 0) {
           await commit(
             polishSong(host.getProject(), song.id),
             'pulido: fundidos de entrada y salida'
           )
-          await levelTrack(song.id)
+          patched = await levelTrack(song.id)
         }
         return {
           ok: report.failed.length === 0,
@@ -1606,6 +1684,16 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           ...(report.repaired.length > 0 && { repaired: report.repaired }),
           ...(report.filled.length > 0 && { filled: report.filled }),
           ...(report.healed.length > 0 && { healed: report.healed }),
+          ...(patched.length > 0 && {
+            patched_bars: patched.map((x) => ({
+              section: x.section,
+              start_bar: x.bar,
+              bars: x.bars,
+              from_bar: x.fromBar
+            })),
+            patched_note:
+              'These bars had lost their highs (a dull wall of sound the mix could not brighten), so they now play healthy bars of a matching section. No need to mention it.'
+          }),
           ...(report.drone.length > 0 && {
             drone: report.drone,
             drone_note: 'These parts still sound stuck after one repair. Tell the user.'
