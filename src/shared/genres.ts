@@ -15,7 +15,12 @@ export interface GenreGuide {
   style: string
   /** Estructura típica: [nombre, compases, energía]. */
   structure: [string, number, number][]
-  /** Ejemplo de "arrangement" por tipo de sección (≤12 palabras). */
+  /**
+   * Ejemplo de "arrangement" por tipo de sección (≤12 palabras). Todo lo que suena a la
+   * vez, sin "alone" ni "enters": cada tramo sale de un solo texto y el modelo no sabe
+   * hacer que algo entre a la mitad (test18: "guitar riff alone, live drums enter" dio
+   * 25 s de un acorde sostenido sin ritmo).
+   */
   arrangements: Record<string, string>
   /** Palabras o ideas que en este género llevan a MusicGen a sonar mal. */
   avoid: string
@@ -77,7 +82,7 @@ export const GENRES: GenreGuide[] = [
       ['Outro', 4, 2]
     ],
     arrangements: {
-      intro: 'requinto guitar riff alone, tuba enters',
+      intro: 'requinto guitar riff with tuba bass',
       verse: 'strummed guitar, tuba bass line, soft trap hi-hats',
       chorus: 'requinto melody, tuba, 808 kick, trap hi-hats',
       solo: 'fast requinto guitar solo over tuba and drums',
@@ -256,8 +261,8 @@ export const GENRES: GenreGuide[] = [
       ['Outro', 16, 2]
     ],
     arrangements: {
-      intro: 'kick and hi-hats, bassline enters',
-      build: 'piano chords enter, claps, snare roll',
+      intro: 'kick and hi-hats, bassline',
+      build: 'piano chords, claps, snare roll',
       drop: 'full groove, piano chords, bassline, open hi-hats, claps',
       break: 'piano chords and hats, kick returns at end',
       outro: 'kick, hats and bassline'
@@ -301,7 +306,7 @@ export const GENRES: GenreGuide[] = [
       ['Outro', 4, 2]
     ],
     arrangements: {
-      intro: 'piano sample alone',
+      intro: 'piano sample loop over boom bap drums',
       verse: 'boom bap drums, bass, piano sample',
       chorus: 'drums, bass, piano and scratches',
       outro: 'piano sample, drums stop'
@@ -348,7 +353,7 @@ export const GENRES: GenreGuide[] = [
       ['Outro', 4, 3]
     ],
     arrangements: {
-      intro: 'guitar riff, drums enter',
+      intro: 'guitar riff with drums',
       verse: 'drums, bass, palm-muted guitar',
       chorus: 'open distorted guitars, crash cymbals, full drums',
       solo: 'electric guitar solo over full band',
@@ -453,7 +458,7 @@ export const GENRES: GenreGuide[] = [
       ['Outro', 4, 3]
     ],
     arrangements: {
-      intro: 'guitar riff alone, live drums enter',
+      intro: 'main guitar riff with live drums and bass',
       verse: 'driving drums, bass, palm-muted guitar riff, hi-hats',
       chorus: 'open power chords, crash cymbals, full drums',
       solo: 'electric guitar solo over full band',
@@ -476,7 +481,7 @@ export const GENRES: GenreGuide[] = [
       ['Outro', 8, 3]
     ],
     arrangements: {
-      intro: 'brass hits, piano montuno, congas enter',
+      intro: 'brass hits, piano montuno, congas',
       verse: 'piano montuno, congas, bass tumbao',
       chorus: 'full brass, timbales, cowbell, piano montuno',
       mambo: 'brass riffs, timbales fill, full band',
@@ -566,7 +571,7 @@ export const GENRES: GenreGuide[] = [
       ['Outro', 8, 2]
     ],
     arrangements: {
-      intro: 'organ and guitar skank, drums enter',
+      intro: 'organ and guitar skank, one drop drums',
       verse: 'one drop drums, deep bass, guitar skank',
       chorus: 'full band, organ bubble, horns',
       dub: 'bass and drums, sparse guitar chops',
@@ -704,7 +709,7 @@ export const GENRES: GenreGuide[] = [
       ['Outro', 4, 2]
     ],
     arrangements: {
-      intro: 'guitar lick, drums enter',
+      intro: 'guitar lick over shuffle drums',
       verse: 'shuffle drums, bass, guitar fills, piano',
       solo: 'electric guitar solo over shuffle groove',
       outro: 'guitar turnaround, final chord'
@@ -773,7 +778,7 @@ export const GENRES: GenreGuide[] = [
       ['Outro', 4, 2]
     ],
     arrangements: {
-      intro: 'electric piano chords alone',
+      intro: 'electric piano chords, dusty drums',
       a: 'dusty drums, electric piano chords, warm bass',
       b: 'drums, bass, guitar melody, electric piano',
       outro: 'electric piano chords'
@@ -795,7 +800,7 @@ export const GENRES: GenreGuide[] = [
       ['Outro', 8, 2]
     ],
     arrangements: {
-      intro: 'synth pads and hi-hats, breakbeat enters',
+      intro: 'synth pads, hi-hats and breakbeat',
       build: 'snare roll, rising synth',
       drop: 'fast breakbeat drums, deep sub bass, synth stabs',
       break: 'synth chords and light drums',

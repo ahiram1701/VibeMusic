@@ -77,6 +77,22 @@ function toNumber(raw: unknown): number {
 }
 
 /**
+ * Un arreglo sin entradas escalonadas: el modelo genera cada tramo de un solo texto y no
+ * sabe hacer que algo "entre" a la mitad; con "guitar riff alone, live drums enter"
+ * (test18) dio 25 s de un acorde sostenido, sin riff ni batería. Se quitan "alone"
+ * y "enter(s)/come(s) in/kick(s) in": queda lo que suena, todo a la vez.
+ */
+export function steadyArrangement(text: string): string {
+  return text
+    .replace(/\b(alone|enters?|entering|com(?:es?|ing) in|kicks? in|drops? in)\b/gi, '')
+    .replace(/\s+([,.;])/g, '$1')
+    .replace(/([,;])\s*(?=[,;]|$)/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+    .replace(/^[,;]\s*|[,;]$/g, '')
+}
+
+/**
  * Compases de una sección en frases enteras de 4, como en casi cualquier género: el LLM
  * a veces pide un verso de 22 (test13) y la última frase queda coja. Se completa hacia
  * arriba (nunca se acorta una letra); menos de 4 compases (un remate) se respeta.
@@ -124,7 +140,7 @@ export function parseSongSpec(input: Input): SongSpec {
         `Sección "${name}": "reuse" repite una sección anterior con el mismo nombre, y no hay ninguna antes`
       )
     }
-    const arrangement = typeof it.arrangement === 'string' ? it.arrangement.trim() : ''
+    const arrangement = typeof it.arrangement === 'string' ? steadyArrangement(it.arrangement) : ''
     if (!arrangement && !reuse) {
       throw new Error(
         `Sección "${name}": falta "arrangement" (qué instrumentos suenan y con qué energía, en inglés)`

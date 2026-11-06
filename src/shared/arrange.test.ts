@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  steadyArrangement,
   chunkBars,
   energyHint,
   clampWords,
@@ -31,6 +32,7 @@ import {
   withoutStyleRepeats,
   type ChunkStep
 } from './arrange'
+import { GENRES } from './genres'
 import { createProject, createTrack, type Project, type Region } from './project'
 import { sectionsOf, setSections } from './sections'
 
@@ -832,5 +834,22 @@ describe('curva de mezcla dentro de la sección (test17)', () => {
     const copy = looped.project.tracks[0].regions.find((r) => r.id === looped.regionId)!
     expect(copy.eq).toEqual(curve)
     expect(withRegionEq(withEq, new Map([['a', []]])).tracks[0].regions[0].eq).toBeUndefined()
+  })
+})
+
+describe('arreglos sin entradas escalonadas (test18)', () => {
+  it('quita "alone" y "enters": todo suena a la vez', () => {
+    expect(steadyArrangement('guitar riff alone, live drums enter')).toBe('guitar riff, live drums')
+    expect(steadyArrangement('kick alone, bassline kicks in')).toBe('kick, bassline')
+    expect(steadyArrangement('bass and hats enter')).toBe('bass and hats')
+    expect(steadyArrangement('electric guitar solo over full band')).toBe(
+      'electric guitar solo over full band'
+    )
+  })
+
+  it('las guías de género no piden entradas', () => {
+    for (const g of GENRES) {
+      for (const text of Object.values(g.arrangements)) expect(steadyArrangement(text)).toBe(text)
+    }
   })
 })
