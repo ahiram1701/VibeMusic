@@ -575,6 +575,27 @@ describe('mezcla por sección', () => {
     expect(heard).toBeLessThanOrEqual(9)
   })
 
+  it('bajar del coro a un verso suave no deja el coro sin subir (test18)', () => {
+    const named = [
+      { name: 'Verso', startBar: 1, bars: 8, energy: 3 },
+      { name: 'Coro', startBar: 9, bars: 8, energy: 5 },
+      { name: 'Verso', startBar: 17, bars: 8, energy: 3 },
+      { name: 'Solo', startBar: 25, bars: 8, energy: 5 }
+    ]
+    const g = sectionGains(
+      named,
+      [
+        { ...at(1, 'v', -16), headDb: -22, tailDb: -14 },
+        { ...at(9, 'c', -17.4), headDb: -18, tailDb: -16 },
+        { ...at(17, 'v', -16), headDb: -22, tailDb: -14 },
+        { ...at(25, 's', -16.4), headDb: -16, tailDb: -18 }
+      ],
+      4
+    )
+    const after = (id: string, db: number) => db + g.get(id)!
+    expect(after('r9', -17.4)).toBeGreaterThan(after('r1', -16) + 1)
+  })
+
   it('pone y quita la ganancia de las regiones', () => {
     const p = createProject('X')
     const t = createTrack('Canción', 'full')
@@ -739,13 +760,25 @@ describe('curva de mezcla dentro de la sección (test17)', () => {
     expect(eq.every((q) => q.gainDb === 0)).toBe(true)
   })
 
-  it('baja un golpe y sube un hueco, solo lo que pasa del margen', () => {
+  it('iguala los dos clips de una sección: sin escalón en la unión (test18)', () => {
+    const coro = [
+      { name: 'Intro', startBar: 1, bars: 8, energy: 3 },
+      { name: 'Coro', startBar: 9, bars: 16, energy: 5 }
+    ]
+    const a = region(9, flat(16, -20, -5))
+    const b = region(17, flat(16, -15, -5))
+    const curves = sectionCurves(coro, [intro, a, b], 4, -5)
+    const heard = (eq: { gainDb: number }[], db: number) => db + (eq[8]?.gainDb ?? 0)
+    expect(Math.abs(heard(curves.get('r17')!, -15) - heard(curves.get('r9')!, -20))).toBeLessThan(1)
+  })
+
+  it('baja un golpe y sube un hueco pasado el margen', () => {
     const s = flat(16, -17, -5)
     s[7] = { db: -10, highDb: -5 }
     s[8] = { db: -10, highDb: -5 }
     s[9] = { db: -10, highDb: -5 }
     const eq = sectionCurves(sections, [intro, region(9, s)], 4, -5).get('r9')!
-    expect(eq[8].gainDb).toBe(-4)
+    expect(eq[8].gainDb).toBe(-6)
     expect(eq[2].gainDb).toBe(0)
   })
 

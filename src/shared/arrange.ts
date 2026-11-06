@@ -676,7 +676,11 @@ export function sectionGains(
       const jump = next.headDb - prev.tailDb
       const [gx, gy] = [byKey.get(x.key)!, byKey.get(y.key)!]
       const heard = jump + gy - gx
-      const excess = Math.abs(heard) - Math.max(Math.abs(jump), SEAM_DB)
+      // Bajar de un coro a un verso es el arreglo, no un corte: ahí se deja el doble
+      // (test18: el verso arrancaba a −22 dB y la unión dejaba el coro sin subir, más
+      // bajo que el verso). Un salto hacia arriba, como en test11, sigue con SEAM_DB.
+      const settling = heard < 0 && y.energy < x.energy
+      const excess = Math.abs(heard) - Math.max(Math.abs(jump), SEAM_DB * (settling ? 2 : 1))
       if (excess <= 0) continue
       const dir = Math.sign(heard)
       if (Math.abs(gy) >= Math.abs(gx)) byKey.set(y.key, clamp(gy - dir * excess))
@@ -789,8 +793,13 @@ export function brightened<T extends { db: number; highDb: number }>(w: T, brigh
 
 /** Lo más que se realzan los agudos de un segundo, contando el realce de su sección. */
 export const MAX_CURVE_BRIGHT_DB = 9
-/** Lo que un segundo puede apartarse del volumen de su sección sin tocarlo. */
-const CURVE_DEAD_DB = 3
+/**
+ * Lo que un segundo puede apartarse del volumen de su sección sin tocarlo; pasado esto
+ * se lleva entero a él (test18: dejar 3 dB dejaba un coro que se hundía 5 dB a medias).
+ */
+const CURVE_DEAD_DB = 1.5
+/** Diferencia entre dos clips de una sección a partir de la cual se igualan. */
+const REGION_MATCH_DB = 2
 /** Lo más que la curva sube o baja el volumen de un segundo. */
 const MAX_CURVE_GAIN_DB = 6
 /** Segundos de la media móvil de la curva: más corta se oiría como un bombeo. */
@@ -870,15 +879,31 @@ export function sectionCurves(
     const body = levels[Math.floor(levels.length / 2)]
     inside.forEach((r, ri) => {
       const room = Math.max(0, MAX_CURVE_BRIGHT_DB - (r.brightDb ?? 0))
+      // Dos clips de una misma sección se igualan entre sí antes de nada: dentro de cada
+      // uno se deja pasar un margen, pero en la unión el escalón se oye entero (test18:
+      // la segunda mitad del coro entraba 5 dB por encima de la primera).
+      const own = heard[ri]
+        .filter((w) => !w.skip)
+        .map((w) => w.db)
+        .sort((x, y) => x - y)
+      const offBody = own.length ? body - own[Math.floor(own.length / 2)] : 0
+      const level =
+        inside.length > 1 && Math.abs(offBody) >= REGION_MATCH_DB
+          ? clamp(offBody, -MAX_CURVE_GAIN_DB, MAX_CURVE_GAIN_DB)
+          : 0
       const raw = heard[ri].map((w) => {
         if (w.skip) return { g: 0, b: 0 }
-        const dev = body - w.db
-        const g =
-          Math.abs(dev) <= CURVE_DEAD_DB
-            ? 0
-            : clamp(dev - Math.sign(dev) * CURVE_DEAD_DB, -MAX_CURVE_GAIN_DB, MAX_CURVE_GAIN_DB)
         const want = reference === null ? 0 : reference - BRIGHT_MARGIN_DB - w.highDb
-        return { g, b: clamp(want, 0, room) }
+        const b = clamp(want, 0, room)
+        // El realce también sube el volumen: se iguala lo que se oirá con él (test18: el
+        // arranque del coro, realzado 4 dB, quedaba más fuerte que el resto).
+        const dev = body - (brightened(w, b).db + level)
+        const g = clamp(
+          level + (Math.abs(dev) <= CURVE_DEAD_DB ? 0 : dev),
+          -MAX_CURVE_GAIN_DB,
+          MAX_CURVE_GAIN_DB
+        )
+        return { g, b }
       })
       const points = raw.map((_, i) => {
         const near = raw.slice(Math.max(0, i - half), i + half + 1)
