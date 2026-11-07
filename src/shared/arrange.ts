@@ -815,12 +815,21 @@ export const MAX_CURVE_BRIGHT_DB = 9
  * lo que oye y ese audio ya perdió agudos en su códec: cada tramo heredaba uno más
  * apagado (test19: de −11 dB en la intro a −17 en el verso). Con la partida realzada
  * 6 dB, la continuación salió 10 dB más brillante, como un tramo nuevo desde texto.
+ * Sin margen: cada tramo pierde solo 1,5-3 dB, y con un margen de 3 dB nunca se llegaba
+ * a realzar mientras la canción se apagaba paso a paso (test20: −11, −15, −16, −18). El
+ * shelf en BRIGHT_SHELF_HZ sube algo menos los agudos medidos desde 1 kHz (+6 de shelf
+ * subió la medida 4,9 dB), de ahí CONTEXT_LIFT_GAIN.
  * `reference`: agudos del primer tramo; `highDb`: los de la partida.
  */
 export function contextLift(reference: number, highDb: number): number {
-  const lift = reference - BRIGHT_MARGIN_DB - highDb
-  return lift < MIN_CHANGE_DB ? 0 : Math.min(MAX_CURVE_BRIGHT_DB, Math.round(lift * 2) / 2)
+  const lift = Math.round((reference - highDb) * CONTEXT_LIFT_GAIN * 2) / 2
+  return lift < CONTEXT_LIFT_MIN_DB ? 0 : Math.min(MAX_CURVE_BRIGHT_DB, lift)
 }
+/** dB de shelf por dB de agudos que faltan (ver contextLift). */
+const CONTEXT_LIFT_GAIN = 1.25
+/** Menos de esto no se nota. */
+const CONTEXT_LIFT_MIN_DB = 1
+
 /**
  * Lo que un segundo puede apartarse del volumen de su sección sin tocarlo; pasado esto
  * se lleva entero a él (test18: dejar 3 dB dejaba un coro que se hundía 5 dB a medias).

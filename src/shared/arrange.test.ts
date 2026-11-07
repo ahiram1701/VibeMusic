@@ -841,9 +841,11 @@ describe('curva de mezcla dentro de la sección (test17)', () => {
 
 describe('partida realzada para que la canción no se apague (test19)', () => {
   it('realza lo que le falta a la partida, con tope, y nada si ya brilla', () => {
-    expect(contextLift(-11, -17)).toBe(3)
+    // test20: cada paso perdía 1,5-3 dB y con margen nunca se realzaba.
+    expect(contextLift(-11.4, -12.1)).toBe(1)
+    expect(contextLift(-11.4, -15.4)).toBe(5)
     expect(contextLift(-11, -30)).toBe(MAX_CURVE_BRIGHT_DB)
-    expect(contextLift(-11, -13)).toBe(0)
+    expect(contextLift(-11, -11.3)).toBe(0)
     expect(contextLift(-11, -5)).toBe(0)
   })
 })
