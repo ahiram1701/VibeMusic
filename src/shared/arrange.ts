@@ -809,6 +809,18 @@ export function brightened<T extends { db: number; highDb: number }>(w: T, brigh
 
 /** Lo más que se realzan los agudos de un segundo, contando el realce de su sección. */
 export const MAX_CURVE_BRIGHT_DB = 9
+
+/**
+ * Cuánto realzar (dB de shelf) el audio de partida de una continuación. MusicGen imita
+ * lo que oye y ese audio ya perdió agudos en su códec: cada tramo heredaba uno más
+ * apagado (test19: de −11 dB en la intro a −17 en el verso). Con la partida realzada
+ * 6 dB, la continuación salió 10 dB más brillante, como un tramo nuevo desde texto.
+ * `reference`: agudos del primer tramo; `highDb`: los de la partida.
+ */
+export function contextLift(reference: number, highDb: number): number {
+  const lift = reference - BRIGHT_MARGIN_DB - highDb
+  return lift < MIN_CHANGE_DB ? 0 : Math.min(MAX_CURVE_BRIGHT_DB, Math.round(lift * 2) / 2)
+}
 /**
  * Lo que un segundo puede apartarse del volumen de su sección sin tocarlo; pasado esto
  * se lleva entero a él (test18: dejar 3 dB dejaba un coro que se hundía 5 dB a medias).

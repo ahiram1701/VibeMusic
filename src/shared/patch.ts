@@ -85,11 +85,11 @@ export interface BarPatch {
 /**
  * Qué compases opacos tapar y con qué. Opaco: sus agudos, ya con la mezcla, quedan
  * DULL_DB por debajo de `reference` (los agudos de la primera región, ver
- * sectionBrightness). Se tapan por frases (no cruzan un múltiplo de 4 compases) con
- * compases sanos de una sección de la misma familia (un coro con un coro), de la misma
- * región para que el audio sea seguido, y mejor en la misma posición de la frase. Nunca
+ * sectionBrightness). Solo se tapan frases enteras de 4 compases con dos o más opacos,
+ * con frases sanas de una sección de la misma familia (un coro con un coro), de la misma
+ * región para que el audio sea seguido, y mejor en el mismo sitio de la sección. Nunca
  * en secciones tranquilas (energía ≤ 2), ni el primer y el último compás de la canción,
- * ni el siseo o el silencio. Sin donante, el compás se queda como está.
+ * ni el siseo o el silencio. Sin donante, la frase se queda como está.
  */
 export function planDullPatches(
   sections: { name: string; startBar: number; bars: number; energy?: number }[],
@@ -142,27 +142,23 @@ export function planDullPatches(
     const typical = sister.length ? sister[Math.floor(sister.length / 2)] : -Infinity
     const threshold = Math.max(reference - DULL_DB, typical - SISTER_DULL_DB)
     const dull = (bar: number): boolean => dullBelow(bar, threshold)
-    // Una frase con varios compases opacos se cambia entera (a trozos sonaría a
-    // parches); si no hay una frase sana entera, o solo tiene uno, por compases.
-    const chunks: { bar: number; bars: number; whole: boolean }[] = []
-    for (let phrase = s.startBar; phrase < s.startBar + s.bars; phrase += PHRASE_BARS) {
-      const len = Math.min(PHRASE_BARS, s.startBar + s.bars - phrase)
-      const inPhrase = Array.from({ length: len }, (_, i) => phrase + i).filter(dull)
-      if (inPhrase.length >= 2 && len === PHRASE_BARS) {
-        chunks.push({ bar: phrase, bars: len, whole: true })
-        continue
-      }
-      for (const bar of inPhrase) {
-        const prev = chunks[chunks.length - 1]
-        if (prev && !prev.whole && prev.bar + prev.bars === bar) prev.bars += 1
-        else chunks.push({ bar, bars: 1, whole: false })
-      }
+    // Solo frases enteras con varios compases opacos: un compás suelto traído de otro
+    // sitio se oye como un empalme (test19: saltos de 5 dB de brillo en cada compás
+    // tapado). Una frase entera cambia donde la música ya cambia de frase.
+    const chunks: { bar: number; bars: number }[] = []
+    for (
+      let phrase = s.startBar;
+      phrase + PHRASE_BARS <= s.startBar + s.bars;
+      phrase += PHRASE_BARS
+    ) {
+      const inPhrase = Array.from({ length: PHRASE_BARS }, (_, i) => phrase + i).filter(dull)
+      if (inPhrase.length >= 2) chunks.push({ bar: phrase, bars: PHRASE_BARS })
     }
     const donorFor = (chunk: { bar: number; bars: number }) => {
-      const want = (chunk.bar - s.startBar) % PHRASE_BARS
       let best: { score: number; from: number; region: HeardRegion } | null = null
       for (const o of kin) {
-        for (let from = o.startBar; from + chunk.bars <= o.startBar + o.bars; from++) {
+        // El donante también es una frase entera de su sección.
+        for (let from = o.startBar; from + chunk.bars <= o.startBar + o.bars; from += PHRASE_BARS) {
           const overlaps = from < chunk.bar + chunk.bars && from + chunk.bars > chunk.bar
           if (overlaps) continue
           let ok = true
@@ -174,10 +170,9 @@ export function planDullPatches(
           if (!ok) continue
           const region = regionOver(from, chunk.bars)
           if (!region) continue
-          // Mejor la misma posición en la frase, luego otra sección, el mismo sitio dentro
-          // de ella (la segunda mitad del coro por la segunda) y luego lo más brillante.
+          // Mejor otra sección, el mismo sitio dentro de ella (la segunda mitad del coro
+          // por la segunda) y luego lo más brillante.
           const score =
-            ((from - o.startBar) % PHRASE_BARS === want ? 100 : 0) +
             (o === s ? 0 : 10) +
             (from - o.startBar === chunk.bar - s.startBar ? 5 : 0) +
             Math.max(-9, worst - reference)
@@ -186,9 +181,9 @@ export function planDullPatches(
       }
       return best
     }
-    const push = (chunk: { bar: number; bars: number }): boolean => {
+    const push = (chunk: { bar: number; bars: number }): void => {
       const best = donorFor(chunk)
-      if (!best) return false
+      if (!best) return
       const startSec = beatsToSeconds((best.from - 1) * beatsPerBar - best.region.startBeat, bpm)
       patches.push({
         section: s.name,
@@ -198,15 +193,8 @@ export function planDullPatches(
         regionId: best.region.id,
         offsetSec: best.region.offsetSec + startSec
       })
-      return true
     }
-    for (const chunk of chunks) {
-      if (push(chunk) || !chunk.whole) continue
-      // Sin frase sana entera: los compases opacos de la frase, de uno en uno.
-      for (let bar = chunk.bar; bar < chunk.bar + chunk.bars; bar++) {
-        if (dull(bar)) push({ bar, bars: 1 })
-      }
-    }
+    for (const chunk of chunks) push(chunk)
   }
   return patches
 }

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   steadyArrangement,
+  contextLift,
+  MAX_CURVE_BRIGHT_DB,
   chunkBars,
   energyHint,
   clampWords,
@@ -834,6 +836,15 @@ describe('curva de mezcla dentro de la sección (test17)', () => {
     const copy = looped.project.tracks[0].regions.find((r) => r.id === looped.regionId)!
     expect(copy.eq).toEqual(curve)
     expect(withRegionEq(withEq, new Map([['a', []]])).tracks[0].regions[0].eq).toBeUndefined()
+  })
+})
+
+describe('partida realzada para que la canción no se apague (test19)', () => {
+  it('realza lo que le falta a la partida, con tope, y nada si ya brilla', () => {
+    expect(contextLift(-11, -17)).toBe(3)
+    expect(contextLift(-11, -30)).toBe(MAX_CURVE_BRIGHT_DB)
+    expect(contextLift(-11, -13)).toBe(0)
+    expect(contextLift(-11, -5)).toBe(0)
   })
 })
 

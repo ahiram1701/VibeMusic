@@ -48,11 +48,9 @@ describe('compases opacos tapados con compases sanos (test17)', () => {
     ])
   })
 
-  it('un compás suelto se tapa con uno sano en la misma posición de la frase', () => {
+  it('un compás suelto no se tapa: sonaría a empalme (test19)', () => {
     const final = region('f', 17, 8, (bar) => (bar === 19 ? -13 : -5))
-    const [patch] = planDullPatches(sections, [intro, coro, verso, final, outro], 4, BPM, -5)
-    expect(patch).toMatchObject({ bar: 19, bars: 1 })
-    expect((patch.fromBar - 5) % 4).toBe(2)
+    expect(planDullPatches(sections, [intro, coro, verso, final, outro], 4, BPM, -5)).toEqual([])
   })
 
   it('no toca lo tranquilo, lo que no tiene donante ni lo que está bien', () => {

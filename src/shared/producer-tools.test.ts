@@ -415,6 +415,7 @@ describe('productor · canciones completas', () => {
       prompt?: string
       atBeat?: number
       crossfade?: boolean
+      brightenTo?: number
     }[] = []
     h.host.extend = async (regionId, bars, opts) => {
       calls.push({
@@ -422,7 +423,8 @@ describe('productor · canciones completas', () => {
         bars,
         prompt: opts?.prompt,
         atBeat: opts?.atBeat,
-        crossfade: opts?.crossfade
+        crossfade: opts?.crossfade,
+        brightenTo: opts?.brightenTo
       })
       const p = h.state.project
       const track = p.tracks.find((t) => t.regions.some((r) => r.id === regionId))!
@@ -654,6 +656,22 @@ describe('productor · canciones completas', () => {
     )
     const again = (await h.run('review_song')) as { issues: unknown[] }
     expect(again.issues).toEqual(res.review.issues)
+  })
+
+  it('compose_song da los agudos del primer tramo para que los siguientes no se apaguen (test19)', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    h.host.inspectRegion = async (regionId) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      const s = { db: -14, highDb: r.startBeat === 0 ? -11 : -17, pulseDb: 5 }
+      return {
+        collapseAtSec: null,
+        sound: { head: s, tail: s, mean: s, staticRun: null, opening: [] }
+      }
+    }
+    await h.run('compose_song', songInput)
+    expect(calls.length).toBeGreaterThan(0)
+    expect(calls.every((c) => c.brightenTo === -11)).toBe(true)
   })
 
   it('compose_song siempre continúa lo anterior (sin cortes)', async () => {

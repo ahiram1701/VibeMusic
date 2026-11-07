@@ -145,6 +145,11 @@ export interface ProducerHost {
       message?: string
       /** Fundirse con el final de la región (por defecto sí). */
       crossfade?: boolean
+      /**
+       * Agudos de referencia (los del primer tramo): si la partida ha perdido, se realza
+       * antes de dársela al motor, que la imita (ver contextLift).
+       */
+      brightenTo?: number
     }
   ): Promise<{ trackId: string; regionId: string }>
   /**
@@ -544,6 +549,18 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
     const healed: ChunkReport['healed'] = []
     let generated = 0
     let last: string | null = null
+    // Agudos de referencia para que los tramos que continúan no se vayan apagando (ver
+    // contextLift): los del principio de la canción si ya suena (rehacer secciones), o
+    // los del primer tramo que salga de texto.
+    const opening = host
+      .getProject()
+      .tracks.find((t) => t.id === trackId)
+      ?.regions.slice()
+      .sort((a, b) => a.startBeat - b.startBeat)[0]
+    let brightRef: number | null =
+      opening && opening.startBeat < 0.05
+        ? ((await host.inspectRegion(opening.id)).sound?.mean.highDb ?? null)
+        : null
     // Final de cada región: su volumen (para ver un hueco tras la unión) y si está sana
     // (sin atasco ni apagada al final), que es lo que oye el tramo que la continúa.
     type Tail = { db: number | null; ok: boolean }
@@ -704,7 +721,8 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
                 atBeat,
                 message: `${section.name} (${span})`,
                 // Fundirse con audio de otra parte de la canción sonaría raro.
-                crossfade: from === before
+                crossfade: from === before,
+                ...(brightRef !== null && { brightenTo: brightRef })
               })
             : await host.generate({
                 prompt: step.prompt,
@@ -744,6 +762,11 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         prevDb !== null && !!inspected.sound && hasStartGap(inspected.sound.opening, prevDb)
       const collapseAtSec = gap ? 0 : inspected.collapseAtSec
       tails.set(made, tailFrom(collapseAtSec, inspected.sound))
+      // Los agudos del primer tramo sano desde texto: la referencia para que los que lo
+      // continúan no se vayan apagando (ver contextLift).
+      if (!from && brightRef === null && collapseAtSec === null && inspected.sound) {
+        brightRef = inspected.sound.mean.highDb
+      }
       if (collapseAtSec === null) {
         const sound = inspected.sound
         // Un final que se apaga puede ser a propósito; uno que se hunde en drone, nunca.
