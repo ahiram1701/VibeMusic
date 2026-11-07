@@ -68,6 +68,67 @@ export function sweepEvents(points: SweepPoint[], bpm: number, fromSec: number):
   return events
 }
 
+/**
+ * La curva `eq` de una región en el segundo `sec` de la región (0 = su inicio):
+ * interpolada entre puntos y, fuera de ellos, la del punto más cercano.
+ */
+export function eqAt(
+  region: Pick<Region, 'eq' | 'offsetSec'>
+): (sec: number) => { gainDb: number; brightDb: number } {
+  const eq = [...(region.eq ?? [])].sort((a, b) => a.clipSec - b.clipSec)
+  return (sec) => {
+    if (eq.length === 0) return { gainDb: 0, brightDb: 0 }
+    const at = region.offsetSec + sec
+    const next = eq.findIndex((p) => p.clipSec > at)
+    if (next === -1) return eq[eq.length - 1]
+    if (next === 0) return eq[0]
+    const a = eq[next - 1]
+    const z = eq[next]
+    const k = (at - a.clipSec) / (z.clipSec - a.clipSec)
+    return {
+      gainDb: a.gainDb + (z.gainDb - a.gainDb) * k,
+      brightDb: a.brightDb + (z.brightDb - a.brightDb) * k
+    }
+  }
+}
+
+/**
+ * Volumen (ganancia lineal) y realce de agudos (dB) de una región que suena desde el
+ * segundo `clipSec` de su clip: sus valores fijos más la curva `eq`, con rampas entre
+ * puntos y, al empezar, el valor que toca en ese momento. Null si no tiene curva.
+ */
+export function eqEvents(
+  region: Pick<Region, 'eq' | 'gainDb' | 'brightDb'>,
+  clipSec: number
+): { gain: ParamEvent[]; bright: ParamEvent[] } | null {
+  const eq = [...(region.eq ?? [])].sort((a, b) => a.clipSec - b.clipSec)
+  if (eq.length === 0) return null
+  const timed = eq.map((p) => ({ at: p.clipSec - clipSec, g: p.gainDb, b: p.brightDb }))
+  const next = timed.findIndex((p) => p.at > 0)
+  let start: { g: number; b: number }
+  if (next === -1) start = timed[timed.length - 1]
+  else if (next === 0) start = timed[0]
+  else {
+    const a = timed[next - 1]
+    const z = timed[next]
+    const k = -a.at / (z.at - a.at)
+    start = { g: a.g + (z.g - a.g) * k, b: a.b + (z.b - a.b) * k }
+  }
+  const gain = (db: number): number => Math.pow(10, ((region.gainDb ?? 0) + db) / 20)
+  const bright = (db: number): number => (region.brightDb ?? 0) + db
+  const later = timed.filter((p) => p.at > 0)
+  return {
+    gain: [
+      { atSec: 0, value: gain(start.g), kind: 'set' },
+      ...later.map((p): ParamEvent => ({ atSec: p.at, value: gain(p.g), kind: 'linear' }))
+    ],
+    bright: [
+      { atSec: 0, value: bright(start.b), kind: 'set' },
+      ...later.map((p): ParamEvent => ({ atSec: p.at, value: bright(p.b), kind: 'linear' }))
+    ]
+  }
+}
+
 /** Lo que tarda en bajar el volumen con cada golpe (evita un clic). */
 const DUCK_ATTACK_SEC = 0.005
 

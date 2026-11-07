@@ -180,7 +180,7 @@ const EDGE_SEC = 0.25
 const EDGE_PARTS = 4
 
 /** Media en potencia de varias medidas. */
-function powerMean(stats: WindowStats[]): WindowStats {
+export function powerMean(stats: WindowStats[]): WindowStats {
   let power = 0
   let high = 0
   let pulse = 0
@@ -197,11 +197,29 @@ function powerMean(stats: WindowStats[]): WindowStats {
   }
 }
 
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+}
+
 /** Resumen de un audio para revisar la canción (ver soundSummary). */
 export interface SoundSummary {
   head: WindowStats
   tail: WindowStats
   mean: WindowStats
+  /**
+   * Volumen típico (dBFS): la mediana de sus segundos. La media en potencia la manda lo
+   * más fuerte: en test15, 2-3 s de subida al final del verso la dejaban en −17 dB y
+   * los 10 s anteriores, que eran casi todo lo que se oía, sonaban a −24.
+   */
+  body?: number
+  /**
+   * Volumen y agudos de cada segundo (el i-ésimo empieza i s después del inicio medido).
+   * Dentro de una sección MusicGen cambia mucho (test17: un verso que pasa de −3 a −18
+   * dB de agudos a la mitad): con esto la mezcla corrige segundo a segundo.
+   */
+  seconds?: { db: number; highDb: number }[]
   /** Racha más larga de segundos estáticos (suena, pero sin pulso), o null. */
   staticRun: { startSec: number; sec: number } | null
   /** Volumen (dBFS) de los primeros cuartos de segundo, para ver un hueco al empezar. */
@@ -216,6 +234,18 @@ export interface SoundSummary {
  */
 export function fadedEnd(sound: SoundSummary, dropDb = DEFAULTS.fadeDb): boolean {
   return sound.tail.db < sound.head.db - dropDb
+}
+
+/**
+ * ¿Termina hundido en un drone? El último segundo casi no tiene agudos (como un drone,
+ * ver `highDbMin`) y bastantes menos que el primero: el tramo se fue oscureciendo sin
+ * bajar de volumen. Son menos segundos de los que pide findCollapse, pero el siguiente
+ * nacía atascado de ese final (test14: un riff de −19 a −35 dB de agudos en 15 s, y
+ * cuatro tramos atascados dos veces). Que sea relativo deja en paz las camas de puro
+ * bajo y pads (con batería programada), que son graves de principio a fin.
+ */
+export function darkEnd(sound: SoundSummary, dropDb = 8): boolean {
+  return sound.tail.highDb < DEFAULTS.highDbMin && sound.tail.highDb < sound.head.highDb - dropDb
 }
 
 /** Cuartos de segundo del principio que mira `hasStartGap` (1,5 s). */
@@ -248,6 +278,8 @@ export function soundSummary(samples: Float32Array, sampleRate: number): SoundSu
     head: powerMean(edge.slice(0, EDGE_PARTS)),
     tail: powerMean(edge.slice(-EDGE_PARTS)),
     mean: powerMean(stats),
+    body: median(stats.map((w) => w.db)),
+    seconds: stats.map((w) => ({ db: w.db, highDb: w.highDb })),
     staticRun,
     opening: edge.slice(0, OPENING_PARTS).map((w) => w.db)
   }

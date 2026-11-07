@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  steadyArrangement,
+  contextLift,
+  MAX_CURVE_BRIGHT_DB,
   chunkBars,
   energyHint,
   clampWords,
@@ -10,10 +13,14 @@ import {
   loopBars,
   loopRegion,
   parseSongSpec,
+  phraseBars,
   planChunks,
   polishSong,
   reviewProject,
   sectionCoverage,
+  brightened,
+  sectionBrightness,
+  sectionCurves,
   sectionGains,
   tileRegions,
   trackBusy,
@@ -21,10 +28,13 @@ import {
   withoutFilterWords,
   withoutPercussion,
   bedText,
+  withRegionBright,
+  withRegionEq,
   withRegionGains,
   withoutStyleRepeats,
   type ChunkStep
 } from './arrange'
+import { GENRES } from './genres'
 import { createProject, createTrack, type Project, type Region } from './project'
 import { sectionsOf, setSections } from './sections'
 
@@ -569,6 +579,27 @@ describe('mezcla por sección', () => {
     expect(heard).toBeLessThanOrEqual(9)
   })
 
+  it('bajar del coro a un verso suave no deja el coro sin subir (test18)', () => {
+    const named = [
+      { name: 'Verso', startBar: 1, bars: 8, energy: 3 },
+      { name: 'Coro', startBar: 9, bars: 8, energy: 5 },
+      { name: 'Verso', startBar: 17, bars: 8, energy: 3 },
+      { name: 'Solo', startBar: 25, bars: 8, energy: 5 }
+    ]
+    const g = sectionGains(
+      named,
+      [
+        { ...at(1, 'v', -16), headDb: -22, tailDb: -14 },
+        { ...at(9, 'c', -17.4), headDb: -18, tailDb: -16 },
+        { ...at(17, 'v', -16), headDb: -22, tailDb: -14 },
+        { ...at(25, 's', -16.4), headDb: -16, tailDb: -18 }
+      ],
+      4
+    )
+    const after = (id: string, db: number) => db + g.get(id)!
+    expect(after('r9', -17.4)).toBeGreaterThan(after('r1', -16) + 1)
+  })
+
   it('pone y quita la ganancia de las regiones', () => {
     const p = createProject('X')
     const t = createTrack('Canción', 'full')
@@ -588,6 +619,63 @@ describe('mezcla por sección', () => {
     expect(withGain.tracks[0].regions[0].gainDb).toBe(4)
     const cleared = withRegionGains(withGain, new Map([['a', 0]]))
     expect('gainDb' in cleared.tracks[0].regions[0]).toBe(false)
+  })
+
+  describe('brillo por sección (test15: coros opacos)', () => {
+    const sections = [
+      { name: 'Intro', startBar: 1, bars: 8, energy: 3 },
+      { name: 'Verso', startBar: 9, bars: 8, energy: 3 },
+      { name: 'Coro', startBar: 17, bars: 8, energy: 5 },
+      { name: 'Puente', startBar: 25, bars: 8, energy: 2 }
+    ]
+    const bright = (bar: number, db: number, highDb: number) => ({
+      ...at(bar, `c${bar}`, db),
+      highDb
+    })
+
+    it('realza lo que se oscureció respecto al primer tramo, con tope', () => {
+      const b = sectionBrightness(
+        sections,
+        [bright(1, -18, -14), bright(9, -19, -18), bright(17, -17, -29), bright(25, -20, -30)],
+        4
+      )
+      // El verso está dentro del margen; el coro sube el tope; el puente tranquilo, nada.
+      expect(b.get('r1')).toBe(0)
+      expect(b.get('r9')).toBe(0)
+      expect(b.get('r17')).toBe(6)
+      expect(b.get('r25')).toBe(0)
+    })
+
+    it('no realza el siseo ni una canción con un solo tramo', () => {
+      const b = sectionBrightness(sections, [bright(1, -18, -2), bright(9, -30, -9)], 4)
+      expect(b.get('r9')).toBe(0)
+      expect(sectionBrightness(sections, [bright(1, -18, -14)], 4).size).toBe(0)
+    })
+
+    it('lo realzado se mide con más agudos, y se pone y se quita', () => {
+      const lit = brightened({ db: -20, highDb: -28 }, 6)
+      expect(lit.highDb).toBeCloseTo(-22, 0)
+      expect(lit.db).toBeGreaterThan(-20)
+      expect(brightened({ db: -20, highDb: -28 }, 0)).toEqual({ db: -20, highDb: -28 })
+      const t = createTrack('Canción', 'full')
+      const r: Region = {
+        id: 'a',
+        clipId: 'c',
+        startBeat: 0,
+        offsetSec: 0,
+        lengthSec: 4,
+        fadeInSec: 0,
+        fadeOutSec: 0
+      }
+      const p = withRegionBright(
+        { ...createProject('X'), tracks: [{ ...t, regions: [r] }] },
+        new Map([['a', 4]])
+      )
+      expect(p.tracks[0].regions[0].brightDb).toBe(4)
+      expect('brightDb' in withRegionBright(p, new Map([['a', 0]])).tracks[0].regions[0]).toBe(
+        false
+      )
+    })
   })
 
   it('tapa una región con compases sanos de otra, en su posición de la frase', () => {
@@ -627,5 +715,154 @@ describe('mezcla por sección', () => {
       lengthSec: 14,
       gainDb: 2
     })
+    // Sin región que reemplazar se añade a la pista de la fuente y no se quita nada.
+    const added = loopRegion({ ...p, tracks: [{ ...t, regions: [good, bad] }] }, null, good, {
+      atBeat: 96,
+      offsetBars: 7,
+      bars: 1
+    })
+    expect(added.project.tracks[0].regions.map((r) => r.id)).toEqual([
+      'good',
+      'bad',
+      added.regionId
+    ])
+  })
+})
+
+describe('phraseBars', () => {
+  it('completa la última frase de 4 compases y respeta los remates cortos', () => {
+    expect([22, 16, 13, 64, 3, 2, 1].map(phraseBars)).toEqual([24, 16, 16, 64, 3, 2, 1])
+    const spec = parseSongSpec(song({ sections: [{ name: 'Verso', bars: 22, arrangement: 'x' }] }))
+    expect(spec.sections[0].bars).toBe(24)
+  })
+})
+
+describe('curva de mezcla dentro de la sección (test17)', () => {
+  const sections = [
+    { name: 'Intro', startBar: 1, bars: 8, energy: 3 },
+    { name: 'Verso', startBar: 9, bars: 8, energy: 3 },
+    { name: 'Puente', startBar: 17, bars: 8, energy: 2 }
+  ]
+  const flat = (n: number, db: number, highDb: number) =>
+    Array.from({ length: n }, () => ({ db, highDb }))
+  const region = (bar: number, seconds: { db: number; highDb: number }[], extra = {}) => ({
+    id: `r${bar}`,
+    startBeat: (bar - 1) * 4,
+    offsetSec: 1,
+    seconds,
+    ...extra
+  })
+  const intro = region(1, flat(16, -17, -5))
+
+  it('realza solo la mitad que se oscureció, hasta el tope', () => {
+    const verso = region(9, [...flat(8, -17, -4), ...flat(8, -17, -18)], { brightDb: 2 })
+    const eq = sectionCurves(sections, [intro, verso], 4, -5).get('r9')!
+    // Primera mitad sin tocar; la segunda sube lo que falta, sin pasar de 9 en total.
+    expect(eq.slice(0, 6).every((q) => q.brightDb === 0)).toBe(true)
+    expect(eq[14].brightDb).toBe(7)
+    expect(eq[14].clipSec).toBe(15.5)
+    expect(eq.every((q) => q.gainDb === 0)).toBe(true)
+  })
+
+  it('iguala los dos clips de una sección: sin escalón en la unión (test18)', () => {
+    const coro = [
+      { name: 'Intro', startBar: 1, bars: 8, energy: 3 },
+      { name: 'Coro', startBar: 9, bars: 16, energy: 5 }
+    ]
+    const a = region(9, flat(16, -20, -5))
+    const b = region(17, flat(16, -15, -5))
+    const curves = sectionCurves(coro, [intro, a, b], 4, -5)
+    const heard = (eq: { gainDb: number }[], db: number) => db + (eq[8]?.gainDb ?? 0)
+    expect(Math.abs(heard(curves.get('r17')!, -15) - heard(curves.get('r9')!, -20))).toBeLessThan(1)
+  })
+
+  it('baja un golpe y sube un hueco pasado el margen', () => {
+    const s = flat(16, -17, -5)
+    s[7] = { db: -10, highDb: -5 }
+    s[8] = { db: -10, highDb: -5 }
+    s[9] = { db: -10, highDb: -5 }
+    const eq = sectionCurves(sections, [intro, region(9, s)], 4, -5).get('r9')!
+    expect(eq[8].gainDb).toBe(-6)
+    expect(eq[2].gainDb).toBe(0)
+  })
+
+  it('deja la sección tranquila, el siseo, los bordes de la canción y lo pequeño', () => {
+    const dark = flat(16, -17, -20)
+    const puente = region(17, dark, { eq: [{ clipSec: 1, gainDb: 3, brightDb: 3 }] })
+    const curves = sectionCurves(
+      sections,
+      [region(1, dark), region(9, flat(16, -40, -1)), puente],
+      4,
+      -5
+    )
+    // Energía 2: se quita la curva que tuviera.
+    expect(curves.get('r17')).toEqual([])
+    // Siseo: nada.
+    expect(curves.get('r9')).toEqual([])
+    // Primer segundo de la canción intacto aunque esté oscuro.
+    const intro = curves.get('r1')!
+    expect(intro[0].brightDb).toBe(0)
+    expect(intro[5].brightDb).toBeGreaterThan(0)
+    // Una diferencia de 1 dB no se corrige.
+    expect(sectionCurves(sections, [region(1, flat(16, -17, -9))], 4, -5).get('r1')).toEqual([])
+  })
+
+  it('sin referencia (batería programada) solo iguala el volumen', () => {
+    const eq = sectionCurves(sections, [intro, region(9, flat(16, -17, -25))], 4, null).get('r9')
+    expect(eq).toEqual([])
+  })
+
+  it('se guarda en la región y viaja con los loops', () => {
+    const p = createProject('X')
+    const t = {
+      ...createTrack('Canción', 'full'),
+      regions: [
+        {
+          id: 'a',
+          clipId: 'c',
+          startBeat: 0,
+          offsetSec: 0,
+          lengthSec: 16,
+          fadeInSec: 0,
+          fadeOutSec: 0
+        }
+      ]
+    }
+    const curve = [{ clipSec: 4.5, gainDb: 0, brightDb: 3 }]
+    const withEq = withRegionEq({ ...p, tracks: [t] }, new Map([['a', curve]]))
+    const src = withEq.tracks[0].regions[0] as Region
+    expect(src.eq).toEqual(curve)
+    const looped = loopRegion(withEq, null, src, { atBeat: 32, offsetBars: 2, bars: 1 })
+    const copy = looped.project.tracks[0].regions.find((r) => r.id === looped.regionId)!
+    expect(copy.eq).toEqual(curve)
+    expect(withRegionEq(withEq, new Map([['a', []]])).tracks[0].regions[0].eq).toBeUndefined()
+  })
+})
+
+describe('partida realzada para que la canción no se apague (test19)', () => {
+  it('realza lo que le falta a la partida, con tope, y nada si ya brilla', () => {
+    // test20: cada paso perdía 1,5-3 dB y con margen nunca se realzaba.
+    expect(contextLift(-11.4, -12.1)).toBe(1)
+    expect(contextLift(-11.4, -15.4)).toBe(5)
+    expect(contextLift(-11, -30)).toBe(MAX_CURVE_BRIGHT_DB)
+    expect(contextLift(-11, -11.3)).toBe(0)
+    expect(contextLift(-11, -5)).toBe(0)
+  })
+})
+
+describe('arreglos sin entradas escalonadas (test18)', () => {
+  it('quita "alone" y "enters": todo suena a la vez', () => {
+    expect(steadyArrangement('guitar riff alone, live drums enter')).toBe('guitar riff, live drums')
+    expect(steadyArrangement('kick alone, bassline kicks in')).toBe('kick, bassline')
+    expect(steadyArrangement('bass and hats enter')).toBe('bass and hats')
+    expect(steadyArrangement('electric guitar solo over full band')).toBe(
+      'electric guitar solo over full band'
+    )
+  })
+
+  it('las guías de género no piden entradas', () => {
+    for (const g of GENRES) {
+      for (const text of Object.values(g.arrangements)) expect(steadyArrangement(text)).toBe(text)
+    }
   })
 })

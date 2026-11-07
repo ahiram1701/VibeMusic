@@ -12,20 +12,43 @@ import {
   parseSongSpec,
   planChunks,
   bedText,
+  brightened,
   polishSong,
   reviewProject,
   sameName,
   sectionCoverage,
+  sectionBrightness,
+  sectionCurves,
   sectionGains,
   trackBusy,
   trimRegion,
   vocalSongRequest,
+  withRegionBright,
+  withRegionEq,
   withRegionGains,
-  type ChunkStep
+  type ChunkStep,
+  type GenerateStep
 } from './arrange'
-import { fadedEnd, hasStartGap, type CollapseOptions, type SoundSummary } from './drone'
+import {
+  darkEnd,
+  fadedEnd,
+  hasStartGap,
+  powerMean,
+  type CollapseOptions,
+  type SoundSummary
+} from './drone'
+import { eqAt } from './playback'
+import { planDullPatches, spliceBars, type BarPatch, type HeardRegion } from './patch'
 import { DRUM_PATTERNS, findPattern } from './drums'
-import { findGenre, GENRES, PROMPT_EXAMPLES, type GenreGuide } from './genres'
+import {
+  findGenre,
+  narrows,
+  GENERIC_STRUCTURE,
+  GENRES,
+  guideLengths,
+  PROMPT_EXAMPLES,
+  type GenreGuide
+} from './genres'
 import type { ProviderInfo, SingingEngine } from './generation'
 import { buildUstx, melodyForLyrics, placeMelody } from './melody'
 import { SINGER_PROVIDER, SINGER_VOICE } from './singer'
@@ -122,6 +145,11 @@ export interface ProducerHost {
       message?: string
       /** Fundirse con el final de la región (por defecto sí). */
       crossfade?: boolean
+      /**
+       * Agudos de referencia (los del primer tramo): si la partida ha perdido, se realza
+       * antes de dársela al motor, que la imita (ver contextLift).
+       */
+      brightenTo?: number
     }
   ): Promise<{ trackId: string; regionId: string }>
   /**
@@ -442,7 +470,23 @@ interface ChunkReport {
   drone: { section: string; start_bar: number }[]
   /** Tramos atascados dos veces que ahora repiten compases sanos de su sección. */
   filled: { section: string; start_bar: number; bars: number }[]
+  /** Finales apagados tapados con compases sanos de su sección (ver healTail). */
+  healed: { section: string; start_bar: number; bars: number }[]
 }
+
+/** Las frases de casi cualquier género van de 4 en 4 compases. */
+const PHRASE_BARS = 4
+
+/**
+ * Arreglos que piden acabar apagándose a propósito: ese final no se tapa. Solo frases
+ * de salida ("fade in" en una intro no cuenta).
+ */
+/** Segundos finales que se tapan: lo que dura un final apagado y uno hundido en drone. */
+const FADED_TAIL_SEC = 1
+const DARK_TAIL_SEC = 3
+
+const SOFT_ENDING =
+  /\b(fade[sd]? out|fading out|fadeout|stops?|silence|breakdown|ritardando|ending|final hit)\b/i
 
 /** Pista de la canción: la de tipo "full" con más audio generado. */
 function songTrackOf(p: Project): Track | undefined {
@@ -502,15 +546,28 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
     const repaired: ChunkReport['repaired'] = []
     const drone: ChunkReport['drone'] = []
     const filled: ChunkReport['filled'] = []
+    const healed: ChunkReport['healed'] = []
     let generated = 0
     let last: string | null = null
+    // Agudos de referencia para que los tramos que continúan no se vayan apagando (ver
+    // contextLift): los del principio de la canción si ya suena (rehacer secciones), o
+    // los del primer tramo que salga de texto.
+    const opening = host
+      .getProject()
+      .tracks.find((t) => t.id === trackId)
+      ?.regions.slice()
+      .sort((a, b) => a.startBeat - b.startBeat)[0]
+    let brightRef: number | null =
+      opening && opening.startBeat < 0.05
+        ? ((await host.inspectRegion(opening.id)).sound?.mean.highDb ?? null)
+        : null
     // Final de cada región: su volumen (para ver un hueco tras la unión) y si está sana
     // (sin atasco ni apagada al final), que es lo que oye el tramo que la continúa.
     type Tail = { db: number | null; ok: boolean }
     const tails = new Map<string, Tail>()
     const tailFrom = (collapseAtSec: number | null, sound?: SoundSummary | null): Tail => ({
       db: sound?.tail.db ?? null,
-      ok: collapseAtSec === null && !(sound && fadedEnd(sound))
+      ok: collapseAtSec === null && !(sound && (fadedEnd(sound) || darkEnd(sound)))
     })
     const tailOf = async (id: string): Promise<Tail> => {
       if (!tails.has(id)) {
@@ -535,7 +592,8 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
     }
     // Para tapar un tramo que sigue atascado: compases sanos ya grabados de la misma
     // sección (o de otra igual de antes), de los que se toman los que tocan en esa
-    // posición de la frase. La más cercana primero.
+    // posición de la frase de 4 compases (un final de frase se tapa con otro final, no
+    // con un compás de en medio). La más cercana primero.
     const healthyLoop = async (
       section: Section,
       startBar: number,
@@ -558,12 +616,59 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         }))
         .filter((c) => inLike(c.bar) && c.length >= bars)
         .sort((a, b) => b.r.startBeat - a.r.startBeat)
+      const want = (startBar - section.startBar) % PHRASE_BARS
       for (const c of candidates) {
         if (!(await tailOf(c.r.id)).ok) continue
-        const k = (startBar - c.bar) % c.length
-        return { region: c.r, offsetBars: k + bars <= c.length ? k : 0 }
+        const k0 = (startBar - c.bar) % c.length
+        const k = k0 + bars <= c.length ? k0 : 0
+        const home = like.find((s) => c.bar >= s.startBar && c.bar < s.startBar + s.bars)
+        const inPhrase = Array.from({ length: c.length - bars + 1 }, (_, j) => j).filter(
+          (j) => home && (c.bar + j - home.startBar) % PHRASE_BARS === want
+        )
+        const best = inPhrase.sort((a, b) => Math.abs(a - k) - Math.abs(b - k))[0]
+        return { region: c.r, offsetBars: best ?? k }
       }
       return null
+    }
+    // Un tramo sano que termina apagándose (el último segundo muy por debajo del
+    // primero): el siguiente no puede fundirse con él, así que ese bajón se oiría entero
+    // en la unión, y cada coro repetido lo copia (test13: el coro moría en su último
+    // compás y la canción "volvía a empezar" tres veces). Igual con uno que se hunde en
+    // un drone al final, que además contagiaba al siguiente (test14). Se tapan los
+    // compases finales (`sec` segundos) con compases sanos de la sección; así el
+    // siguiente sí se funde y escucha música sana. No regenera nada.
+    const healTail = async (
+      section: Section,
+      step: GenerateStep,
+      made: string,
+      atBeat: number,
+      sec: number
+    ): Promise<string | null> => {
+      const n = Math.max(1, Math.ceil(sec / secPerBar))
+      if (n >= step.bars) return null
+      const startBar = step.startBar + step.bars - n
+      // Si la sección no tiene otros compases sanos (es su primer tramo), sirven los del
+      // propio tramo una frase antes, que aún sonaban bien.
+      const own = host
+        .getProject()
+        .tracks.flatMap((t) => t.regions)
+        .find((r) => r.id === made)
+      const early = step.bars - n - PHRASE_BARS
+      const loop =
+        (await healthyLoop(section, startBar, n, made)) ??
+        (own && early >= 0 ? { region: own, offsetBars: early } : null)
+      if (!loop) return null
+      const trimmed = trimRegion(host.getProject(), made, (step.bars - n) * secPerBar)
+      const r = loopRegion(trimmed, null, loop.region, {
+        atBeat: atBeat + (step.bars - n) * perBar(trimmed),
+        offsetBars: loop.offsetBars,
+        bars: n
+      })
+      await commit(r.project, `${section.name}: final dañado tapado con compases sanos`)
+      healed.push({ section: section.name, start_bar: startBar, bars: n })
+      tails.set(made, { db: null, ok: true })
+      tails.set(r.regionId, { db: null, ok: true })
+      return r.regionId
     }
     const queue: (ChunkStep & { repair?: boolean })[] = [...run.steps]
     let total = queue.filter((s) => s.kind === 'generate').length
@@ -616,7 +721,8 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
                 atBeat,
                 message: `${section.name} (${span})`,
                 // Fundirse con audio de otra parte de la canción sonaría raro.
-                crossfade: from === before
+                crossfade: from === before,
+                ...(brightRef !== null && { brightenTo: brightRef })
               })
             : await host.generate({
                 prompt: step.prompt,
@@ -656,8 +762,22 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         prevDb !== null && !!inspected.sound && hasStartGap(inspected.sound.opening, prevDb)
       const collapseAtSec = gap ? 0 : inspected.collapseAtSec
       tails.set(made, tailFrom(collapseAtSec, inspected.sound))
+      // Los agudos del primer tramo sano desde texto: la referencia para que los que lo
+      // continúan no se vayan apagando (ver contextLift).
+      if (!from && brightRef === null && collapseAtSec === null && inspected.sound) {
+        brightRef = inspected.sound.mean.highDb
+      }
       if (collapseAtSec === null) {
-        last = made
+        const sound = inspected.sound
+        // Un final que se apaga puede ser a propósito; uno que se hunde en drone, nunca.
+        const softEnd = endsSong || SOFT_ENDING.test(step.prompt)
+        const sec =
+          sound && !endsSong && darkEnd(sound)
+            ? DARK_TAIL_SEC
+            : sound && !softEnd && fadedEnd(sound)
+              ? FADED_TAIL_SEC
+              : 0
+        last = (sec > 0 && (await healTail(section, step, made, atBeat, sec))) || made
         continue
       }
       // Pasado el tope de reparaciones, un atasco se trata como una reparación fallida:
@@ -712,35 +832,137 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         repair: true
       })
     }
-    return { generated, failed, repaired, drone, filled }
+    return { generated, failed, repaired, drone, filled, healed }
   }
 
   /**
-   * Iguala las secciones de la pista (ver sectionGains): se escucha cada región tal
-   * como sale del clip y se le pone su ganancia. Sin medidas no cambia nada.
+   * Iguala las secciones de la pista (ver sectionGains y sectionBrightness): se escucha
+   * cada región tal como sale del clip y se le pone su ganancia y su realce de agudos.
+   * Con batería programada no se realza: la pista de la canción es entonces una cama de
+   * bajo y pads, grave a propósito. Sin medidas no cambia nada.
    */
-  const levelTrack = async (trackId: string): Promise<void> => {
+  const levelOnce = async (trackId: string): Promise<void> => {
     const p = host.getProject()
-    const measured: (Region & { db: number; highDb: number; headDb: number; tailDb: number })[] = []
+    const measured: (Region & {
+      db: number
+      highDb: number
+      headDb: number
+      tailDb: number
+      seconds: { db: number; highDb: number }[]
+    })[] = []
     for (const r of p.tracks.find((t) => t.id === trackId)?.regions ?? []) {
       const { sound } = await host.inspectRegion(r.id)
       if (sound && Number.isFinite(sound.mean.db)) {
         measured.push({
           ...r,
-          db: sound.mean.db,
+          db: sound.body ?? sound.mean.db,
           highDb: sound.mean.highDb,
           headDb: sound.head.db,
-          tailDb: sound.tail.db
+          tailDb: sound.tail.db,
+          seconds: sound.seconds ?? []
         })
       }
     }
-    const gains = sectionGains(sectionsOf(p), measured, perBar(p))
-    const now = host.getProject()
-    const gainOf = (id: string): number =>
-      now.tracks.flatMap((t) => t.regions).find((r) => r.id === id)?.gainDb ?? 0
-    if ([...gains].some(([id, g]) => gainOf(id) !== g)) {
-      await commit(withRegionGains(now, gains), 'mezcla: volumen igualado por sección')
+    // Los compases tapados se mezclan como el sitio de donde salen (ver patchFromBar).
+    const own = measured.filter((r) => r.patchFromBar === undefined)
+    const gains = sectionGains(sectionsOf(p), own, perBar(p))
+    const drums = p.tracks.some((t) => t.drums)
+    const bright = drums
+      ? new Map<string, number>()
+      : sectionBrightness(sectionsOf(p), own, perBar(p))
+    for (const r of measured) {
+      if (r.patchFromBar === undefined) continue
+      const beat = (r.patchFromBar - 1) * perBar(p)
+      const home = own.find(
+        (o) => o.startBeat <= beat + 0.05 && beat < o.startBeat + secondsToBeats(o.lengthSec, p.bpm)
+      )
+      if (!home) continue
+      gains.set(r.id, gains.get(home.id) ?? home.gainDb ?? 0)
+      if (!drums) bright.set(r.id, bright.get(home.id) ?? home.brightDb ?? 0)
     }
+    // Y dentro de cada sección, segundo a segundo, sobre lo que ya pone la sección.
+    const first = [...measured].sort((a, b) => a.startBeat - b.startBeat)[0]
+    const curves = sectionCurves(
+      sectionsOf(p),
+      measured.map((r) => ({
+        ...r,
+        gainDb: gains.get(r.id) ?? r.gainDb,
+        brightDb: bright.get(r.id) ?? r.brightDb
+      })),
+      perBar(p),
+      drums || !first ? null : first.highDb
+    )
+    const now = host.getProject()
+    const regionOf = (id: string): Region | undefined =>
+      now.tracks.flatMap((t) => t.regions).find((r) => r.id === id)
+    const changed =
+      [...gains].some(([id, g]) => (regionOf(id)?.gainDb ?? 0) !== g) ||
+      [...bright].some(([id, b]) => (regionOf(id)?.brightDb ?? 0) !== b) ||
+      [...curves].some(([id, eq]) => JSON.stringify(regionOf(id)?.eq ?? []) !== JSON.stringify(eq))
+    if (changed) {
+      const lifted =
+        [...bright.values()].some((b) => b > 0) ||
+        [...curves.values()].some((eq) => eq.some((q) => q.brightDb > 0))
+      await commit(
+        withRegionEq(withRegionBright(withRegionGains(now, gains), bright), curves),
+        lifted
+          ? 'mezcla: volumen y brillo igualados compás a compás'
+          : 'mezcla: volumen igualado compás a compás'
+      )
+    }
+  }
+
+  /**
+   * Iguala la pista (levelOnce) y, si aun así quedan compases opacos, los tapa con
+   * compases sanos de una sección de la misma familia (ver planDullPatches) y vuelve a
+   * igualar. Con batería programada no: la cama es grave a propósito.
+   */
+  const levelTrack = async (trackId: string): Promise<BarPatch[]> => {
+    await levelOnce(trackId)
+    const p = host.getProject()
+    if (p.tracks.some((t) => t.drums)) return []
+    const track = p.tracks.find((t) => t.id === trackId)
+    if (!track) return []
+    const heard: HeardRegion[] = []
+    for (const r of track.regions) {
+      const { sound } = await host.inspectRegion(r.id)
+      if (sound?.seconds && Number.isFinite(sound.mean.db)) {
+        heard.push({ ...r, seconds: sound.seconds })
+      }
+    }
+    const first = [...heard].sort((a, b) => a.startBeat - b.startBeat)[0]
+    if (!first) return []
+    const firstSound = (await host.inspectRegion(first.id)).sound
+    if (!firstSound) return []
+    const patches = planDullPatches(sectionsOf(p), heard, perBar(p), p.bpm, firstSound.mean.highDb)
+    if (patches.length === 0) return []
+    let next = host.getProject()
+    for (const patch of patches) {
+      const donor = next.tracks.flatMap((t) => t.regions).find((r) => r.id === patch.regionId)
+      if (!donor) continue
+      next = spliceBars(
+        next,
+        trackId,
+        (patch.bar - 1) * perBar(next),
+        patch.bars * perBar(next),
+        donor,
+        patch.offsetSec,
+        patch.fromBar
+      )
+    }
+    await commit(
+      next,
+      'mezcla: compases opacos tapados con compases sanos (' +
+        patches
+          .map(
+            (x) =>
+              `${x.section} ${x.bar}${x.bars > 1 ? `–${x.bar + x.bars - 1}` : ''} ← ${x.fromBar}`
+          )
+          .join(', ') +
+        ')'
+    )
+    await levelOnce(trackId)
+    return patches
   }
 
   /** Escucha una pista entera: medidas por sección y por unión (ver review.ts). */
@@ -752,17 +974,27 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       if (sound) {
         // Se mide el clip; lo que se oye lleva además la ganancia de la región.
         const g = r.gainDb ?? 0
-        const up = (w: SoundSummary['mean']): SoundSummary['mean'] => ({ ...w, db: w.db + g })
+        const curve = eqAt(r)
+        const up = (w: SoundSummary['mean'], sec: number): SoundSummary['mean'] => {
+          const c = curve(sec)
+          const lit = brightened(w, (r.brightDb ?? 0) + c.brightDb)
+          return { ...lit, db: lit.db + g + c.gainDb }
+        }
+        // La media, con la curva de cada segundo si la hay.
+        const mean =
+          r.eq?.length && sound.seconds?.length
+            ? powerMean(sound.seconds.map((w, i) => up({ ...sound.mean, ...w }, i + 0.5)))
+            : up(sound.mean, r.lengthSec / 2)
         regions.push({
           startBeat: r.startBeat,
           endBeat: r.startBeat + secondsToBeats(r.lengthSec, p.bpm),
           lengthSec: r.lengthSec,
           source: `${r.clipId}@${r.offsetSec.toFixed(2)}`,
           ...sound,
-          head: up(sound.head),
-          tail: up(sound.tail),
-          mean: up(sound.mean),
-          opening: sound.opening.map((db) => db + g)
+          head: up(sound.head, 0.5),
+          tail: up(sound.tail, r.lengthSec - 0.5),
+          mean,
+          opening: sound.opening.map((db, i) => db + g + curve((i + 0.5) / 4).gainDb)
         })
       }
     }
@@ -902,17 +1134,21 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         const genre = str(input, 'genre')
         // Si el usuario pidió una fusión ("house/techno bien tumbado"), manda esa guía
         // aunque el LLM pregunte solo por una parte ("techno"). Decide el mensaje más
-        // reciente que nombre algún género.
+        // reciente que nombre algún género. Lo mismo si el usuario nombró un subgénero
+        // de lo que pregunta el LLM ("rock tipo AC/DC" y el LLM pregunta "rock").
         const asked = host
           .userMessages?.()
           .map((m) => findGenre(m))
           .find((x) => x !== null)
-        const g = asked?.blend ? asked : findGenre(genre)
+        const g = asked && (asked.blend || narrows(asked, genre)) ? asked : findGenre(genre)
         guide = g
         if (!g) {
           return {
             found: false,
             known_genres: GENRES.map((x) => x.id),
+            // Sin guía, el LLM se inventaba compases (un verso de 22): una estructura
+            // genérica en frases de 4 que sirve para casi cualquier género.
+            structure: GENERIC_STRUCTURE.map(([name, bars, energy]) => ({ name, bars, energy })),
             example_prompts: PROMPT_EXAMPLES,
             hint: 'Not in the guide: describe it with the closest known genres and concrete instruments, in the same short style as the examples (use web_search if you do not know its sound).'
           }
@@ -977,7 +1213,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
                   reuse: {
                     type: 'boolean',
                     description:
-                      'true to repeat the audio of the previous section with the same name instead of generating it again. Use it for repeated choruses and drops, like real songs do; it also saves several minutes. Ignored when the cloud engine sings the song.'
+                      'Repeated sections (same name and bars, e.g. "Verso" again) already repeat the audio of the first one, like real songs do; their lyrics still change. To get a new take instead, give it another name (e.g. "Coro final"). Ignored when the cloud engine sings the song.'
                   },
                   lyrics: {
                     type: 'string',
@@ -1016,22 +1252,32 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         // "industrial techno" para un house tumbado), se usa el de la guía.
         const head = guide?.style.split(',')[0].trim().toLowerCase()
         const offStyle = !!head && !parsed.style.toLowerCase().includes(head)
-        const styled = offStyle ? { ...parsed, style: guide!.style } : parsed
-        // Con batería programada, los coros que se repiten reutilizan el audio del
-        // primero (como en el house real): la variación la ponen la batería y los filtros,
-        // y se ahorran varios minutos de generación por coro.
+        const styledOnly = offStyle ? { ...parsed, style: guide!.style } : parsed
+        // Y con la duración: secciones más cortas que las del género dejan una canción
+        // de 2 minutos (ver guideLengths).
+        const sized = guide ? guideLengths(styledOnly.sections, guide) : null
+        const styled = sized ? { ...styledOnly, sections: sized.sections } : styledOnly
+        const lengthNote = sized?.lengthened.length
+          ? `sections shorter than the ${guide!.id} guide were lengthened: ${sized.lengthened.map((l) => `${l.name} ${l.from}→${l.to} bars`).join(', ')}. Ask for short sections only if the user wants a short song.`
+          : null
+        // Los versos y coros que se repiten reutilizan el audio del primero, como en
+        // una canción real (el segundo verso lleva el mismo riff; cambian la letra, que
+        // va en su pista, y la energía, que pone la mezcla). Generarlos de nuevo los
+        // hacía continuar lo anterior y la canción se iba desviando (test16: desde el
+        // segundo verso, oscuro, un muro de platillos y un coro que se apagaba compás sí,
+        // compás no). Además ahorra un tramo de 6-7 minutos por repetición. Solo con la
+        // misma duración: la copia no rellena compases que el original no tiene. Con
+        // batería programada, solo los coros (la variación la ponen batería y filtros).
         const drums = findPattern(guide?.drums)
-        const spec = drums
-          ? {
-              ...styled,
-              sections: styled.sections.map((s, i) =>
-                (s.energy ?? 0) >= 4 &&
-                styled.sections.slice(0, i).some((o) => sameName(o.name, s.name))
-                  ? { ...s, reuse: true }
-                  : s
-              )
-            }
-          : styled
+        const spec = {
+          ...styled,
+          sections: styled.sections.map((s, i) =>
+            (!drums || (s.energy ?? 0) >= 4) &&
+            styled.sections.slice(0, i).some((o) => sameName(o.name, s.name) && o.bars === s.bars)
+              ? { ...s, reuse: true }
+              : s
+          )
+        }
         const styleNote = offStyle
           ? `style "${parsed.style}" did not match the ${guide!.id} guide; used "${guide!.style}". Put extra flavour in the sections' arrangement instead.`
           : null
@@ -1143,6 +1389,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             bpm: final.bpm,
             ...(tempoNote && { tempo_note: tempoNote }),
             ...(styleNote && { style_note: styleNote }),
+            ...(lengthNote && { length_note: lengthNote }),
             key: final.key,
             ...(error && { error }),
             sections: sectionsOf(final).map((s) => ({
@@ -1163,7 +1410,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         // Con cantante local, el instrumental no debe traer voces propias.
         const backing = local ? { ...spec, style: `instrumental, ${spec.style}` } : spec
         const tempo = host.getProject()
-        const { generated, failed, repaired, drone, filled } = await recordChunks({
+        const { generated, failed, repaired, drone, filled, healed } = await recordChunks({
           steps: planChunks(backing, bars, { bpm: tempo.bpm, key: tempo.key, drums: !!drums }),
           sections,
           trackId: song.id,
@@ -1171,12 +1418,13 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           signal,
           progress
         })
+        let patched: BarPatch[] = []
         if (generated > 0) {
           await commit(
             polishSong(host.getProject(), song.id),
             'pulido: fundidos de entrada y salida'
           )
-          await levelTrack(song.id)
+          patched = await levelTrack(song.id)
         }
         // La batería programada y la automatización de la cama: segundos, no minutos.
         let drumsError: string | null = null
@@ -1219,6 +1467,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           bpm: final.bpm,
           ...(tempoNote && { tempo_note: tempoNote }),
           ...(styleNote && { style_note: styleNote }),
+          ...(lengthNote && { length_note: lengthNote }),
           key: final.key,
           bars_per_part: bars,
           parts_generated: generated,
@@ -1237,6 +1486,21 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
             filled,
             filled_note:
               'These parts got stuck twice, so they now repeat healthy bars of the same section and play fine. No need to mention it; if the user wants more variety there, offer create_variation.'
+          }),
+          ...(patched.length > 0 && {
+            patched_bars: patched.map((x) => ({
+              section: x.section,
+              start_bar: x.bar,
+              bars: x.bars,
+              from_bar: x.fromBar
+            })),
+            patched_note:
+              'These bars had lost their highs (a dull wall of sound the mix could not brighten), so they now play healthy bars of a matching section. No need to mention it.'
+          }),
+          ...(healed.length > 0 && {
+            healed,
+            healed_note:
+              'These bars faded out at the end of a part, so they now repeat healthy bars of the same section and the next part blends in. No need to mention it.'
           }),
           sections: sectionCoverage(final)
             .filter((c) => ids.has(c.section.id))
@@ -1427,12 +1691,13 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           signal,
           progress
         })
+        let patched: BarPatch[] = []
         if (report.generated > 0) {
           await commit(
             polishSong(host.getProject(), song.id),
             'pulido: fundidos de entrada y salida'
           )
-          await levelTrack(song.id)
+          patched = await levelTrack(song.id)
         }
         return {
           ok: report.failed.length === 0,
@@ -1441,6 +1706,17 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           ...(report.failed.length > 0 && { failed: report.failed }),
           ...(report.repaired.length > 0 && { repaired: report.repaired }),
           ...(report.filled.length > 0 && { filled: report.filled }),
+          ...(report.healed.length > 0 && { healed: report.healed }),
+          ...(patched.length > 0 && {
+            patched_bars: patched.map((x) => ({
+              section: x.section,
+              start_bar: x.bar,
+              bars: x.bars,
+              from_bar: x.fromBar
+            })),
+            patched_note:
+              'These bars had lost their highs (a dull wall of sound the mix could not brighten), so they now play healthy bars of a matching section. No need to mention it.'
+          }),
           ...(report.drone.length > 0 && {
             drone: report.drone,
             drone_note: 'These parts still sound stuck after one repair. Tell the user.'

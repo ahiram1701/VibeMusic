@@ -23,6 +23,9 @@ export function isTrackAudible(track: Track, allTracks: Track[]): boolean {
   return anySolo ? track.solo : true
 }
 
+/** Frecuencia (Hz) del realce de agudos de una región (`brightDb`): platillos y ataques. */
+export const BRIGHT_SHELF_HZ = 2000
+
 /**
  * Mezcla inicial de una pista nueva según su papel: la base rítmica delante, la
  * armonía y los efectos más atrás y un poco abiertos para que no tapen al resto.

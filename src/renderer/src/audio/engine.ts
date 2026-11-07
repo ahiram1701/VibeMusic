@@ -1,7 +1,13 @@
 import type { Clip, Project } from '@shared/project'
-import { dbToGain, isTrackAudible } from '@shared/mixer'
+import { BRIGHT_SHELF_HZ, dbToGain, isTrackAudible } from '@shared/mixer'
 import { projectEndSec } from '@shared/timeline'
-import { duckEvents, regionPlayback, sweepEvents, type ParamEvent } from '@shared/playback'
+import {
+  duckEvents,
+  eqEvents,
+  regionPlayback,
+  sweepEvents,
+  type ParamEvent
+} from '@shared/playback'
 
 export const SAMPLE_RATE = 48000
 
@@ -96,13 +102,24 @@ function buildGraph(
         fade.gain.setValueAtTime(1, when + duration - region.fadeOutSec)
         fade.gain.linearRampToValueAtTime(0, when + duration)
       }
-      if (region.gainDb) {
+      // Volumen y realce de la región; con curva (eq), automatizados segundo a segundo.
+      const curve = eqEvents(region, play.clipSec)
+      let out: AudioNode = fade
+      if (region.gainDb || curve) {
         const level = ctx.createGain()
-        level.gain.value = Math.pow(10, region.gainDb / 20)
-        fade.connect(level).connect(gain)
-      } else {
-        fade.connect(gain)
+        level.gain.value = Math.pow(10, (region.gainDb ?? 0) / 20)
+        if (curve) schedule(level.gain, curve.gain, when)
+        out = out.connect(level)
       }
+      if (region.brightDb || curve) {
+        const shelf = ctx.createBiquadFilter()
+        shelf.type = 'highshelf'
+        shelf.frequency.value = BRIGHT_SHELF_HZ
+        shelf.gain.value = region.brightDb ?? 0
+        if (curve) schedule(shelf.gain, curve.bright, when)
+        out = out.connect(shelf)
+      }
+      out.connect(gain)
 
       const src = ctx.createBufferSource()
       src.buffer = buffer
