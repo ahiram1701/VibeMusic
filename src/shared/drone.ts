@@ -219,7 +219,7 @@ export interface SoundSummary {
    * Dentro de una sección MusicGen cambia mucho (test17: un verso que pasa de −3 a −18
    * dB de agudos a la mitad): con esto la mezcla corrige segundo a segundo.
    */
-  seconds?: { db: number; highDb: number }[]
+  seconds?: { db: number; highDb: number; pulseDb?: number }[]
   /** Racha más larga de segundos estáticos (suena, pero sin pulso), o null. */
   staticRun: { startSec: number; sec: number } | null
   /** Volumen (dBFS) de los primeros cuartos de segundo, para ver un hueco al empezar. */
@@ -246,6 +246,18 @@ export function fadedEnd(sound: SoundSummary, dropDb = DEFAULTS.fadeDb): boolean
  */
 export function darkEnd(sound: SoundSummary, dropDb = 8): boolean {
   return sound.tail.highDb < DEFAULTS.highDbMin && sound.tail.highDb < sound.head.highDb - dropDb
+}
+
+/**
+ * Pegada media (pulseDb: golpes de batería, ataques) de los últimos `sec` segundos, o de
+ * todo el audio sin `sec`; null si no se midió.
+ */
+export function pulseOf(sound: SoundSummary, sec?: number): number | null {
+  const all = (sound.seconds ?? []).map((w) => w.pulseDb)
+  const part = (sec === undefined ? all : all.slice(-sec)).filter(
+    (p): p is number => p !== undefined
+  )
+  return part.length ? part.reduce((a, b) => a + b, 0) / part.length : null
 }
 
 /** Cuartos de segundo del principio que mira `hasStartGap` (1,5 s). */
@@ -279,7 +291,7 @@ export function soundSummary(samples: Float32Array, sampleRate: number): SoundSu
     tail: powerMean(edge.slice(-EDGE_PARTS)),
     mean: powerMean(stats),
     body: median(stats.map((w) => w.db)),
-    seconds: stats.map((w) => ({ db: w.db, highDb: w.highDb })),
+    seconds: stats.map((w) => ({ db: w.db, highDb: w.highDb, pulseDb: w.pulseDb })),
     staticRun,
     opening: edge.slice(0, OPENING_PARTS).map((w) => w.db)
   }

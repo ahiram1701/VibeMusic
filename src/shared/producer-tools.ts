@@ -34,6 +34,7 @@ import {
   fadedEnd,
   hasStartGap,
   powerMean,
+  pulseOf,
   type CollapseOptions,
   type SoundSummary
 } from './drone'
@@ -539,6 +540,15 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
    */
   /** Reparaciones por canción; las demás partes atascadas se tapan o se avisan. */
   const MAX_REPAIRS = 4
+  /**
+   * Segundos sin ritmo que ya descartan unos compases para tapar otros: menos que el
+   * aviso de la revisión (STATIC_SEC), porque lo que se copia se oye dos veces o más.
+   */
+  const HISS_SEC = 2
+  /** Segundos del final que escucha el tramo siguiente (el audio de partida). */
+  const CONTEXT_TAIL_SEC = 8
+  /** Un final con menos de esta parte de la pegada del principio está gastado. */
+  const WORN_PULSE = 0.75
   const recordChunks = async (run: ChunkRun): Promise<ChunkReport> => {
     const { sections, trackId, signal } = run
     const secPerBar = barsToSeconds(1, host.getProject())
@@ -557,18 +567,27 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       .tracks.find((t) => t.id === trackId)
       ?.regions.slice()
       .sort((a, b) => a.startBeat - b.startBeat)[0]
-    let brightRef: number | null =
-      opening && opening.startBeat < 0.05
-        ? ((await host.inspectRegion(opening.id)).sound?.mean.highDb ?? null)
-        : null
-    // Final de cada región: su volumen (para ver un hueco tras la unión) y si está sana
-    // (sin atasco ni apagada al final), que es lo que oye el tramo que la continúa.
-    type Tail = { db: number | null; ok: boolean }
+    const openingSound =
+      opening && opening.startBeat < 0.05 ? (await host.inspectRegion(opening.id)).sound : null
+    let brightRef: number | null = openingSound?.mean.highDb ?? null
+    // Igual con la pegada (golpes de batería): el modelo imita la del audio que escucha,
+    // y tramo a tramo se va aplanando en un muro sin golpes (test21).
+    let pulseRef: number | null = openingSound ? pulseOf(openingSound) : null
+    // Final de cada región: su volumen (para ver un hueco tras la unión), si está sana
+    // (sin atasco ni apagada al final) y su pegada, que es lo que oye el tramo que la
+    // continúa.
+    type Tail = { db: number | null; ok: boolean; pulse: number | null }
     const tails = new Map<string, Tail>()
     const tailFrom = (collapseAtSec: number | null, sound?: SoundSummary | null): Tail => ({
       db: sound?.tail.db ?? null,
-      ok: collapseAtSec === null && !(sound && (fadedEnd(sound) || darkEnd(sound)))
+      ok: collapseAtSec === null && !(sound && (fadedEnd(sound) || darkEnd(sound))),
+      pulse: sound ? pulseOf(sound, CONTEXT_TAIL_SEC) : null
     })
+    // Gastado: su final ya perdió la pegada del principio de la canción. Continuarlo
+    // sale aún más plano o se apaga (medido con el mismo seed: desde la intro, 2,1-3,2
+    // de pegada todo el tramo; desde el coro gastado, 0,9 y una toma que se apagó).
+    const fresh = (t: Tail): boolean =>
+      t.ok && (pulseRef === null || t.pulse === null || t.pulse >= pulseRef * WORN_PULSE)
     const tailOf = async (id: string): Promise<Tail> => {
       if (!tails.has(id)) {
         const r = await host.inspectRegion(id)
@@ -579,16 +598,21 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
     // Escuchar un final atascado o apagado volvería a atascarse, así que se parte de la
     // última región sana de antes. Se oye un cambio en la unión, pero menos que un tramo
     // que nace vacío y contagia al resto de la canción (test10 y test11).
+    // Y un final gastado se continúa desde el último que conserva su pegada: un tramo
+    // nuevo que escucha audio vivo sale vivo.
     const repairContext = async (from: string | null, atBeat: number): Promise<string | null> => {
-      if (!from || (await tailOf(from)).ok) return from
+      if (!from || fresh(await tailOf(from))) return from
       const regions = host.getProject().tracks.flatMap((t) => t.regions)
-      let best = from
-      let bestBeat = -1
-      for (const [id, t] of tails) {
-        const beat = regions.find((r) => r.id === id)?.startBeat ?? -1
-        if (t.ok && beat < atBeat && beat > bestBeat) [best, bestBeat] = [id, beat]
+      const latest = (ok: (t: Tail) => boolean): string | null => {
+        let best: string | null = null
+        let bestBeat = -1
+        for (const [id, t] of tails) {
+          const beat = regions.find((r) => r.id === id)?.startBeat ?? -1
+          if (ok(t) && beat < atBeat && beat > bestBeat) [best, bestBeat] = [id, beat]
+        }
+        return best
       }
-      return best
+      return latest(fresh) ?? ((await tailOf(from)).ok ? from : (latest((t) => t.ok) ?? from))
     }
     // Para tapar un tramo que sigue atascado: compases sanos ya grabados de la misma
     // sección (o de otra igual de antes), de los que se toman los que tocan en esa
@@ -619,14 +643,27 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       const want = (startBar - section.startBar) % PHRASE_BARS
       for (const c of candidates) {
         if (!(await tailOf(c.r.id)).ok) continue
+        // Unos compases "sanos" con segundos sin ritmo dentro no tapan nada: copian el
+        // siseo (test21: el coro se tapó con sus compases 33-36, que ya tenían 3 s de
+        // siseo, y el siseo salió dos veces en cada coro).
+        const hiss = (await host.inspectRegion(c.r.id)).sound?.staticRun
+        const clean = (j: number): boolean =>
+          !hiss ||
+          hiss.sec < HISS_SEC ||
+          hiss.startSec + hiss.sec <= j * secPerBar ||
+          hiss.startSec >= (j + bars) * secPerBar
         const k0 = (startBar - c.bar) % c.length
         const k = k0 + bars <= c.length ? k0 : 0
         const home = like.find((s) => c.bar >= s.startBar && c.bar < s.startBar + s.bars)
-        const inPhrase = Array.from({ length: c.length - bars + 1 }, (_, j) => j).filter(
+        const offsets = Array.from({ length: c.length - bars + 1 }, (_, j) => j).filter(clean)
+        const inPhrase = offsets.filter(
           (j) => home && (c.bar + j - home.startBar) % PHRASE_BARS === want
         )
-        const best = inPhrase.sort((a, b) => Math.abs(a - k) - Math.abs(b - k))[0]
-        return { region: c.r, offsetBars: best ?? k }
+        const near = (list: number[]): number | undefined =>
+          list.sort((a, b) => Math.abs(a - k) - Math.abs(b - k))[0]
+        const best = near(inPhrase) ?? near(offsets)
+        if (best === undefined) continue
+        return { region: c.r, offsetBars: best }
       }
       return null
     }
@@ -666,8 +703,8 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       })
       await commit(r.project, `${section.name}: final dañado tapado con compases sanos`)
       healed.push({ section: section.name, start_bar: startBar, bars: n })
-      tails.set(made, { db: null, ok: true })
-      tails.set(r.regionId, { db: null, ok: true })
+      tails.set(made, { db: null, ok: true, pulse: null })
+      tails.set(r.regionId, { db: null, ok: true, pulse: null })
       return r.regionId
     }
     const queue: (ChunkStep & { repair?: boolean })[] = [...run.steps]
@@ -720,8 +757,11 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
                 prompt: step.prompt,
                 atBeat,
                 message: `${section.name} (${span})`,
-                // Fundirse con audio de otra parte de la canción sonaría raro.
-                crossfade: from === before,
+                // Fundirse con audio de otra parte de la canción sonaría raro, salvo que
+                // sea el tramo sano de la canción en lugar de uno gastado: es la misma
+                // música que sigue.
+                crossfade:
+                  from === before || (!step.repair && !!before && (await tailOf(before)).ok),
                 ...(brightRef !== null && { brightenTo: brightRef })
               })
             : await host.generate({
@@ -757,7 +797,8 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       })
       // Un hueco justo tras la unión (el modelo se calla tras el fundido) es un atasco
       // desde el principio.
-      const prevDb = from && from === before ? (await tailOf(from)).db : null
+      const prevTail = before && from ? await tailOf(before) : null
+      const prevDb = prevTail?.ok ? prevTail.db : null
       const gap =
         prevDb !== null && !!inspected.sound && hasStartGap(inspected.sound.opening, prevDb)
       const collapseAtSec = gap ? 0 : inspected.collapseAtSec
@@ -766,6 +807,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       // continúan no se vayan apagando (ver contextLift).
       if (!from && brightRef === null && collapseAtSec === null && inspected.sound) {
         brightRef = inspected.sound.mean.highDb
+        pulseRef = pulseOf(inspected.sound)
       }
       if (collapseAtSec === null) {
         const sound = inspected.sound
@@ -797,7 +839,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           await commit(r.project, `${section.name}: repite compases sanos en vez de un atasco`)
           filled.push({ section: section.name, start_bar: step.startBar, bars: step.bars })
           // Sale de compases sanos: sirve de contexto para lo que sigue.
-          tails.set(r.regionId, { db: null, ok: true })
+          tails.set(r.regionId, { db: null, ok: true, pulse: null })
           last = r.regionId
           continue
         }

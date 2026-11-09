@@ -562,6 +562,59 @@ describe('productor · canciones completas', () => {
     expect(calls.find((c) => c.atBeat === 96)!.from).toBe(at64[0].id)
   })
 
+  it('un tramo que perdió la pegada no se continúa: se sigue desde el último vivo (test21)', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    // El primer tramo del verso (pulso 32) sale plano, sin golpes; los demás con pegada.
+    h.host.inspectRegion = async (regionId) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      const pulseDb = r.startBeat === 32 ? 1 : 2.5
+      const s = { db: -14, highDb: -15, pulseDb }
+      return {
+        collapseAtSec: null,
+        sound: {
+          head: s,
+          tail: s,
+          mean: s,
+          opening: [],
+          staticRun: null,
+          seconds: Array.from({ length: 15 }, () => ({ db: -14, highDb: -15, pulseDb }))
+        }
+      }
+    }
+    await h.run('compose_song', songInput)
+    const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
+    const at = (beat: number) => song.regions.find((r) => r.startBeat === beat)!.id
+    // La segunda mitad del verso escucha la intro, y se funde: es la misma música.
+    expect(calls.find((c) => c.atBeat === 64)).toMatchObject({ from: at(0), crossfade: true })
+    // El coro ya continúa el tramo vivo de justo antes.
+    expect(calls.find((c) => c.atBeat === 96)!.from).toBe(at(64))
+  })
+
+  it('no tapa un atasco con compases sanos que ya tienen siseo dentro (test21)', async () => {
+    const h = fakeHost(createProject('X'))
+    chainable(h)
+    // El verso de 32 tiene 3 s sin ritmo en medio; el de 64 se atasca siempre.
+    const s = { db: -14, highDb: -15, pulseDb: 5 }
+    h.host.inspectRegion = async (regionId) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      return {
+        collapseAtSec: r.startBeat === 64 ? 0 : null,
+        sound: {
+          head: s,
+          tail: s,
+          mean: s,
+          opening: [],
+          staticRun: r.startBeat === 32 ? { startSec: 4, sec: 3 } : null
+        }
+      }
+    }
+    const res = (await h.run('compose_song', songInput)) as Repaired & { filled?: unknown[] }
+    // Los 8 compases del verso son todo lo que hay, y tienen siseo: se avisa, no se copia.
+    expect(res.filled).toBeUndefined()
+    expect(res.drone).toEqual([{ section: 'Verso', start_bar: 17 }])
+  })
+
   it('compose_song iguala el volumen: un coro apagado sube', async () => {
     const h = fakeHost(createProject('X'))
     chainable(h)
