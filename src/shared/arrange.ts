@@ -2,6 +2,7 @@ import {
   beatsToSeconds,
   newId,
   secondsToBeats,
+  type EqPoint,
   type Project,
   type Region,
   type Section,
@@ -75,8 +76,40 @@ function toNumber(raw: unknown): number {
   return typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : (raw as number)
 }
 
-export const sameName = (a: string, b: string): boolean =>
-  a.trim().toLowerCase() === b.trim().toLowerCase()
+/**
+ * Un arreglo sin entradas escalonadas: el modelo genera cada tramo de un solo texto y no
+ * sabe hacer que algo "entre" a la mitad; con "guitar riff alone, live drums enter"
+ * (test18) dio 25 s de un acorde sostenido, sin riff ni batería. Se quitan "alone"
+ * y "enter(s)/come(s) in/kick(s) in": queda lo que suena, todo a la vez.
+ */
+export function steadyArrangement(text: string): string {
+  return text
+    .replace(/\b(alone|enters?|entering|com(?:es?|ing) in|kicks? in|drops? in)\b/gi, '')
+    .replace(/\s+([,.;])/g, '$1')
+    .replace(/([,;])\s*(?=[,;]|$)/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+    .replace(/^[,;]\s*|[,;]$/g, '')
+}
+
+/**
+ * Compases de una sección en frases enteras de 4, como en casi cualquier género: el LLM
+ * a veces pide un verso de 22 (test13) y la última frase queda coja. Se completa hacia
+ * arriba (nunca se acorta una letra); menos de 4 compases (un remate) se respeta.
+ */
+export function phraseBars(bars: number): number {
+  const n = Math.round(bars)
+  return n < 4 ? n : Math.ceil(n / 4) * 4
+}
+
+/** Nombre de sección sin número: "Verso 2" es otra vez "verso". */
+const sectionBase = (name: string): string =>
+  name
+    .trim()
+    .toLowerCase()
+    .replace(/\s*\d+$/, '')
+
+export const sameName = (a: string, b: string): boolean => sectionBase(a) === sectionBase(b)
 
 /**
  * Valida y normaliza la canción que manda el LLM. Los errores dicen exactamente qué
@@ -107,7 +140,7 @@ export function parseSongSpec(input: Input): SongSpec {
         `Sección "${name}": "reuse" repite una sección anterior con el mismo nombre, y no hay ninguna antes`
       )
     }
-    const arrangement = typeof it.arrangement === 'string' ? it.arrangement.trim() : ''
+    const arrangement = typeof it.arrangement === 'string' ? steadyArrangement(it.arrangement) : ''
     if (!arrangement && !reuse) {
       throw new Error(
         `Sección "${name}": falta "arrangement" (qué instrumentos suenan y con qué energía, en inglés)`
@@ -125,7 +158,7 @@ export function parseSongSpec(input: Input): SongSpec {
       : typeof it.lyrics === 'string' && it.lyrics.trim()
         ? cleanLyrics(it.lyrics)
         : null
-    sections.push({ name, bars: Math.round(bars), arrangement, energy, reuse, lyrics, melody })
+    sections.push({ name, bars: phraseBars(bars), arrangement, energy, reuse, lyrics, melody })
   }
   if (sections.every((s) => s.reuse)) throw new Error('Alguna sección tiene que generarse')
   const vocals =
@@ -530,11 +563,12 @@ export function trimRegion(p: Project, regionId: string, lengthSec: number): Pro
 /**
  * Cambia la región `replaceId` por `bars` compases de `src` (desde su compás
  * `offsetBars`) colocados en `atBeat`: el loop con que un productor tapa un tramo que no
- * sirve. Devuelve también el id de la región nueva.
+ * sirve. Con `replaceId` null no se quita nada: se añade a la pista de `src` (para tapar
+ * solo el final de un tramo ya recortado). Devuelve también el id de la región nueva.
  */
 export function loopRegion(
   p: Project,
-  replaceId: string,
+  replaceId: string | null,
   src: Region,
   opts: { atBeat: number; offsetBars: number; bars: number }
 ): { project: Project; regionId: string } {
@@ -547,14 +581,16 @@ export function loopRegion(
     lengthSec: opts.bars * bar,
     fadeInSec: 0.01,
     fadeOutSec: 0.01,
-    ...(src.gainDb !== undefined && { gainDb: src.gainDb })
+    ...(src.gainDb !== undefined && { gainDb: src.gainDb }),
+    ...(src.brightDb !== undefined && { brightDb: src.brightDb }),
+    ...(src.eq && { eq: src.eq })
   }
   return {
     regionId: region.id,
     project: {
       ...p,
       tracks: p.tracks.map((t) =>
-        t.regions.some((r) => r.id === replaceId)
+        t.regions.some((r) => r.id === (replaceId ?? src.id))
           ? { ...t, regions: [...t.regions.filter((r) => r.id !== replaceId), region] }
           : t
       )
@@ -656,7 +692,11 @@ export function sectionGains(
       const jump = next.headDb - prev.tailDb
       const [gx, gy] = [byKey.get(x.key)!, byKey.get(y.key)!]
       const heard = jump + gy - gx
-      const excess = Math.abs(heard) - Math.max(Math.abs(jump), SEAM_DB)
+      // Bajar de un coro a un verso es el arreglo, no un corte: ahí se deja el doble
+      // (test18: el verso arrancaba a −22 dB y la unión dejaba el coro sin subir, más
+      // bajo que el verso). Un salto hacia arriba, como en test11, sigue con SEAM_DB.
+      const settling = heard < 0 && y.energy < x.energy
+      const excess = Math.abs(heard) - Math.max(Math.abs(jump), SEAM_DB * (settling ? 2 : 1))
       if (excess <= 0) continue
       const dir = Math.sign(heard)
       if (Math.abs(gy) >= Math.abs(gx)) byKey.set(y.key, clamp(gy - dir * excess))
@@ -673,17 +713,265 @@ export function sectionGains(
 
 /** Pone la ganancia de cada región de `gains` (0 la quita). */
 export function withRegionGains(p: Project, gains: Map<string, number>): Project {
+  return withRegionDb(p, 'gainDb', gains)
+}
+
+/** Pone el realce de agudos de cada región de `bright` (0 lo quita). */
+export function withRegionBright(p: Project, bright: Map<string, number>): Project {
+  return withRegionDb(p, 'brightDb', bright)
+}
+
+function withRegionDb(
+  p: Project,
+  field: 'gainDb' | 'brightDb',
+  values: Map<string, number>
+): Project {
   return {
     ...p,
     tracks: p.tracks.map((t) =>
-      t.regions.some((r) => gains.has(r.id))
+      t.regions.some((r) => values.has(r.id))
         ? {
             ...t,
             regions: t.regions.map((r) => {
-              const g = gains.get(r.id)
-              if (g === undefined) return r
-              const next: Region = { ...r, gainDb: g }
-              if (g === 0) delete next.gainDb
+              const v = values.get(r.id)
+              if (v === undefined) return r
+              const next: Region = { ...r, [field]: v }
+              if (v === 0) delete next[field]
+              return next
+            })
+          }
+        : t
+    )
+  }
+}
+
+/** Lo más que se realzan los agudos de una sección. */
+export const MAX_BRIGHT_DB = 6
+/** Lo que una sección puede quedar más apagada que la referencia sin tocarla. */
+const BRIGHT_MARGIN_DB = 3
+
+/**
+ * Realce de agudos de cada región para que ninguna sección suene opaca. Cada tramo
+ * continúa el audio del anterior y hereda su timbre, así que un poco de oscuridad se
+ * va acumulando (test15: el intro con los agudos a −14 dB y los coros a −26/−31). La
+ * referencia es la primera región de la canción, la única que sale solo del texto: es
+ * como cree el modelo que suena ese género. Una sección más apagada que ella (con
+ * margen) se realza hasta MAX_BRIGHT_DB, como haría un ingeniero con un ecualizador.
+ * Solo se sube: nunca el siseo (bajito y de puros agudos), ni una sección tranquila
+ * (energía ≤ 2: puede ser apagada a propósito). `highDb`: agudos de la región
+ * respecto a su total, en dB (ver drone.ts).
+ */
+export function sectionBrightness(
+  sections: { name?: string; startBar: number; bars: number; energy?: number }[],
+  regions: { id: string; startBeat: number; lengthSec: number; db: number; highDb: number }[],
+  beatsPerBar: number
+): Map<string, number> {
+  const out = new Map<string, number>()
+  const sorted = [...regions].sort((a, b) => a.startBeat - b.startBeat)
+  if (sorted.length < 2) return out
+  const reference = sorted[0].highDb
+  const energyOf = (s: (typeof sections)[number]): number =>
+    s.energy ??
+    sections.find((o) => o.name && o.name === s.name && o.energy !== undefined)?.energy ??
+    3
+  for (const s of sections) {
+    const a = (s.startBar - 1) * beatsPerBar
+    const b = a + s.bars * beatsPerBar
+    const inside = sorted.filter((r) => r.startBeat >= a - 0.05 && r.startBeat < b - 0.05)
+    const power = inside.reduce((n, r) => n + Math.pow(10, r.db / 10) * r.lengthSec, 0)
+    if (power <= 0) continue
+    const high = inside.reduce((n, r) => n + Math.pow(10, (r.db + r.highDb) / 10) * r.lengthSec, 0)
+    const db = 10 * Math.log10(power / inside.reduce((n, r) => n + r.lengthSec, 0))
+    const highDb = 10 * Math.log10(high / power)
+    const hiss = db < THIN_DB && highDb > THIN_HIGH_DB
+    const wanted = reference - BRIGHT_MARGIN_DB - highDb
+    const lift =
+      hiss || energyOf(s) <= 2 || wanted < MIN_CHANGE_DB
+        ? 0
+        : Math.round(Math.min(MAX_BRIGHT_DB, wanted) * 2) / 2
+    for (const r of inside) out.set(r.id, lift)
+  }
+  return out
+}
+
+/**
+ * Lo que se mide de un segundo tras realzar sus agudos `brightDb`: la parte aguda
+ * (`highDb`, respecto al total) sube y con ella un poco el total. Aproxima el realce
+ * como si subiera todo lo que hay por encima de 1 kHz.
+ */
+export function brightened<T extends { db: number; highDb: number }>(w: T, brightDb: number): T {
+  if (!brightDb) return w
+  const r = Math.pow(10, w.highDb / 10)
+  const g2 = Math.pow(10, brightDb / 10)
+  const total = 10 * Math.log10(1 + r * (g2 - 1))
+  return { ...w, db: w.db + total, highDb: w.highDb + brightDb - total }
+}
+
+/** Lo más que se realzan los agudos de un segundo, contando el realce de su sección. */
+export const MAX_CURVE_BRIGHT_DB = 9
+
+/**
+ * Cuánto realzar (dB de shelf) el audio de partida de una continuación. MusicGen imita
+ * lo que oye y ese audio ya perdió agudos en su códec: cada tramo heredaba uno más
+ * apagado (test19: de −11 dB en la intro a −17 en el verso). Con la partida realzada
+ * 6 dB, la continuación salió 10 dB más brillante, como un tramo nuevo desde texto.
+ * Sin margen: cada tramo pierde solo 1,5-3 dB, y con un margen de 3 dB nunca se llegaba
+ * a realzar mientras la canción se apagaba paso a paso (test20: −11, −15, −16, −18). El
+ * shelf en BRIGHT_SHELF_HZ sube algo menos los agudos medidos desde 1 kHz (+6 de shelf
+ * subió la medida 4,9 dB), de ahí CONTEXT_LIFT_GAIN.
+ * `reference`: agudos del primer tramo; `highDb`: los de la partida.
+ */
+export function contextLift(reference: number, highDb: number): number {
+  const lift = Math.round((reference - highDb) * CONTEXT_LIFT_GAIN * 2) / 2
+  return lift < CONTEXT_LIFT_MIN_DB ? 0 : Math.min(MAX_CURVE_BRIGHT_DB, lift)
+}
+/** dB de shelf por dB de agudos que faltan (ver contextLift). */
+const CONTEXT_LIFT_GAIN = 1.25
+/** Menos de esto no se nota. */
+const CONTEXT_LIFT_MIN_DB = 1
+
+/**
+ * Lo que un segundo puede apartarse del volumen de su sección sin tocarlo; pasado esto
+ * se lleva entero a él (test18: dejar 3 dB dejaba un coro que se hundía 5 dB a medias).
+ */
+const CURVE_DEAD_DB = 1.5
+/** Diferencia entre dos clips de una sección a partir de la cual se igualan. */
+const REGION_MATCH_DB = 2
+/** Lo más que la curva sube o baja el volumen de un segundo. */
+const MAX_CURVE_GAIN_DB = 6
+/** Segundos de la media móvil de la curva: más corta se oiría como un bombeo. */
+const CURVE_SMOOTH_SEC = 3
+/** Por debajo de esto un segundo es silencio: ni se mide ni se toca. */
+const CURVE_SILENCE_DB = -45
+
+/**
+ * Curva de mezcla dentro de cada región, encima de sectionGains y sectionBrightness.
+ * Un número por sección no basta: MusicGen cambia mucho dentro de un tramo (test17: un
+ * verso que pasa de −3 a −18 dB de agudos a la mitad, un coro que se apaga desde su
+ * tercer compás, un golpe grave 7 dB por encima de su solo). Cada segundo que se aparta
+ * más de CURVE_DEAD_DB del volumen típico de su sección se acerca a él, y cada uno más
+ * apagado que la referencia (los agudos de la primera región, ver sectionBrightness;
+ * null = no realzar, con batería programada) se realza, hasta MAX_CURVE_BRIGHT_DB en
+ * total. Suavizado y en pasos de 0,5 dB, como movería los faders un ingeniero. No toca
+ * secciones tranquilas (energía ≤ 2), el siseo, el silencio, ni el primer y el último
+ * segundo de la canción (el arranque y el final son así a propósito). `seconds` son las
+ * medidas del clip tal cual (ver drone.ts); `gainDb` y `brightDb`, los de su sección.
+ * Una región sin nada que corregir queda con la lista vacía (sin curva).
+ */
+export function sectionCurves(
+  sections: { name?: string; startBar: number; bars: number; energy?: number }[],
+  regions: {
+    id: string
+    startBeat: number
+    offsetSec: number
+    seconds: { db: number; highDb: number }[]
+    gainDb?: number
+    brightDb?: number
+  }[],
+  beatsPerBar: number,
+  reference: number | null
+): Map<string, EqPoint[]> {
+  const out = new Map<string, EqPoint[]>()
+  const sorted = [...regions].sort((a, b) => a.startBeat - b.startBeat)
+  if (sorted.length === 0) return out
+  const first = sorted[0]
+  const last = sorted[sorted.length - 1]
+  const energyOf = (s: (typeof sections)[number]): number =>
+    s.energy ??
+    sections.find((o) => o.name && o.name === s.name && o.energy !== undefined)?.energy ??
+    3
+  const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v))
+  const step = (v: number): number => {
+    const q = Math.round(v * 2) / 2
+    return Math.abs(q) < MIN_CHANGE_DB ? 0 : q
+  }
+  const half = Math.floor(CURVE_SMOOTH_SEC / 2)
+  for (const s of sections) {
+    const a = (s.startBar - 1) * beatsPerBar
+    const b = a + s.bars * beatsPerBar
+    const inside = sorted.filter((r) => r.startBeat >= a - 0.05 && r.startBeat < b - 0.05)
+    if (inside.length === 0) continue
+    if (energyOf(s) <= 2) {
+      for (const r of inside) out.set(r.id, [])
+      continue
+    }
+    // Lo que se oye de cada segundo, con el volumen y el realce de la sección.
+    const heard = inside.map((r) =>
+      r.seconds.map((w) => {
+        const lit = brightened(w, r.brightDb ?? 0)
+        const db = lit.db + (r.gainDb ?? 0)
+        const skip = db < CURVE_SILENCE_DB || (db < THIN_DB && lit.highDb > THIN_HIGH_DB)
+        return { db, highDb: lit.highDb, skip }
+      })
+    )
+    const levels = heard
+      .flat()
+      .filter((w) => !w.skip)
+      .map((w) => w.db)
+      .sort((x, y) => x - y)
+    if (levels.length === 0) {
+      for (const r of inside) out.set(r.id, [])
+      continue
+    }
+    const body = levels[Math.floor(levels.length / 2)]
+    inside.forEach((r, ri) => {
+      const room = Math.max(0, MAX_CURVE_BRIGHT_DB - (r.brightDb ?? 0))
+      // Dos clips de una misma sección se igualan entre sí antes de nada: dentro de cada
+      // uno se deja pasar un margen, pero en la unión el escalón se oye entero (test18:
+      // la segunda mitad del coro entraba 5 dB por encima de la primera).
+      const own = heard[ri]
+        .filter((w) => !w.skip)
+        .map((w) => w.db)
+        .sort((x, y) => x - y)
+      const offBody = own.length ? body - own[Math.floor(own.length / 2)] : 0
+      const level =
+        inside.length > 1 && Math.abs(offBody) >= REGION_MATCH_DB
+          ? clamp(offBody, -MAX_CURVE_GAIN_DB, MAX_CURVE_GAIN_DB)
+          : 0
+      const raw = heard[ri].map((w) => {
+        if (w.skip) return { g: 0, b: 0 }
+        const want = reference === null ? 0 : reference - BRIGHT_MARGIN_DB - w.highDb
+        const b = clamp(want, 0, room)
+        // El realce también sube el volumen: se iguala lo que se oirá con él (test18: el
+        // arranque del coro, realzado 4 dB, quedaba más fuerte que el resto).
+        const dev = body - (brightened(w, b).db + level)
+        const g = clamp(
+          level + (Math.abs(dev) <= CURVE_DEAD_DB ? 0 : dev),
+          -MAX_CURVE_GAIN_DB,
+          MAX_CURVE_GAIN_DB
+        )
+        return { g, b }
+      })
+      const points = raw.map((_, i) => {
+        const near = raw.slice(Math.max(0, i - half), i + half + 1)
+        const mean = (k: 'g' | 'b'): number => near.reduce((n, x) => n + x[k], 0) / near.length
+        const edge =
+          heard[ri][i].skip || (r === first && i === 0) || (r === last && i === raw.length - 1)
+        return {
+          clipSec: r.offsetSec + i + 0.5,
+          gainDb: edge ? 0 : step(mean('g')),
+          brightDb: edge ? 0 : step(mean('b'))
+        }
+      })
+      out.set(r.id, points.some((p) => p.gainDb !== 0 || p.brightDb !== 0) ? points : [])
+    })
+  }
+  return out
+}
+
+/** Pone a cada región su curva de mezcla (ver sectionCurves); vacía = sin curva. */
+export function withRegionEq(p: Project, curves: Map<string, EqPoint[]>): Project {
+  return {
+    ...p,
+    tracks: p.tracks.map((t) =>
+      t.regions.some((r) => curves.has(r.id))
+        ? {
+            ...t,
+            regions: t.regions.map((r) => {
+              const eq = curves.get(r.id)
+              if (eq === undefined) return r
+              const next: Region = { ...r, eq }
+              if (eq.length === 0) delete next.eq
               return next
             })
           }

@@ -78,6 +78,30 @@ export interface Region {
    * secciones de la canción para que un coro no suene más bajo que el verso.
    */
   gainDb?: number
+  /**
+   * Realce de agudos de la región (dB, en un filtro de estantería): el productor aclara
+   * así una sección que salió opaca (ver sectionBrightness).
+   */
+  brightDb?: number
+  /**
+   * Correcciones dentro de la región, sumadas a `gainDb` y `brightDb`: en cada punto
+   * (segundo del clip, no de la región, para que recortes y copias sigan alineados) se
+   * llega a ese volumen y realce con una rampa desde el anterior (ver sectionCurves).
+   */
+  eq?: EqPoint[]
+  /**
+   * Compás de la canción del que sale este audio, si tapa compases opacos (ver
+   * patch.ts): se mezcla como allí, no como la sección donde suena, para que suene
+   * igual que en su sitio.
+   */
+  patchFromBar?: number
+}
+
+/** Un punto de la curva de mezcla de una región. */
+export interface EqPoint {
+  clipSec: number
+  gainDb: number
+  brightDb: number
 }
 
 /** Un punto de una automatización: en ese pulso de la canción, ese valor. */
