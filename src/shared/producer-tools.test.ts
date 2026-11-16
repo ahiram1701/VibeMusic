@@ -793,6 +793,46 @@ describe('productor · canciones completas', () => {
     expect(seen.every((x) => x === -24)).toBe(true)
   })
 
+  it('un final con un hueco no se continúa aunque un golpe lo deje brillante (test23)', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    h.host.inspectRegion = async (regionId) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      const sound = measuredSound(() => -14)
+      // El primer tramo del verso se calla a 4 s del final (−36 dB) y acaba con un golpe.
+      if (r.startBeat === 32) sound.seconds[11] = { db: -36, highDb: -14, pulseDb: 5 }
+      return { collapseAtSec: null, sound }
+    }
+    await h.run('compose_song', songInput)
+    const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
+    const intro = song.regions.find((r) => r.startBeat === 0)!.id
+    expect(calls.find((c) => c.atBeat === 64)!.from).toBe(intro)
+  })
+
+  it('una partida sustituta de la que salió un atasco no se vuelve a usar (test23)', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    // El verso (32) acaba sin pegada: el tramo 64 parte de la intro, y se atasca.
+    let stuck = true
+    h.host.inspectRegion = async (regionId) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      const collapse = r.startBeat === 64 && stuck ? 0 : null
+      if (r.startBeat === 64) stuck = false
+      return {
+        collapseAtSec: collapse,
+        sound: measuredSound(() => -14, r.startBeat === 32 ? 1 : 5)
+      }
+    }
+    await h.run('compose_song', songInput)
+    const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
+    const intro = song.regions.find((r) => r.startBeat === 0)!.id
+    const tries = calls.filter((c) => c.atBeat === 64)
+    expect(tries).toHaveLength(2)
+    expect(tries[0].from).toBe(intro)
+    // La reparación no vuelve a la intro: solo queda el verso, que se continúa.
+    expect(tries[1].from).not.toBe(intro)
+  })
+
   it('un final sin agudos tampoco se continúa: se sigue desde el último vivo (test22)', async () => {
     const h = fakeHost(createProject('X'))
     const calls = chainable(h)

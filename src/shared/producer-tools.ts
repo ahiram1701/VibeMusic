@@ -552,6 +552,8 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
   const WORN_PULSE = 0.75
   /** dB de agudos por debajo de la intro a partir de los que un final está gastado. */
   const WORN_HIGH_DB = 9
+  /** dB por debajo del volumen típico del final que ya son un hueco en él. */
+  const CONTEXT_DROPOUT_DB = 15
   /** Segundos sanos que hacen falta para tomar las referencias de un tramo. */
   const MIN_REF_SEC = 2
   /** Un tramo con 4 s así de por debajo de los agudos de la intro está atascado... */
@@ -591,13 +593,28 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
     const tails = new Map<string, Tail>()
     const tailFrom = (collapseAtSec: number | null, sound?: SoundSummary | null): Tail => {
       const end = sound ? partOf(sound, -CONTEXT_TAIL_SEC) : null
+      // Los agudos típicos (mediana) del final, no la media en potencia: un platillo
+      // fuerte al final la manda y tapaba un final grave (test23: el coro acababa a
+      // −27/−33 dB y un golpe final lo dejaba en −13 de media).
+      const seconds = sound?.seconds?.slice(-CONTEXT_TAIL_SEC) ?? []
+      const mid = (xs: number[]): number | null =>
+        xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] : null
+      const typicalDb = mid(seconds.map((w) => w.db))
+      // Un hueco en el final (un segundo casi callado entre medias) también lo rompe: el
+      // modelo oye un parón y un golpe, y sigue con un drone (test23: −36 dB a 4 s del
+      // final, y cuatro tramos atascados que partían de ahí).
+      const dropout =
+        typicalDb !== null && seconds.some((w) => w.db < typicalDb - CONTEXT_DROPOUT_DB)
       return {
         db: sound?.tail.db ?? null,
-        ok: collapseAtSec === null && !(sound && (fadedEnd(sound) || darkEnd(sound))),
+        ok: collapseAtSec === null && !dropout && !(sound && (fadedEnd(sound) || darkEnd(sound))),
         pulse: end?.pulse ?? null,
-        highDb: end?.highDb ?? null
+        highDb: mid(seconds.map((w) => w.highDb)) ?? end?.highDb ?? null
       }
     }
+    // Partidas de las que ya salió un tramo atascado: otra toma desde ahí suele atascarse
+    // igual (test23: el solo, su reparación y el outro partieron del mismo final roto).
+    const stuckFrom = new Set<string>()
     // Gastado: su final ya perdió la pegada del principio de la canción, o tantos agudos
     // que ni el realce de la partida (ver contextLift, hasta +9 dB) los devuelve.
     // Continuarlo sale aún más plano o se apaga (medido con el mismo seed: desde la
@@ -620,18 +637,26 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
     // Y un final gastado se continúa desde el último que conserva su pegada: un tramo
     // nuevo que escucha audio vivo sale vivo.
     const repairContext = async (from: string | null, atBeat: number): Promise<string | null> => {
-      if (!from || fresh(await tailOf(from))) return from
+      if (!from || (!stuckFrom.has(from) && fresh(await tailOf(from)))) return from
       const regions = host.getProject().tracks.flatMap((t) => t.regions)
-      const latest = (ok: (t: Tail) => boolean): string | null => {
+      const latest = (ok: (t: Tail) => boolean, avoidStuck = true): string | null => {
         let best: string | null = null
         let bestBeat = -1
         for (const [id, t] of tails) {
           const beat = regions.find((r) => r.id === id)?.startBeat ?? -1
+          if (avoidStuck && stuckFrom.has(id)) continue
           if (ok(t) && beat < atBeat && beat > bestBeat) [best, bestBeat] = [id, beat]
         }
         return best
       }
-      return latest(fresh) ?? ((await tailOf(from)).ok ? from : (latest((t) => t.ok) ?? from))
+      const fromOk = (await tailOf(from)).ok
+      return (
+        latest(fresh) ??
+        (fromOk && !stuckFrom.has(from) ? from : null) ??
+        latest((t) => t.ok) ??
+        latest(fresh, false) ??
+        (fromOk ? from : (latest((t) => t.ok, false) ?? from))
+      )
     }
     // Para tapar un tramo que sigue atascado: compases sanos ya grabados de la misma
     // sección (o de otra igual de antes), de los que se toman los que tocan en esa
@@ -861,6 +886,9 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       }
       // Pasado el tope de reparaciones, un atasco se trata como una reparación fallida:
       // cada una cuesta 6-10 min y test11 llegó a 17 partes (2 h 20 min).
+      // La partida de justo antes tiene otra oportunidad (la unión es la mejor); una que
+      // ya era un sustituto, o que falla dos veces, no.
+      if (from && (from !== before || step.repair)) stuckFrom.add(from)
       if (step.repair || repaired.length >= MAX_REPAIRS) {
         // Ya era la reparación, y otra toma suele atascarse igual (test9: el verso se
         // calló dos veces). Si la sección ya tiene compases sanos, se repiten, como el
