@@ -600,6 +600,27 @@ describe('mezcla por sección', () => {
     expect(after('r9', -17.4)).toBeGreaterThan(after('r1', -16) + 1)
   })
 
+  it('el coro sube aunque entre de golpe tras un verso que acaba bajito (test22)', () => {
+    const named = [
+      { name: 'Intro', startBar: 1, bars: 8, energy: 3 },
+      { name: 'Verso', startBar: 9, bars: 16, energy: 3 },
+      { name: 'Coro', startBar: 25, bars: 16, energy: 5 },
+      { name: 'Solo', startBar: 41, bars: 8, energy: 5 }
+    ]
+    const g = sectionGains(
+      named,
+      [
+        { ...at(1, 'i', -18), headDb: -18.2, tailDb: -15.2 },
+        { ...at(9, 'v', -18.4), headDb: -21.3, tailDb: -22.1 },
+        { ...at(25, 'c', -21.2), headDb: -16.4, tailDb: -19.7 },
+        { ...at(41, 's', -14.7), headDb: -12.7, tailDb: -19.3 }
+      ],
+      4
+    )
+    expect(g.get('r25')).toBeGreaterThanOrEqual(4.5)
+    expect(-21.2 + g.get('r25')!).toBeGreaterThan(-18.4 + g.get('r9')! + 1)
+  })
+
   it('pone y quita la ganancia de las regiones', () => {
     const p = createProject('X')
     const t = createTrack('Canción', 'full')

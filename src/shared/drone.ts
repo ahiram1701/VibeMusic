@@ -260,6 +260,26 @@ export function pulseOf(sound: SoundSummary, sec?: number): number | null {
   return part.length ? part.reduce((a, b) => a + b, 0) / part.length : null
 }
 
+/**
+ * Agudos (dB respecto al total, en potencia) y pegada media de un trozo de los segundos
+ * medidos: desde `from` hasta antes de `to` (negativos: contados desde el final, como
+ * slice). null si no hay ningún segundo.
+ */
+export function partOf(
+  sound: SoundSummary,
+  from: number,
+  to?: number
+): { highDb: number; pulse: number | null; sec: number } | null {
+  const part = (sound.seconds ?? []).slice(from, to)
+  if (part.length === 0) return null
+  const pulses = part.map((w) => w.pulseDb).filter((p): p is number => p !== undefined)
+  return {
+    highDb: powerMean(part.map((w) => ({ ...w, pulseDb: 0 }))).highDb,
+    pulse: pulses.length ? pulses.reduce((x, y) => x + y, 0) / pulses.length : null,
+    sec: part.length
+  }
+}
+
 /** Cuartos de segundo del principio que mira `hasStartGap` (1,5 s). */
 const OPENING_PARTS = 6
 

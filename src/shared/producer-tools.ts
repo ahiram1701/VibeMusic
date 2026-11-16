@@ -33,6 +33,7 @@ import {
   darkEnd,
   fadedEnd,
   hasStartGap,
+  partOf,
   powerMean,
   pulseOf,
   type CollapseOptions,
@@ -549,6 +550,16 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
   const CONTEXT_TAIL_SEC = 8
   /** Un final con menos de esta parte de la pegada del principio está gastado. */
   const WORN_PULSE = 0.75
+  /** dB de agudos por debajo de la intro a partir de los que un final está gastado. */
+  const WORN_HIGH_DB = 9
+  /** Segundos sanos que hacen falta para tomar las referencias de un tramo. */
+  const MIN_REF_SEC = 2
+  /** Un tramo con 4 s así de por debajo de los agudos de la intro está atascado... */
+  const DARK_RUN_DB = 11
+  /** ...aunque la intro sea muy brillante: un verso a −20 dB es normal. */
+  const DARK_RUN_CAP_DB = -24
+  /** El umbral de drone de drone.ts: nunca se afloja. */
+  const DRONE_HIGH_DB = -32
   const recordChunks = async (run: ChunkRun): Promise<ChunkReport> => {
     const { sections, trackId, signal } = run
     const secPerBar = barsToSeconds(1, host.getProject())
@@ -576,18 +587,26 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
     // Final de cada región: su volumen (para ver un hueco tras la unión), si está sana
     // (sin atasco ni apagada al final) y su pegada, que es lo que oye el tramo que la
     // continúa.
-    type Tail = { db: number | null; ok: boolean; pulse: number | null }
+    type Tail = { db: number | null; ok: boolean; pulse: number | null; highDb: number | null }
     const tails = new Map<string, Tail>()
-    const tailFrom = (collapseAtSec: number | null, sound?: SoundSummary | null): Tail => ({
-      db: sound?.tail.db ?? null,
-      ok: collapseAtSec === null && !(sound && (fadedEnd(sound) || darkEnd(sound))),
-      pulse: sound ? pulseOf(sound, CONTEXT_TAIL_SEC) : null
-    })
-    // Gastado: su final ya perdió la pegada del principio de la canción. Continuarlo
-    // sale aún más plano o se apaga (medido con el mismo seed: desde la intro, 2,1-3,2
-    // de pegada todo el tramo; desde el coro gastado, 0,9 y una toma que se apagó).
+    const tailFrom = (collapseAtSec: number | null, sound?: SoundSummary | null): Tail => {
+      const end = sound ? partOf(sound, -CONTEXT_TAIL_SEC) : null
+      return {
+        db: sound?.tail.db ?? null,
+        ok: collapseAtSec === null && !(sound && (fadedEnd(sound) || darkEnd(sound))),
+        pulse: end?.pulse ?? null,
+        highDb: end?.highDb ?? null
+      }
+    }
+    // Gastado: su final ya perdió la pegada del principio de la canción, o tantos agudos
+    // que ni el realce de la partida (ver contextLift, hasta +9 dB) los devuelve.
+    // Continuarlo sale aún más plano o se apaga (medido con el mismo seed: desde la
+    // intro, 2,1-3,2 de pegada todo el tramo; desde el coro gastado, 0,9 y una toma que
+    // se apagó). En test22 el solo escuchó un final a −31 dB de agudos y salió un muro.
     const fresh = (t: Tail): boolean =>
-      t.ok && (pulseRef === null || t.pulse === null || t.pulse >= pulseRef * WORN_PULSE)
+      t.ok &&
+      (pulseRef === null || t.pulse === null || t.pulse >= pulseRef * WORN_PULSE) &&
+      (brightRef === null || t.highDb === null || t.highDb >= brightRef - WORN_HIGH_DB)
     const tailOf = async (id: string): Promise<Tail> => {
       if (!tails.has(id)) {
         const r = await host.inspectRegion(id)
@@ -703,8 +722,8 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       })
       await commit(r.project, `${section.name}: final dañado tapado con compases sanos`)
       healed.push({ section: section.name, start_bar: startBar, bars: n })
-      tails.set(made, { db: null, ok: true, pulse: null })
-      tails.set(r.regionId, { db: null, ok: true, pulse: null })
+      tails.set(made, { db: null, ok: true, pulse: null, highDb: null })
+      tails.set(r.regionId, { db: null, ok: true, pulse: null, highDb: null })
       return r.regionId
     }
     const queue: (ChunkStep & { repair?: boolean })[] = [...run.steps]
@@ -791,9 +810,15 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
       // ¿Se atascó? El fundido final de la canción no cuenta, ni que un tramo que empieza
       // de cero (la intro) arranque solo con platillos: ahí aún no hay nada que se vacíe.
       const endsSong = step.startBar + step.bars - 1 >= run.totalBars
+      // Un tramo que se hunde en un muro grave, muy por debajo de los agudos de la intro,
+      // también está atascado aunque siga sonando fuerte (test22: el solo a −28 dB y una
+      // reparación a −33, con la intro a −16).
+      const darkBelow =
+        brightRef === null ? null : Math.min(brightRef - DARK_RUN_DB, DARK_RUN_CAP_DB)
       const inspected = await host.inspectRegion(made, {
         ignoreTailSec: endsSong ? 2 * secPerBar : 0,
-        ...(from ? {} : { thinDb: -Infinity })
+        ...(from ? {} : { thinDb: -Infinity }),
+        ...(darkBelow !== null && darkBelow > DRONE_HIGH_DB && { highDbMin: darkBelow })
       })
       // Un hueco justo tras la unión (el modelo se calla tras el fundido) es un atasco
       // desde el principio.
@@ -803,11 +828,23 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
         prevDb !== null && !!inspected.sound && hasStartGap(inspected.sound.opening, prevDb)
       const collapseAtSec = gap ? 0 : inspected.collapseAtSec
       tails.set(made, tailFrom(collapseAtSec, inspected.sound))
-      // Los agudos del primer tramo sano desde texto: la referencia para que los que lo
-      // continúan no se vayan apagando (ver contextLift).
-      if (!from && brightRef === null && collapseAtSec === null && inspected.sound) {
-        brightRef = inspected.sound.mean.highDb
-        pulseRef = pulseOf(inspected.sound)
+      // Los agudos y la pegada del primer tramo sano (el de texto, la intro): la
+      // referencia para que los que lo continúan no se vayan apagando (ver contextLift y
+      // fresh). Si se atascó al final, de su parte sana: en test22 la intro se atascó en
+      // sus dos últimos compases y la canción entera se quedó sin referencias.
+      if (brightRef === null && inspected.sound) {
+        const healthy =
+          collapseAtSec === null
+            ? {
+                highDb: inspected.sound.mean.highDb,
+                pulse: pulseOf(inspected.sound),
+                sec: Infinity
+              }
+            : partOf(inspected.sound, 0, collapseAtSec)
+        if (healthy && healthy.sec >= MIN_REF_SEC && (!from || collapseAtSec === null)) {
+          brightRef = healthy.highDb
+          pulseRef = healthy.pulse
+        }
       }
       if (collapseAtSec === null) {
         const sound = inspected.sound
@@ -839,7 +876,7 @@ export function createProducerTools(host: ProducerHost): AgentTool[] {
           await commit(r.project, `${section.name}: repite compases sanos en vez de un atasco`)
           filled.push({ section: section.name, start_bar: step.startBar, bars: step.bars })
           // Sale de compases sanos: sirve de contexto para lo que sigue.
-          tails.set(r.regionId, { db: null, ok: true, pulse: null })
+          tails.set(r.regionId, { db: null, ok: true, pulse: null, highDb: null })
           last = r.regionId
           continue
         }

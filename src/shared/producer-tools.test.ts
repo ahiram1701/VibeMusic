@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderInfo } from './generation'
+import type { WindowStats } from './drone'
 import { createProject, createTrack, newId, secondsToBeats, type Project } from './project'
 import {
   AGENT_PREFIX,
@@ -725,6 +726,88 @@ describe('productor · canciones completas', () => {
     await h.run('compose_song', songInput)
     expect(calls.length).toBeGreaterThan(0)
     expect(calls.every((c) => c.brightenTo === -11)).toBe(true)
+  })
+
+  // Un tramo medido segundo a segundo: `high(i)` los agudos del segundo i.
+  const measuredSound = (
+    high: (i: number) => number,
+    pulseDb = 5,
+    sec = 15
+  ): {
+    head: WindowStats
+    tail: WindowStats
+    mean: WindowStats
+    staticRun: null
+    opening: number[]
+    seconds: { db: number; highDb: number; pulseDb: number }[]
+  } => {
+    const seconds = Array.from({ length: sec }, (_, i) => ({ db: -14, highDb: high(i), pulseDb }))
+    const s = { db: -14, highDb: high(sec - 1), pulseDb }
+    return { head: s, tail: s, mean: s, staticRun: null, opening: [], seconds }
+  }
+
+  it('la intro atascada al final da igual sus referencias, de su parte sana (test22)', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    h.host.inspectRegion = async (regionId) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      // La intro suena a −12 hasta el segundo 10, y ahí se hunde en un drone.
+      const intro = r.startBeat === 0 && r.lengthSec > 12
+      return {
+        collapseAtSec: intro ? 10 : null,
+        sound: measuredSound((i) => (intro && i >= 10 ? -40 : r.startBeat === 0 ? -12 : -15))
+      }
+    }
+    await h.run('compose_song', songInput)
+    const continued = calls.filter((c) => c.atBeat !== undefined && c.atBeat >= 32)
+    expect(continued.length).toBeGreaterThan(0)
+    for (const c of continued) expect(c.brightenTo).toBeCloseTo(-12)
+  })
+
+  it('un tramo hundido en un muro grave se repara, relativo a la intro (test22)', async () => {
+    const h = fakeHost(createProject('X'))
+    chainable(h)
+    const seen: { beat: number; highDbMin?: number }[] = []
+    h.host.inspectRegion = async (regionId, opts) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      if (opts) seen.push({ beat: r.startBeat, highDbMin: opts.highDbMin })
+      return { collapseAtSec: null, sound: measuredSound(() => (r.startBeat === 0 ? -16 : -18)) }
+    }
+    await h.run('compose_song', songInput)
+    // La intro no tiene referencia aún; lo que sigue se mide contra −16 − 11 = −27.
+    expect(seen.find((s) => s.beat === 0)!.highDbMin).toBeUndefined()
+    expect(seen.filter((s) => s.beat > 0).every((s) => s.highDbMin === -27)).toBe(true)
+  })
+
+  it('con una intro muy brillante el muro grave no baja de −24 dB', async () => {
+    const h = fakeHost(createProject('X'))
+    chainable(h)
+    const seen: (number | undefined)[] = []
+    h.host.inspectRegion = async (regionId, opts) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      if (opts && r.startBeat > 0) seen.push(opts.highDbMin)
+      return { collapseAtSec: null, sound: measuredSound(() => (r.startBeat === 0 ? -8 : -20)) }
+    }
+    await h.run('compose_song', songInput)
+    expect(seen.length).toBeGreaterThan(0)
+    expect(seen.every((x) => x === -24)).toBe(true)
+  })
+
+  it('un final sin agudos tampoco se continúa: se sigue desde el último vivo (test22)', async () => {
+    const h = fakeHost(createProject('X'))
+    const calls = chainable(h)
+    h.host.inspectRegion = async (regionId) => {
+      const r = h.state.project.tracks.flatMap((t) => t.regions).find((x) => x.id === regionId)!
+      // El primer tramo del verso acaba a −28 dB de agudos, 12 por debajo de la intro.
+      return {
+        collapseAtSec: null,
+        sound: measuredSound((i) => (r.startBeat === 32 && i >= 7 ? -28 : -16))
+      }
+    }
+    await h.run('compose_song', songInput)
+    const song = h.state.project.tracks.find((t) => t.name === 'Canción')!
+    const at = (beat: number) => song.regions.find((r) => r.startBeat === beat)!.id
+    expect(calls.find((c) => c.atBeat === 64)!.from).toBe(at(0))
   })
 
   it('compose_song siempre continúa lo anterior (sin cortes)', async () => {

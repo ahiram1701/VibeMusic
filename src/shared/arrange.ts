@@ -695,8 +695,14 @@ export function sectionGains(
       // Bajar de un coro a un verso es el arreglo, no un corte: ahí se deja el doble
       // (test18: el verso arrancaba a −22 dB y la unión dejaba el coro sin subir, más
       // bajo que el verso). Un salto hacia arriba, como en test11, sigue con SEAM_DB.
+      // Y subir de golpe a una sección mucho más intensa (de un verso a un coro) también
+      // (test22: el verso acababa a −22 dB y el coro entraba con un platillo a −16; la
+      // regla dejaba el coro sin subir, 3 dB por debajo del verso). De un break a un
+      // verso (un punto de energía) sigue con SEAM_DB, como en test11.
+      const rising = heard > 0 && y.energy >= x.energy + 2
       const settling = heard < 0 && y.energy < x.energy
-      const excess = Math.abs(heard) - Math.max(Math.abs(jump), SEAM_DB * (settling ? 2 : 1))
+      const excess =
+        Math.abs(heard) - Math.max(Math.abs(jump), SEAM_DB * (settling || rising ? 2 : 1))
       if (excess <= 0) continue
       const dir = Math.sign(heard)
       if (Math.abs(gy) >= Math.abs(gx)) byKey.set(y.key, clamp(gy - dir * excess))
