@@ -115,8 +115,15 @@ export function reviewSong(
   }
 
   // Siseo estático (sin ritmo) de varios segundos: se oye como ruido, no como música.
+  // Salvo el golpe final que suena hasta que acaba la canción (test21: el acorde final
+  // del outro, 3,5 s sin ritmo, se daba por siseo y se ofrecía regrabar el outro).
+  const songEnd = Math.max(...sorted.map((r) => r.endBeat))
   for (const r of sorted) {
     if (!r.staticRun || r.staticRun.sec < STATIC_SEC) continue
+    const ringsOut =
+      Math.abs(r.endBeat - songEnd) < 0.05 &&
+      r.staticRun.startSec + r.staticRun.sec >= r.lengthSec - 1
+    if (ringsOut) continue
     const beat = r.startBeat + (r.staticRun.startSec * (r.endBeat - r.startBeat)) / r.lengthSec
     issues.push({
       type: 'static',

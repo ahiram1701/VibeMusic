@@ -116,6 +116,8 @@ export interface ContinueOptions extends ActionOptions {
    * coloca en otro sitio: se fundiría con algo que no está sonando.
    */
   crossfade?: boolean
+  /** Agudos de referencia de la canción: la partida se realza si ha perdido (contextLift). */
+  brightenTo?: number
 }
 
 export async function continueRegion(
@@ -138,7 +140,7 @@ export async function continueRegion(
   }
 
   const buffer = engine.buffers.get(clip.id) ?? (await engine.loadClip(dir, clip))
-  const excerpt = await makeExcerpt(buffer, start, end)
+  const excerpt = await makeExcerpt(buffer, start, end, opts.brightenTo)
   const file = `clips/raw/partida-${newId('cnd')}.wav`
   await window.vibe.clips.write(dir, file, excerpt.wav)
 

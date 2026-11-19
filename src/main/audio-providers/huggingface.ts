@@ -75,6 +75,24 @@ export function explainSpaceError(raw: string, hasToken: boolean): string {
   return `El Space de ACE-Step falló: ${raw || 'error desconocido'}`
 }
 
+/** El primer audio de una tanda de datos del Space (la toma 1 si existe). */
+function audioIn(data: unknown[]): GradioFile | undefined {
+  for (const d of data) {
+    const f = (Array.isArray(d) ? d[0] : d) as GradioFile | null | undefined
+    if (f && typeof f === 'object' && typeof f.url === 'string' && f.url) return f
+  }
+  return undefined
+}
+
+/** Lo que el Space cuenta en texto en una tanda de datos (su "Generation Status"). */
+function textIn(data: unknown[]): string {
+  return data
+    .map((d) => (typeof d === 'string' ? d.trim() : ''))
+    .filter((t) => t && !/^-?\d+$/.test(t))
+    .join(' · ')
+    .slice(0, 400)
+}
+
 const messageText = (m: unknown): string =>
   typeof m === 'string' ? m : m === undefined || m === null ? '' : JSON.stringify(m)
 
@@ -143,13 +161,20 @@ export function createHuggingFaceProvider(
       const cancelRemote = (): void => void job.cancel().catch(() => undefined)
       ctx.signal.addEventListener('abort', cancelRemote, { once: true })
       try {
+        // El Space manda varias tandas de datos: las primeras llegan sin audio (solo el
+        // estado de la generación) y un fallo llega después como estado "error". Antes se
+        // paraba en la primera tanda y todo fallo se quedaba en "no devolvió audio" (test26).
         let file: GradioFile | undefined
+        let said = ''
         for await (const msg of job) {
           throwIfAborted(ctx.signal)
           if (msg.type === 'data') {
-            file = msg.data[0] as GradioFile | undefined
-            break
+            file = audioIn(msg.data)
+            if (file) break
+            said = textIn(msg.data) || said
+            continue
           }
+          if (msg.stage === 'complete') break
           if (msg.stage === 'error') {
             throw new HuggingFaceError(explainSpaceError(messageText(msg.message), !!token))
           }
@@ -164,7 +189,11 @@ export function createHuggingFaceProvider(
         }
         throwIfAborted(ctx.signal)
         const url = file?.url
-        if (!url) throw new HuggingFaceError('El Space de ACE-Step no devolvió audio.')
+        if (!url) {
+          throw new HuggingFaceError(
+            said ? explainSpaceError(said, !!token) : 'El Space de ACE-Step no devolvió audio.'
+          )
+        }
 
         ctx.onProgress(1, 'Descargando…')
         const audio = await fetchImpl(url, {

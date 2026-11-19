@@ -104,4 +104,13 @@ describe('revisión de la canción', () => {
     const review = reviewSong(sections, [region(0, -18, { tail: w(-14) }), hiss], 4)
     expect(review.issues).toContainEqual({ type: 'static', section: 'Coro', bar: 13, seconds: 5 })
   })
+
+  it('el golpe final que suena hasta el final de la canción no es siseo (test21)', () => {
+    const ring = region(32, -14, { staticRun: { startSec: 12, sec: 4 } })
+    const review = reviewSong(sections, [region(0, -18, { tail: w(-14) }), ring], 4)
+    expect(review.issues.filter((i) => i.type === 'static')).toEqual([])
+    // En medio de la canción sí se avisa.
+    const mid = reviewSong(sections, [ring, region(64, -14, { head: w(-14) })], 4)
+    expect(mid.issues.filter((i) => i.type === 'static')).toHaveLength(1)
+  })
 })
