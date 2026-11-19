@@ -105,6 +105,41 @@ describe('Hugging Face provider (ACE-Step)', () => {
     expect(stages).toContain('Generating music…')
   })
 
+  it('espera al audio aunque lleguen antes tandas sin él (test26)', async () => {
+    const g = fakeGradio([
+      { type: 'data', data: [null, null, 'Generating…'] },
+      {
+        type: 'data',
+        data: [null, { url: 'https://x.hf.space/file=take.flac', orig_name: 'take.flac' }]
+      }
+    ])
+    const provider = createHuggingFaceProvider(async () => 'hf_abc', g.connect, audioFetch)
+    const res = await provider.generate(spec, ctx())
+    expect(res.path).toBe(join(dir, 'out.flac'))
+  })
+
+  it('tras una tanda sin audio, cuenta el error real del Space', async () => {
+    const g = fakeGradio([
+      { type: 'data', data: [null, null] },
+      {
+        type: 'status',
+        stage: 'error',
+        message: 'You have exceeded your ZeroGPU quota (180s requested vs. 30s left).'
+      }
+    ])
+    const provider = createHuggingFaceProvider(async () => 'hf_abc', g.connect, audioFetch)
+    await expect(provider.generate(spec, ctx())).rejects.toThrow(/cuota gratuita/)
+  })
+
+  it('si termina sin audio, dice lo que contó el Space', async () => {
+    const g = fakeGradio([
+      { type: 'data', data: [null, null, 'Error: lyrics too long', '42'] },
+      { type: 'status', stage: 'complete' }
+    ])
+    const provider = createHuggingFaceProvider(async () => 'hf_abc', g.connect, audioFetch)
+    await expect(provider.generate(spec, ctx())).rejects.toThrow(/falló: Error: lyrics too long$/)
+  })
+
   it('sin letra no gasta cuota: falla antes de conectar', async () => {
     const g = fakeGradio([])
     const provider = createHuggingFaceProvider(async () => null, g.connect, audioFetch)
